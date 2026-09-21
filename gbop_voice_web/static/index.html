@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
+  <meta name="theme-color" content="#09090b" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>GBOP Voice</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="brand-mark">G</div>
+      <div>
+        <h1>GBOP Voice</h1>
+        <p>Greatest Bot on the Planet</p>
+      </div>
+      <span id="statusPill" class="pill offline">Offline</span>
+    </header>
+
+    <section id="loginCard" class="card login-card">
+      <h2>GBOP Voice</h2>
+      <p>Sign in with Discord to open your personal GTOP workspace.</p>
+      <button id="loginButton" class="primary">Continue with Discord</button>
+      <div id="loginError" class="error"></div>
+    </section>
+
+    <section id="voiceCard" class="voice-card hidden">
+      <div class="member-bar">
+        <span id="memberName">Discord member</span>
+        <button id="logoutButton" class="text-button">Sign out</button>
+      </div>
+
+      <div class="orb-wrap">
+        <button id="orb" class="orb" aria-label="Start voice conversation">
+          <span class="orb-core"></span>
+        </button>
+        <div id="voiceState" class="voice-state">Tap to start</div>
+        <div id="latencyHint" class="hint">Direct WebRTC voice</div>
+      </div>
+
+      <div class="controls">
+        <button id="muteButton" class="control" disabled>Mute</button>
+        <button id="endButton" class="control danger" disabled>End</button>
+      </div>
+
+      <section class="transcript-card">
+        <div class="transcript-title">Live transcript</div>
+        <div id="transcript" class="transcript">
+          <div class="placeholder">Your conversation will appear here.</div>
+        </div>
+      </section>
+
+      <div class="disclosure">
+        Voice is AI-generated. While connected, microphone audio is sent directly to OpenAI Live.
+        GBOP does not intentionally store raw microphone audio.
+      </div>
+    </section>
+  </main>
+
+  <audio id="remoteAudio" autoplay playsinline></audio>
+  <script src="/static/app.js"></script>
+</body>
+</html>

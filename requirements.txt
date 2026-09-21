@@ -1,0 +1,6 @@
+discord.py
+openai
+python-dotenv
+
+websockets>=15,<17
+git+https://github.com/LeadFreeCandy/discord-ext-voice-recv.git@bec048127f4148fd147afa3182c3771b6955dc08#egg=discord-ext-voice-recv
