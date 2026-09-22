@@ -1,4 +1,5 @@
 import os
+import logging
 from array import array
 import sys
 import hashlib
@@ -20,6 +21,11 @@ from openai import OpenAI
 import websockets
 
 load_dotenv()
+
+# Render captures stdout; flush each line so startup progress is visible.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+logger = logging.getLogger("gbop")
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GTOP_GUILD_ID = int(os.getenv("GTOP_GUILD_ID"))
@@ -311,14 +317,11 @@ class JournalModal(discord.ui.Modal, title="GBOP Trade Journal"):
 
 @tree.command(
     name="journal",
-    description="Open your private GTOP trade journal form.",
+    description="View your recent private GTOP journal entries.",
     guild=GUILD,
 )
 async def journal(interaction: discord.Interaction):
-    if not await require_member(interaction):
-        return
-
-    await interaction.response.send_modal(JournalModal())
+    await journals.callback(interaction, limit=5)
 
 @tree.command(
     name="journals",
@@ -3168,21 +3171,31 @@ tree.add_command(admin, guild=GUILD)
 
 @client.event
 async def setup_hook():
-    init_db()
-    init_journal_db()
-    init_thesis_db()
-    init_risk_flags_db()
-    init_member_trade_flow_db()
+    print("[GBOP-STARTUP] Discord login succeeded; initializing database.")
+    # Run each database step in order without blocking Discord's event loop.
+    for initializer in (
+        init_db,
+        init_journal_db,
+        init_thesis_db,
+        init_risk_flags_db,
+        init_member_trade_flow_db,
+        ensure_journal_edit_schema,
+    ):
+        print(f"[GBOP-STARTUP] Starting {initializer.__name__}")
+        try:
+            await asyncio.to_thread(initializer)
+        except Exception:
+            logger.exception("Database startup failed at %s", initializer.__name__)
+            raise
+        print(f"[GBOP-STARTUP] Finished {initializer.__name__}")
 
-    # Keep internal thesis/execution architecture,
-    # but hide database-style commands from normal members.
+    # Keep internal database-style commands hidden from normal members.
     tree.remove_command("thesis", guild=GUILD)
     tree.remove_command("execution", guild=GUILD)
-    tree.remove_command("journal", guild=GUILD)
 
-    ensure_journal_edit_schema()
+    print("[GBOP-STARTUP] Syncing Discord commands.")
     synced = await tree.sync(guild=GUILD)
-    print(f"Synced {len(synced)} top-level command(s) to G.T.O.P.")
+    print(f"[GBOP-STARTUP] Synced {len(synced)} top-level command(s) to G.T.O.P.")
 
 
 @client.event
@@ -5445,4 +5458,6 @@ async def gbop_tree_error(
         pass
 
 
-client.run(DISCORD_TOKEN)
+if __name__ == "__main__":
+    print("[GBOP-STARTUP] bot.py launched; connecting to Discord.")
+    client.run(DISCORD_TOKEN)
