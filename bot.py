@@ -20,10 +20,9 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import websockets
 # -------------------------------------------------
-# DISCORD VOICE RECEIVE RESILIENCE PATCH
-# Discord/DAVE can deliver a bad Opus frame during
-# voice startup. Drop that frame instead of killing
-# GBOP's entire receive thread.
+# GBOP OPUS SAFETY NET
+# Keeps voice alive during brief DAVE transitions
+# without flooding Render logs.
 # -------------------------------------------------
 from discord.ext.voice_recv import router as voice_recv_router
 
@@ -36,12 +35,22 @@ def _gbop_resilient_packet_router(self):
             for decoder in list(self.waiter.items):
                 try:
                     data = decoder.pop_data()
+
                 except discord.opus.OpusError as exc:
-                    print(
-                        "[GBOP-RT] dropped corrupt Opus packet; "
-                        "voice listener remains active:",
-                        repr(exc),
+                    now_mono = time.monotonic()
+                    last_log = getattr(
+                        self,
+                        "_gbop_last_opus_error_log",
+                        0.0,
                     )
+
+                    if now_mono - last_log >= 5.0:
+                        print(
+                            "[GBOP-RT] transient Opus packet dropped:",
+                            repr(exc),
+                        )
+                        self._gbop_last_opus_error_log = now_mono
+
                     continue
 
                 if data is not None:
@@ -50,7 +59,7 @@ def _gbop_resilient_packet_router(self):
 
 voice_recv_router.PacketRouter._do_run = _gbop_resilient_packet_router
 
-print("[GBOP-RT] resilient Opus packet router installed")
+print("[GBOP-RT] Opus safety net installed")
 load_dotenv()
 
 # Render captures stdout; flush each line so startup progress is visible.
