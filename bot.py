@@ -5175,8 +5175,7 @@ class GBOPRealtimeManager:
             self.sessions[key] = session
             session.runner = asyncio.create_task(session.run())
             return session
-
-        async def preconnect_channel(self, voice_client, loop):
+async def preconnect_channel(self, voice_client, loop):
         for member in getattr(voice_client.channel, "members", []):
             if member.bot:
                 continue
@@ -5198,8 +5197,8 @@ class GBOPRealtimeManager:
                 await self.get_session(member, voice_client, loop)
 
     async def feed(self, member, voice_client, pcm24, loop):
-        # Do not hit Supabase again for every incoming audio packet
-        # once this member already has an authorized realtime session.
+        # Do not hit Supabase for every incoming audio packet
+        # once this member already has an authorized session.
         session = self.sessions.get(self.key(member))
 
         if session is None or session.closed:
@@ -5226,7 +5225,6 @@ class GBOPRealtimeManager:
             )
 
         session.enqueue_audio(pcm24)
-
     async def close_guild(self, guild_id: int):
         keys = [key for key in self.sessions if key[0] == guild_id]
 
