@@ -6,7 +6,7 @@ import json
 import os
 import secrets
 import time
-import sqlite3
+
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +27,7 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
 STATIC_DIR = APP_DIR / "static"
 ENV_PATH = PROJECT_DIR / ".env"
-DB_PATH = PROJECT_DIR / "gbop.db"
+
 
 load_dotenv(ENV_PATH)
 
