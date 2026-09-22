@@ -1648,11 +1648,22 @@ async def save_additional_entry(
             + "\n\nEntry was **saved and flagged**, not blocked."
         )
 
-visible_trade_number = trade_number_for_id(
-    interaction.user.id,
-    trade_id
-)
+    visible_trade_number = trade_number_for_id(
+        interaction.user.id,
+        trade_id
+    )
+
     await interaction.response.send_message(
+        f"➕ **Additional entry saved to Trade #{visible_trade_number}.**\n"
+        f"Asset: **{trade_row['asset']}**\n"
+        f"Entry Model: **{entry_model}**\n"
+        f"Tier: **{tier}**\n"
+        f"Risk: **{risk_r:.2f}R**\n"
+        f"Total Recorded Thesis Risk: **{total:.2f}R**\n"
+        f"Remaining Protocol Budget: **{remaining:.2f}R**"
+        f"{warning_text}",
+        ephemeral=True
+    )
 f"➕ **Additional entry saved to Trade #{visible_trade_number}.**\n"
         f"Asset: **{trade_row['asset']}**\n"
         f"Entry Model: **{entry_model}**\n"
