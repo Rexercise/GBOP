@@ -4576,7 +4576,7 @@ async def on_message(message: discord.Message):
 
 
 # -----------------------------
-# GBOP VOICE FINAL V5
+# GBOP VOICE V6 — bounded input and interruption lifecycle
 # -----------------------------
 
 GBOP_REALTIME_MODEL = os.getenv("GBOP_REALTIME_MODEL", "gpt-realtime-2.1-mini")
@@ -4749,13 +4749,15 @@ class GBOPOutputManager:
         self.session = None
         self.voice_client = None
         self.item_id = None
+        self.response_id = None
 
-    async def interrupt(self):
+    async def interrupt(self, auto_cancelled_session=None):
         async with self.lock:
             source = self.source
             session = self.session
             voice_client = self.voice_client
             item_id = self.item_id
+            response_id = self.response_id
 
             played_ms = source.played_ms if source is not None else 0
 
@@ -4772,9 +4774,20 @@ class GBOPOutputManager:
                     print("[GBOP-RT] playback stop error:", type(exc).__name__, exc)
 
             if session is not None:
-                await session.send_event({"type": "response.cancel"}, quiet=True)
+                if response_id:
+                    session.interrupted_responses.add(response_id)
+                session.output_source = None
+                session.output_item_id = None
+                # Own-session server VAD has already cancelled generation.
+                # A different member's session still needs explicit cancellation.
+                if (session is not auto_cancelled_session and response_id
+                        and session.active_response_id == response_id):
+                    await session.send_event(
+                        {"type": "response.cancel", "response_id": response_id},
+                        quiet=True,
+                    )
 
-                if item_id and played_ms > 0:
+                if item_id:
                     await session.send_event(
                         {
                             "type": "conversation.item.truncate",
@@ -4790,8 +4803,8 @@ class GBOPOutputManager:
             self.voice_client = None
             self.item_id = None
 
-    async def begin(self, session, voice_client, item_id):
-        await self.interrupt()
+    async def begin(self, session, voice_client, item_id, response_id):
+        await self.interrupt(auto_cancelled_session=session)
 
         async with self.lock:
             source = GBOPRealtimeAudioSource()
@@ -4799,6 +4812,7 @@ class GBOPOutputManager:
             self.session = session
             self.voice_client = voice_client
             self.item_id = item_id
+            self.response_id = response_id
 
             loop = asyncio.get_running_loop()
 
@@ -4833,14 +4847,21 @@ class GBOPRealtimeSession:
         self.voice_client = voice_client
         self.loop = loop
         self.websocket = None
-        self.audio_queue = asyncio.Queue(maxsize=400)
+        self.audio_queue = asyncio.Queue(maxsize=50)
         self.ready = asyncio.Event()
         self.closed = False
         self.runner = None
         self.last_error = None
         self.output_source = None
         self.output_item_id = None
-        self.tool_output_pending = False
+        self.active_response_id = None
+        self.interrupted_responses = set()
+        self.user_speaking = False
+        self.turn_epoch = 0
+        self.pending_tool_items = {}
+        self.background_tasks = set()
+        self.tool_lock = asyncio.Lock()
+        self.dropped_audio_frames = 0
         self.received_audio_bytes = 0
         self.sent_audio_bytes = 0
         self.speech_starts = 0
@@ -4935,21 +4956,27 @@ class GBOPRealtimeSession:
                 print("[GBOP-RT] send error:", self.last_error)
             return False
 
-    def enqueue_audio(self, pcm24_mono: bytes):
+    def enqueue_audio(self, pcm24_mono: bytes, captured_at=None):
         if self.closed or not pcm24_mono:
             return
 
         self.received_audio_bytes += len(pcm24_mono)
+        captured_at = time.monotonic() if captured_at is None else captured_at
+        if time.monotonic() - captured_at > 1.0:
+            self.dropped_audio_frames += 1
+            return
+        frame = (captured_at, pcm24_mono)
         try:
-            self.audio_queue.put_nowait(pcm24_mono)
+            self.audio_queue.put_nowait(frame)
         except asyncio.QueueFull:
             try:
                 self.audio_queue.get_nowait()
+                self.dropped_audio_frames += 1
             except asyncio.QueueEmpty:
                 pass
 
             try:
-                self.audio_queue.put_nowait(pcm24_mono)
+                self.audio_queue.put_nowait(frame)
             except asyncio.QueueFull:
                 pass
 
@@ -4960,9 +4987,12 @@ class GBOPRealtimeSession:
         while not self.closed:
             try:
                 if silence_frames_left:
-                    pcm = await asyncio.wait_for(self.audio_queue.get(), 0.02)
+                    captured_at, pcm = await asyncio.wait_for(self.audio_queue.get(), 0.02)
                 else:
-                    pcm = await self.audio_queue.get()
+                    captured_at, pcm = await self.audio_queue.get()
+                if time.monotonic() - captured_at > 1.0:
+                    self.dropped_audio_frames += 1
+                    continue
                 real_audio = True
                 # Up to 600 ms of trailing silence lets server VAD end a turn
                 # even when Discord stops transmitting after a short tail.
@@ -4982,12 +5012,13 @@ class GBOPRealtimeSession:
                 self.sent_audio_bytes += len(pcm)
 
     async def refresh_context(self):
+        instructions = await asyncio.to_thread(self.instructions)
         await self.send_event(
             {
                 "type": "session.update",
                 "session": {
                     "type": "realtime",
-                    "instructions": self.instructions(),
+                    "instructions": instructions,
                 },
             },
             quiet=True,
@@ -5028,8 +5059,32 @@ class GBOPRealtimeSession:
             }
         )
 
-        self.tool_output_pending = True
-        await self.refresh_context()
+    def start_background(self, coroutine):
+        task = asyncio.create_task(coroutine)
+        self.background_tasks.add(task)
+        def done(completed):
+            self.background_tasks.discard(completed)
+            if not completed.cancelled() and completed.exception() is not None:
+                print("[GBOP-RT] background task error:", repr(completed.exception()))
+        task.add_done_callback(done)
+        return task
+
+    async def finish_tools(self, items, response_id, epoch):
+        # Keep database actions ordered without blocking incoming VAD events.
+        async with self.tool_lock:
+            if (self.closed or epoch != self.turn_epoch
+                    or response_id in self.interrupted_responses):
+                return
+            for item in items:
+                await self.execute_tool(item)
+            await self.refresh_context()
+            # An action already started may finish after an interruption, but
+            # its old voice reply must never talk over the member's newer turn.
+            if (not self.closed and epoch == self.turn_epoch
+                    and not self.user_speaking
+                    and self.active_response_id is None
+                    and response_id not in self.interrupted_responses):
+                await self.send_event({"type": "response.create"})
 
     async def receiver_loop(self):
         async for raw in self.websocket:
@@ -5050,18 +5105,34 @@ class GBOPRealtimeSession:
                 print("[GBOP-RT] API error:", self.last_error)
                 continue
 
+            if event_type == "response.created":
+                self.active_response_id = (event.get("response") or {}).get("id")
+                continue
+
             if event_type == "input_audio_buffer.speech_started":
                 self.speech_starts += 1
+                self.turn_epoch += 1
+                self.user_speaking = True
+                if self.active_response_id:
+                    self.interrupted_responses.add(self.active_response_id)
                 print("[GBOP-RT] speech started:", self.member.id)
-                await gbop_output_manager(self.member.guild.id).interrupt()
+                await gbop_output_manager(self.member.guild.id).interrupt(
+                    auto_cancelled_session=self,
+                )
+                self.output_source = None
+                self.output_item_id = None
                 continue
 
             if event_type == "input_audio_buffer.speech_stopped":
                 self.speech_stops += 1
+                self.user_speaking = False
                 print("[GBOP-RT] speech stopped:", self.member.id)
                 continue
 
             if event_type == "response.output_audio.delta":
+                response_id = event.get("response_id")
+                if self.user_speaking or response_id in self.interrupted_responses:
+                    continue
                 delta = event.get("delta")
                 if not delta:
                     continue
@@ -5079,6 +5150,7 @@ class GBOPRealtimeSession:
                         self,
                         self.voice_client,
                         item_id,
+                        response_id,
                     )
                     self.output_item_id = item_id
 
@@ -5086,6 +5158,9 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "response.output_audio.done":
+                if (event.get("response_id") in self.interrupted_responses
+                        or event.get("item_id") != self.output_item_id):
+                    continue
                 if self.output_source is not None:
                     self.output_source.finish()
                 self.output_source = None
@@ -5094,23 +5169,31 @@ class GBOPRealtimeSession:
 
             if event_type == "response.output_audio_transcript.done":
                 transcript = (event.get("transcript", "") or "").strip()
-                if transcript:
-                    ai_save_message(self.member.id, "assistant", transcript)
+                if transcript and event.get("response_id") not in self.interrupted_responses:
+                    self.start_background(asyncio.to_thread(
+                        ai_save_message, self.member.id, "assistant", transcript,
+                    ))
                 continue
 
             if event_type == "response.output_item.done":
                 item = event.get("item") or {}
                 if item.get("type") == "function_call":
-                    await self.execute_tool(item)
+                    response_id = event.get("response_id")
+                    self.pending_tool_items.setdefault(response_id, []).append(item)
                 continue
 
             if event_type == "response.done":
                 response = event.get("response") or {}
                 status = response.get("status")
-
-                if self.tool_output_pending and status not in ("cancelled", "failed"):
-                    self.tool_output_pending = False
-                    await self.send_event({"type": "response.create"})
+                response_id = response.get("id")
+                if self.active_response_id == response_id:
+                    self.active_response_id = None
+                items = self.pending_tool_items.pop(response_id, [])
+                if (items and status == "completed" and not self.user_speaking
+                        and response_id not in self.interrupted_responses):
+                    self.start_background(self.finish_tools(
+                        items, response_id, self.turn_epoch,
+                    ))
 
     async def run(self):
         backoff = 1.0
@@ -5122,6 +5205,10 @@ class GBOPRealtimeSession:
                 print("[GBOP-RT] connecting:", self.member, GBOP_REALTIME_MODEL)
                 self.websocket = await self.connect_ws()
                 self.last_error = None
+                self.active_response_id = None
+                self.user_speaking = False
+                self.interrupted_responses.clear()
+                self.pending_tool_items.clear()
                 receiver = asyncio.create_task(self.receiver_loop())
                 update = await asyncio.to_thread(self.session_update)
                 if not await self.send_event(update):
@@ -5143,7 +5230,14 @@ class GBOPRealtimeSession:
                 print("[GBOP-RT] session error:", self.member, self.last_error)
                 retry = not self.closed
             finally:
+                self.turn_epoch += 1
+                manager = gbop_output_manager(self.member.guild.id)
+                if manager.session is self:
+                    await manager.interrupt(auto_cancelled_session=self)
+                self.output_source = None
+                self.output_item_id = None
                 tasks = [task for task in (receiver, sender) if task is not None]
+                tasks.extend(list(self.background_tasks))
                 for task in tasks:
                     task.cancel()
                 if tasks:
@@ -5235,7 +5329,7 @@ class GBOPRealtimeManager:
             if allowed:
                 await self.get_session(member, voice_client, loop)
 
-    async def feed(self, member, voice_client, pcm24, loop):
+    async def feed(self, member, voice_client, pcm24, loop, captured_at=None):
         # Do not hit Supabase for every incoming audio packet
         # once this member already has an authorized session.
         session = self.sessions.get(self.key(member))
@@ -5263,7 +5357,7 @@ class GBOPRealtimeManager:
                 loop,
             )
 
-        session.enqueue_audio(pcm24)
+        session.enqueue_audio(pcm24, captured_at)
     async def close_guild(self, guild_id: int):
         keys = [key for key in self.sessions if key[0] == guild_id]
 
@@ -5312,12 +5406,14 @@ class GBOPRealtimeSink(voice_recv.AudioSink):
         if not pcm24:
             return
 
+        captured_at = time.monotonic()
         future = asyncio.run_coroutine_threadsafe(
             GBOP_REALTIME_MANAGER.feed(
                 member,
                 self.voice_client_ref,
                 pcm24,
                 self.loop,
+                captured_at,
             ),
             self.loop,
         )
@@ -5361,7 +5457,7 @@ def gbop_start_realtime_listener(voice_client):
         )
     )
 
-    print("[GBOP-RT] realtime Discord audio bridge ACTIVE")
+    print("[GBOP-RT] voice-v6 realtime Discord audio bridge ACTIVE")
 
 
 async def gbop_voice_health_text(interaction):
@@ -5392,12 +5488,13 @@ async def gbop_voice_health_text(interaction):
             ),
             f"Realtime model: **{GBOP_REALTIME_MODEL}**",
             f"Realtime voice: **{GBOP_REALTIME_VOICE}**",
-            "Repair build: **receive-v1**",
+            "Repair build: **voice-v6 / receive-v1**",
             f"Process-wide decoded / Opus errors: **{GBOP_RX_STATS['decoded']} / {GBOP_RX_STATS['opus_errors']}**",
             f"Process-wide DAVE errors / concealed: **{GBOP_RX_STATS['dave_errors']} / {GBOP_RX_STATS['concealed']}**",
             f"DAVE ready: **{bool(getattr(getattr(getattr(vc, '_connection', None), 'dave_session', None), 'ready', False))}**",
             f"Your received audio: **{session.received_audio_bytes // 48 if session else 0} ms**",
             f"Your audio sent to OpenAI: **{session.sent_audio_bytes // 48 if session else 0} ms**",
+            f"Your input queue / dropped frames: **{session.audio_queue.qsize() if session else 0} / {session.dropped_audio_frames if session else 0}**",
             f"Your speech starts / stops: **{session.speech_starts if session else 0} / {session.speech_stops if session else 0}**",
             f"Your session exists: **{session is not None}**",
             f"Your WebSocket ready: **{bool(session and session.ready.is_set())}**",
