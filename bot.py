@@ -9,7 +9,7 @@ import threading
 import re
 import json
 import asyncio
-import sqlite3
+from db_compat import db
 from datetime import datetime, timezone
 
 import discord
@@ -33,7 +33,7 @@ if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing from .env")
 
 GUILD = discord.Object(id=GTOP_GUILD_ID)
-DB_PATH = "gbop.db"
+DB_PATH = "Supabase PostgreSQL"
 
 intents = discord.Intents.default()
 intents.members = True
@@ -46,10 +46,7 @@ tree = app_commands.CommandTree(client)
 # DATABASE
 # -----------------------------
 
-def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+
 
 
 def now():
