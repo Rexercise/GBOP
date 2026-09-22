@@ -7,8 +7,11 @@ import os
 import secrets
 import time
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from db_compat import db
 from typing import Any
 from urllib.parse import urlencode
 
