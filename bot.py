@@ -1782,18 +1782,18 @@ async def entry(
 
     selected_id = 0
 
-if trade_id:
-    selected_id = trade_id_from_number(
-        interaction.user.id,
-        trade_id
-    )
-
-    if selected_id is None:
-        await interaction.response.send_message(
-            f"❌ Trade #{trade_id} could not be found.",
-            ephemeral=True
+    if trade_id:
+        selected_id = trade_id_from_number(
+            interaction.user.id,
+            trade_id
         )
-        return
+
+        if selected_id is None:
+            await interaction.response.send_message(
+                f"❌ Trade #{trade_id} could not be found.",
+                ephemeral=True
+            )
+            return
 
     if selected_id:
         row = get_thesis(
@@ -1823,21 +1823,21 @@ if trade_id:
         if len(rows) > 1:
             lines = [
                 "**You have multiple open trades.**",
-"Run `/entry` again and enter the Trade #:",
+                "Run `/entry` again and enter the Trade #:",
             ]
 
-for row in rows[:10]:
-    visible_number = trade_number_for_id(
-        interaction.user.id,
-        row["id"]
-    )
+            for row in rows[:10]:
+                visible_number = trade_number_for_id(
+                    interaction.user.id,
+                    row["id"]
+                )
 
-    lines.append(
-        f"• `#{visible_number}` — "
-        f"{row['asset']} | "
-        f"{row['direction']} | "
-        f"{row['play']}"
-    )
+                lines.append(
+                    f"• `#{visible_number}` — "
+                    f"{row['asset']} | "
+                    f"{row['direction']} | "
+                    f"{row['play']}"
+                )
 
             await interaction.response.send_message(
                 "\n".join(lines),
@@ -2024,20 +2024,20 @@ async def close_member_trade(
     if not await require_member(interaction):
         return
 
-selected_id = 0
+    selected_id = 0
 
-if trade_id:
-    selected_id = trade_id_from_number(
-        interaction.user.id,
-        trade_id
-    )
-
-    if selected_id is None:
-        await interaction.response.send_message(
-            f"❌ Trade #{trade_id} could not be found.",
-            ephemeral=True
+    if trade_id:
+        selected_id = trade_id_from_number(
+            interaction.user.id,
+            trade_id
         )
-        return
+
+        if selected_id is None:
+            await interaction.response.send_message(
+                f"❌ Trade #{trade_id} could not be found.",
+                ephemeral=True
+            )
+            return
 
     if selected_id:
         row = get_thesis(
@@ -2070,21 +2070,21 @@ if trade_id:
         if len(rows) > 1:
             lines = [
                 "**You have multiple open trades.**",
-"Run `/close` again and choose the Trade #:",
+                "Run `/close` again and choose the Trade #:",
             ]
 
-for row in rows[:10]:
-    visible_number = trade_number_for_id(
-        interaction.user.id,
-        row["id"]
-    )
+            for row in rows[:10]:
+                visible_number = trade_number_for_id(
+                    interaction.user.id,
+                    row["id"]
+                )
 
-    lines.append(
-        f"• `#{visible_number}` — "
-        f"{row['asset']} | "
-        f"{row['direction']} | "
-        f"{row['play']}"
-    )
+                lines.append(
+                    f"• `#{visible_number}` — "
+                    f"{row['asset']} | "
+                    f"{row['direction']} | "
+                    f"{row['play']}"
+                )
 
             await interaction.response.send_message(
                 "\n".join(lines),
@@ -2564,7 +2564,7 @@ def permanently_delete_trade(user_id: int, trade_id: int):
             "error": f"Trade #{visible_trade_number} was not found."
         }
     preview = get_trade_delete_preview(user_id, trade_id)    
-if preview is None:
+    if preview is None:
         return {
             "ok": False,
             "error": "No matching trade was found.",
@@ -2703,24 +2703,24 @@ async def deletetrade(
     if not await require_member(interaction):
         return
 
-visible_trade_number = trade_id
+    visible_trade_number = trade_id
 
-internal_trade_id = trade_id_from_number(
-    interaction.user.id,
-    visible_trade_number
-)
-
-if internal_trade_id is None:
-    await interaction.response.send_message(
-        f"❌ Trade #{visible_trade_number} could not be found.",
-        ephemeral=True
+    internal_trade_id = trade_id_from_number(
+        interaction.user.id,
+        visible_trade_number
     )
-    return
 
-preview = get_trade_delete_preview(
-    interaction.user.id,
-    internal_trade_id
-)
+    if internal_trade_id is None:
+        await interaction.response.send_message(
+            f"❌ Trade #{visible_trade_number} could not be found.",
+            ephemeral=True
+        )
+        return
+
+    preview = get_trade_delete_preview(
+        interaction.user.id,
+        internal_trade_id
+    )
 
     if preview is None:
         await interaction.response.send_message(
@@ -4228,23 +4228,23 @@ def ai_delete_trade(user_id: int, args: dict):
             "error": "A trade ID is required for permanent deletion.",
         }
 
-visible_trade_number = int(trade_id)
+    visible_trade_number = int(trade_id)
 
-internal_trade_id = trade_id_from_number(
-    user_id,
-    visible_trade_number
-)
+    internal_trade_id = trade_id_from_number(
+        user_id,
+        visible_trade_number
+    )
 
-if internal_trade_id is None:
-    return {
-        "ok": False,
-        "error": f"Trade #{visible_trade_number} was not found."
-    }
+    if internal_trade_id is None:
+        return {
+            "ok": False,
+            "error": f"Trade #{visible_trade_number} was not found."
+        }
 
-preview = get_trade_delete_preview(
-    user_id,
-    internal_trade_id
-)
+    preview = get_trade_delete_preview(
+        user_id,
+        internal_trade_id
+    )
 
     if preview is None:
         return {
@@ -4265,7 +4265,7 @@ preview = get_trade_delete_preview(
 
     result = permanently_delete_trade(
         user_id,
-visible_trade_number,
+        visible_trade_number,
     )
 
     return result
