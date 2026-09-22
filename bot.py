@@ -4570,18 +4570,22 @@ GBOP_RT_LOCKS = {}
 
 
 def gbop_voice_member_allowed(member):
+    # Owner should never need a database lookup just to use GBOP voice.
+    if is_owner(member):
+        return True, None
+
     ensure_member_record(member)
     record = get_member_record(member.id)
 
-    if is_owner(member):
-        return True, None
     if not has_member_role(member):
         return False, "Missing GTOP member role."
     if record["revoked"]:
         return False, "GBOP access is revoked."
     if not record["activated"]:
         return False, "GBOP profile is not activated."
+
     return True, None
+    
 
 
 def gbop_safety_identifier(user_id: int):
@@ -5172,29 +5176,55 @@ class GBOPRealtimeManager:
             session.runner = asyncio.create_task(session.run())
             return session
 
-    async def preconnect_channel(self, voice_client, loop):
+        async def preconnect_channel(self, voice_client, loop):
         for member in getattr(voice_client.channel, "members", []):
             if member.bot:
                 continue
 
             try:
-                allowed, _ = gbop_voice_member_allowed(member)
-            except Exception:
-                allowed = False
+                allowed, _ = await asyncio.to_thread(
+                    gbop_voice_member_allowed,
+                    member,
+                )
+            except Exception as exc:
+                print(
+                    "[GBOP-RT] voice auth preconnect error:",
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
 
             if allowed:
                 await self.get_session(member, voice_client, loop)
 
     async def feed(self, member, voice_client, pcm24, loop):
-        try:
-            allowed, _ = gbop_voice_member_allowed(member)
-        except Exception:
-            return
+        # Do not hit Supabase again for every incoming audio packet
+        # once this member already has an authorized realtime session.
+        session = self.sessions.get(self.key(member))
 
-        if not allowed:
-            return
+        if session is None or session.closed:
+            try:
+                allowed, _ = await asyncio.to_thread(
+                    gbop_voice_member_allowed,
+                    member,
+                )
+            except Exception as exc:
+                print(
+                    "[GBOP-RT] voice auth error:",
+                    type(exc).__name__,
+                    exc,
+                )
+                return
 
-        session = await self.get_session(member, voice_client, loop)
+            if not allowed:
+                return
+
+            session = await self.get_session(
+                member,
+                voice_client,
+                loop,
+            )
+
         session.enqueue_audio(pcm24)
 
     async def close_guild(self, guild_id: int):
