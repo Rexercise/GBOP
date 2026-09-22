@@ -5175,7 +5175,7 @@ class GBOPRealtimeManager:
             self.sessions[key] = session
             session.runner = asyncio.create_task(session.run())
             return session
-async def preconnect_channel(self, voice_client, loop):
+    async def preconnect_channel(self, voice_client, loop):
         for member in getattr(voice_client.channel, "members", []):
             if member.bot:
                 continue
