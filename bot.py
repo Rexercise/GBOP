@@ -445,7 +445,58 @@ def get_thesis(thesis_id: int, user_id: int):
             user_id
         )).fetchone()
 
+def trade_number_for_id(user_id: int, thesis_id: int):
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT id
+            FROM theses
+            WHERE guild_id=? AND user_id=?
+            ORDER BY id ASC
+        """, (
+            GTOP_GUILD_ID,
+            user_id
+        )).fetchall()
 
+    for number, row in enumerate(rows, start=1):
+        if row["id"] == thesis_id:
+            return number
+
+    return None
+
+
+def trade_id_from_number(user_id: int, trade_number: int):
+    if trade_number <= 0:
+        return None
+
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT id
+            FROM theses
+            WHERE guild_id=? AND user_id=?
+            ORDER BY id ASC
+        """, (
+            GTOP_GUILD_ID,
+            user_id
+        )).fetchall()
+
+    if trade_number > len(rows):
+        return None
+
+    return rows[trade_number - 1]["id"]
+
+
+def next_trade_number(user_id: int):
+    with db() as conn:
+        count = conn.execute("""
+            SELECT COUNT(*)
+            FROM theses
+            WHERE guild_id=? AND user_id=?
+        """, (
+            GTOP_GUILD_ID,
+            user_id
+        )).fetchone()[0]
+
+    return int(count) + 1
 def thesis_used_r(thesis_id: int):
     with db() as conn:
         value = conn.execute("""
