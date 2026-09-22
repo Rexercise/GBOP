@@ -5,3 +5,4 @@ openai>=2.0
 python-dotenv>=1.1
 discord.py
 discord-ext-voice-recv
+psycopg[binary]>=3.2,<4
