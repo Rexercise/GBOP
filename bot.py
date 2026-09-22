@@ -1281,7 +1281,7 @@ async def save_member_trade(
         ))
 
         execution_id = cur.lastrowid
-trade_number = trade_number_for_id(interaction.user.id, trade_id)
+    trade_number = trade_number_for_id(interaction.user.id, trade_id)
     warnings = []
 
     tier_limit = tier_max_r(tier)
