@@ -68,8 +68,7 @@ if not GTOP_GUILD_ID:
     raise RuntimeError("GTOP_GUILD_ID is required in ../.env")
 if not GTOP_MEMBER_ROLE_ID:
     raise RuntimeError("GTOP_MEMBER_ROLE_ID is required in ../.env")
-if not DB_PATH.exists():
-    raise RuntimeError(f"GBOP database not found: {DB_PATH}")
+
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 app = FastAPI(title="GBOP Voice")
@@ -80,10 +79,7 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+
 
 
 
