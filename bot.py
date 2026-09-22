@@ -19,47 +19,66 @@ from discord import app_commands
 from dotenv import load_dotenv
 from openai import OpenAI
 import websockets
-# -------------------------------------------------
-# GBOP OPUS SAFETY NET
-# Keeps voice alive during brief DAVE transitions
-# without flooding Render logs.
-# -------------------------------------------------
-from discord.ext.voice_recv import router as voice_recv_router
+# GBOP voice receive repair for the pinned porgeeratad receiver.
+from discord.ext.voice_recv import opus as gbop_recv_opus
+
+GBOP_RX_STATS = {"decoded": 0, "opus_errors": 0, "concealed": 0,
+                 "dave_errors": 0}
+_gbop_original_decode = gbop_recv_opus.PacketDecoder._decode_packet
+_gbop_original_process = gbop_recv_opus.PacketDecoder._process_packet
 
 
-def _gbop_resilient_packet_router(self):
-    while not self._end_thread.is_set():
-        self.waiter.wait()
-
-        with self._lock:
-            for decoder in list(self.waiter.items):
-                try:
-                    data = decoder.pop_data()
-
-                except discord.opus.OpusError as exc:
-                    now_mono = time.monotonic()
-                    last_log = getattr(
-                        self,
-                        "_gbop_last_opus_error_log",
-                        0.0,
-                    )
-
-                    if now_mono - last_log >= 5.0:
-                        print(
-                            "[GBOP-RT] transient Opus packet dropped:",
-                            repr(exc),
-                        )
-                        self._gbop_last_opus_error_log = now_mono
-
-                    continue
-
-                if data is not None:
-                    self.sink.write(data.source, data)
+def _gbop_decode_packet(self, packet):
+    if not packet:
+        # The fork's FEC path peeks at an encrypted future packet. Use Opus
+        # packet-loss concealment instead; decrypt that packet when popped.
+        GBOP_RX_STATS["concealed"] += 1
+        return packet, self._decoder.decode(None, fec=False)
+    return _gbop_original_decode(self, packet)
 
 
-voice_recv_router.PacketRouter._do_run = _gbop_resilient_packet_router
+def _gbop_process_packet(self, packet):
+    try:
+        result = _gbop_original_process(self, packet)
+    except discord.opus.OpusError as exc:
+        GBOP_RX_STATS["opus_errors"] += 1
+        # Advance sequence tracking even when a real packet cannot decode.
+        self._last_seq = packet.sequence
+        self._last_ts = packet.timestamp
+        tick = time.monotonic()
+        if tick - getattr(self, "_gbop_last_error", 0.0) >= 5.0:
+            self._gbop_last_error = tick
+            print("[GBOP-RX] Opus decode failed; totals:", dict(GBOP_RX_STATS),
+                  type(exc).__name__)
+        return None
+    GBOP_RX_STATS["decoded"] += 1
+    return result
 
-print("[GBOP-RT] Opus safety net installed")
+
+class _GBOPReceiveLogFilter(logging.Filter):
+    def __init__(self):
+        super().__init__()
+        self.last_dave_log = 0.0
+
+    def filter(self, record):
+        if str(record.msg).startswith("DAVE decrypt failed"):
+            GBOP_RX_STATS["dave_errors"] += 1
+            tick = time.monotonic()
+            if tick - self.last_dave_log >= 5.0:
+                self.last_dave_log = tick
+                print("[GBOP-RX]", record.getMessage())
+            return False
+        return record.levelno >= logging.INFO
+
+
+gbop_recv_opus.PacketDecoder._decode_packet = _gbop_decode_packet
+gbop_recv_opus.PacketDecoder._process_packet = _gbop_process_packet
+_gbop_opus_logger = logging.getLogger("discord.ext.voice_recv.opus")
+_gbop_opus_logger.setLevel(logging.DEBUG)
+_gbop_opus_logger.addFilter(_GBOPReceiveLogFilter())
+# Hide repeating informational sender reports; preserve warnings/errors.
+logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+print("[GBOP-RT] receive repair v1 installed")
 load_dotenv()
 
 # Render captures stdout; flush each line so startup progress is visible.
@@ -4822,6 +4841,10 @@ class GBOPRealtimeSession:
         self.output_source = None
         self.output_item_id = None
         self.tool_output_pending = False
+        self.received_audio_bytes = 0
+        self.sent_audio_bytes = 0
+        self.speech_starts = 0
+        self.speech_stops = 0
 
     def instructions(self):
         member_state = ai_member_context(self.member.id)
@@ -4916,6 +4939,7 @@ class GBOPRealtimeSession:
         if self.closed or not pcm24_mono:
             return
 
+        self.received_audio_bytes += len(pcm24_mono)
         try:
             self.audio_queue.put_nowait(pcm24_mono)
         except asyncio.QueueFull:
@@ -4930,17 +4954,32 @@ class GBOPRealtimeSession:
                 pass
 
     async def sender_loop(self):
+        # 20 ms at 24 kHz, mono, signed 16-bit PCM.
+        silence = bytes(960)
+        silence_frames_left = 0
         while not self.closed:
-            pcm = await self.audio_queue.get()
+            try:
+                if silence_frames_left:
+                    pcm = await asyncio.wait_for(self.audio_queue.get(), 0.02)
+                else:
+                    pcm = await self.audio_queue.get()
+                real_audio = True
+                # Up to 600 ms of trailing silence lets server VAD end a turn
+                # even when Discord stops transmitting after a short tail.
+                silence_frames_left = 30
+            except asyncio.TimeoutError:
+                pcm = silence
+                real_audio = False
+                silence_frames_left -= 1
             ok = await self.send_event(
-                {
-                    "type": "input_audio_buffer.append",
-                    "audio": base64.b64encode(pcm).decode("ascii"),
-                },
+                {"type": "input_audio_buffer.append",
+                 "audio": base64.b64encode(pcm).decode("ascii")},
                 quiet=True,
             )
             if not ok:
                 raise RuntimeError("Realtime audio send failed.")
+            if real_audio:
+                self.sent_audio_bytes += len(pcm)
 
     async def refresh_context(self):
         await self.send_event(
@@ -5012,7 +5051,14 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "input_audio_buffer.speech_started":
+                self.speech_starts += 1
+                print("[GBOP-RT] speech started:", self.member.id)
                 await gbop_output_manager(self.member.guild.id).interrupt()
+                continue
+
+            if event_type == "input_audio_buffer.speech_stopped":
+                self.speech_stops += 1
+                print("[GBOP-RT] speech stopped:", self.member.id)
                 continue
 
             if event_type == "response.output_audio.delta":
@@ -5068,68 +5114,61 @@ class GBOPRealtimeSession:
 
     async def run(self):
         backoff = 1.0
-
         while not self.closed:
             self.ready.clear()
-
+            receiver = sender = None
+            retry = False
             try:
                 print("[GBOP-RT] connecting:", self.member, GBOP_REALTIME_MODEL)
                 self.websocket = await self.connect_ws()
                 self.last_error = None
-
                 receiver = asyncio.create_task(self.receiver_loop())
-
-                await self.send_event(self.session_update())
+                update = await asyncio.to_thread(self.session_update)
+                if not await self.send_event(update):
+                    raise RuntimeError("Realtime session update send failed")
                 await asyncio.wait_for(self.ready.wait(), timeout=10)
-
                 sender = asyncio.create_task(self.sender_loop())
-
                 print("[GBOP-RT] READY:", self.member)
-
-                done, pending = await asyncio.wait(
-                    {receiver, sender},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                for task in pending:
-                    task.cancel()
-
-                for task in done:
-                    exc = task.exception()
-                    if exc is not None:
-                        raise exc
-
                 backoff = 1.0
-
+                done, _ = await asyncio.wait(
+                    {receiver, sender}, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task.result()
+                if not self.closed:
+                    raise RuntimeError("Realtime connection ended")
             except asyncio.CancelledError:
                 break
-
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 print("[GBOP-RT] session error:", self.member, self.last_error)
-
-                if self.closed:
-                    break
-
-                await asyncio.sleep(backoff)
-                backoff = min(8.0, backoff * 2)
-
+                retry = not self.closed
             finally:
+                tasks = [task for task in (receiver, sender) if task is not None]
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 ws = self.websocket
                 self.websocket = None
                 self.ready.clear()
-
                 if ws is not None:
                     try:
                         await ws.close()
                     except Exception:
                         pass
+                # Do not replay stale queued speech into a fresh conversation.
+                while not self.audio_queue.empty():
+                    self.audio_queue.get_nowait()
+            if retry:
+                await asyncio.sleep(backoff)
+                backoff = min(8.0, backoff * 2)
 
     async def close(self):
         self.closed = True
 
         if self.runner is not None:
             self.runner.cancel()
+            await asyncio.gather(self.runner, return_exceptions=True)
 
         if self.output_source is not None:
             self.output_source.abort()
@@ -5273,7 +5312,7 @@ class GBOPRealtimeSink(voice_recv.AudioSink):
         if not pcm24:
             return
 
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             GBOP_REALTIME_MANAGER.feed(
                 member,
                 self.voice_client_ref,
@@ -5282,6 +5321,15 @@ class GBOPRealtimeSink(voice_recv.AudioSink):
             ),
             self.loop,
         )
+        future.add_done_callback(self._feed_done)
+
+    @staticmethod
+    def _feed_done(future):
+        if future.cancelled():
+            return
+        error = future.exception()
+        if error is not None:
+            print("[GBOP-RX] audio handoff failed:", type(error).__name__, error)
 
     def cleanup(self):
         self.closed = True
@@ -5344,6 +5392,13 @@ async def gbop_voice_health_text(interaction):
             ),
             f"Realtime model: **{GBOP_REALTIME_MODEL}**",
             f"Realtime voice: **{GBOP_REALTIME_VOICE}**",
+            "Repair build: **receive-v1**",
+            f"Process-wide decoded / Opus errors: **{GBOP_RX_STATS['decoded']} / {GBOP_RX_STATS['opus_errors']}**",
+            f"Process-wide DAVE errors / concealed: **{GBOP_RX_STATS['dave_errors']} / {GBOP_RX_STATS['concealed']}**",
+            f"DAVE ready: **{bool(getattr(getattr(getattr(vc, '_connection', None), 'dave_session', None), 'ready', False))}**",
+            f"Your received audio: **{session.received_audio_bytes // 48 if session else 0} ms**",
+            f"Your audio sent to OpenAI: **{session.sent_audio_bytes // 48 if session else 0} ms**",
+            f"Your speech starts / stops: **{session.speech_starts if session else 0} / {session.speech_stops if session else 0}**",
             f"Your session exists: **{session is not None}**",
             f"Your WebSocket ready: **{bool(session and session.ready.is_set())}**",
             (
