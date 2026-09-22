@@ -19,67 +19,94 @@ from discord import app_commands
 from dotenv import load_dotenv
 from openai import OpenAI
 import websockets
-# GBOP voice receive repair for the pinned porgeeratad receiver.
+# Receive adapter for the pinned porgeeratad receiver and discord.py 2.7.1.
+# Never send failed DAVE ciphertext to Opus. Preserve 20 ms packet timing.
 from discord.ext.voice_recv import opus as gbop_recv_opus
+import davey
 
 GBOP_RX_STATS = {"decoded": 0, "opus_errors": 0, "concealed": 0,
-                 "dave_errors": 0}
-_gbop_original_decode = gbop_recv_opus.PacketDecoder._decode_packet
-_gbop_original_process = gbop_recv_opus.PacketDecoder._process_packet
+                 "dave_errors": 0, "dave_wait": 0, "unknown_sender": 0,
+                 "dave_decrypted": 0, "plain": 0}
 
 
-def _gbop_decode_packet(self, packet):
-    if not packet:
-        # The fork's FEC path peeks at an encrypted future packet. Use Opus
-        # packet-loss concealment instead; decrypt that packet when popped.
-        GBOP_RX_STATS["concealed"] += 1
-        return packet, self._decoder.decode(None, fec=False)
-    return _gbop_original_decode(self, packet)
+def _gbop_rx_note(decoder, reason):
+    tick = time.monotonic()
+    if tick - getattr(decoder, "_gbop_last_error", 0.0) >= 5.0:
+        decoder._gbop_last_error = tick
+        state = getattr(decoder.sink.voice_client, "_connection", None)
+        session = getattr(state, "dave_session", None)
+        print("[GBOP-RX]", reason, "ssrc=", decoder.ssrc,
+              "protocol=", getattr(state, "dave_protocol_version", None),
+              "ready=", bool(session and session.ready),
+              "sender_known=", decoder._cached_id is not None,
+              "totals=", dict(GBOP_RX_STATS))
 
 
 def _gbop_process_packet(self, packet):
+    member = self._get_cached_member()
+    if member is None:
+        self._cached_id = self.sink.voice_client._get_id_from_ssrc(self.ssrc)
+        member = self._get_cached_member()
+    payload = bytes(packet.decrypted_data or b"") if packet else None
+    usable = bool(packet and payload)
+    if usable and payload != b"\xf8\xff\xfe":
+        state = getattr(self.sink.voice_client, "_connection", None)
+        session = getattr(state, "dave_session", None)
+        protocol = getattr(state, "dave_protocol_version", 0)
+        if protocol:
+            if session is None or not session.ready:
+                GBOP_RX_STATS["dave_wait"] += 1
+                _gbop_rx_note(self, "Waiting for DAVE keys")
+                usable = False
+            elif self._cached_id is None:
+                GBOP_RX_STATS["unknown_sender"] += 1
+                _gbop_rx_note(self, "Waiting for sender mapping")
+                usable = False
+            else:
+                try:
+                    payload = bytes(session.decrypt(
+                        int(self._cached_id), davey.MediaType.audio, payload))
+                    usable = bool(payload)
+                    GBOP_RX_STATS["dave_decrypted"] += 1
+                except Exception as exc:
+                    GBOP_RX_STATS["dave_errors"] += 1
+                    _gbop_rx_note(self, "DAVE decrypt failed: " + type(exc).__name__)
+                    usable = False
+        else:
+            GBOP_RX_STATS["plain"] += 1
+    pcm = b""
     try:
-        result = _gbop_original_process(self, packet)
-    except discord.opus.OpusError as exc:
-        GBOP_RX_STATS["opus_errors"] += 1
-        # Advance sequence tracking even when a real packet cannot decode.
+        if self.sink.wants_opus():
+            if not usable:
+                return None
+            packet.decrypted_data = payload
+        elif usable:
+            try:
+                pcm = self._decoder.decode(payload, fec=False)
+                GBOP_RX_STATS["decoded"] += 1
+            except discord.opus.OpusError:
+                GBOP_RX_STATS["opus_errors"] += 1
+                _gbop_rx_note(self, "Opus decode failed after receive processing")
+                # Silence, not corrupt audio or a missing interval, reaches VAD.
+                pcm = bytes(3840)
+                GBOP_RX_STATS["concealed"] += 1
+        else:
+            # Do not peek/decrypt future jitter-buffer packets for FEC: doing
+            # so consumes a DAVE frame before its normal position in the stream.
+            pcm = bytes(3840)
+            GBOP_RX_STATS["concealed"] += 1
+        return gbop_recv_opus.VoiceData(packet, member, pcm=pcm)
+    finally:
         self._last_seq = packet.sequence
         self._last_ts = packet.timestamp
-        tick = time.monotonic()
-        if tick - getattr(self, "_gbop_last_error", 0.0) >= 5.0:
-            self._gbop_last_error = tick
-            print("[GBOP-RX] Opus decode failed; totals:", dict(GBOP_RX_STATS),
-                  type(exc).__name__)
-        return None
-    GBOP_RX_STATS["decoded"] += 1
-    return result
 
 
-class _GBOPReceiveLogFilter(logging.Filter):
-    def __init__(self):
-        super().__init__()
-        self.last_dave_log = 0.0
-
-    def filter(self, record):
-        if str(record.msg).startswith("DAVE decrypt failed"):
-            GBOP_RX_STATS["dave_errors"] += 1
-            tick = time.monotonic()
-            if tick - self.last_dave_log >= 5.0:
-                self.last_dave_log = tick
-                print("[GBOP-RX]", record.getMessage())
-            return False
-        return record.levelno >= logging.INFO
-
-
-gbop_recv_opus.PacketDecoder._decode_packet = _gbop_decode_packet
 gbop_recv_opus.PacketDecoder._process_packet = _gbop_process_packet
-_gbop_opus_logger = logging.getLogger("discord.ext.voice_recv.opus")
-_gbop_opus_logger.setLevel(logging.DEBUG)
-_gbop_opus_logger.addFilter(_GBOPReceiveLogFilter())
-# Hide repeating informational sender reports; preserve warnings/errors.
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
-print("[GBOP-RT] receive repair v1 installed")
+logging.getLogger("discord.ext.voice_recv.gateway").setLevel(logging.WARNING)
+print("[GBOP-RT] receive repair v2 installed; discord.py", discord.__version__)
 load_dotenv()
+GBOP_BARGE_IN_RMS = max(100, int(os.getenv("GBOP_BARGE_IN_RMS", "900")))
 
 # Render captures stdout; flush each line so startup progress is visible.
 if hasattr(sys.stdout, "reconfigure"):
@@ -4711,31 +4738,16 @@ class GBOPRealtimeAudioSource(discord.AudioSource):
 
     def read(self):
         with self.condition:
-            while (
-                len(self.buffer) < self.FRAME_BYTES
-                and not self.finished
-                and not self.aborted
-            ):
-                self.condition.wait(timeout=0.25)
-
             if self.aborted:
                 return b""
-
-            if len(self.buffer) >= self.FRAME_BYTES:
-                chunk = bytes(self.buffer[: self.FRAME_BYTES])
-                del self.buffer[: self.FRAME_BYTES]
-                self.played_bytes += len(chunk)
-                return chunk
-
-            if self.finished and self.buffer:
-                chunk = bytes(self.buffer)
-                self.buffer.clear()
-                if len(chunk) < self.FRAME_BYTES:
-                    chunk += b"\x00" * (self.FRAME_BYTES - len(chunk))
-                self.played_bytes += len(chunk)
-                return chunk
-
-            return b""
+            if not self.buffer:
+                return b"" if self.finished else bytes(self.FRAME_BYTES)
+            count = min(len(self.buffer), self.FRAME_BYTES)
+            chunk = bytes(self.buffer[:count])
+            del self.buffer[:count]
+            # Exclude padding and underrun silence from truncation time.
+            self.played_bytes += count
+            return chunk.ljust(self.FRAME_BYTES, b"\x00")
 
     def cleanup(self):
         self.abort()
@@ -4802,6 +4814,7 @@ class GBOPOutputManager:
             self.session = None
             self.voice_client = None
             self.item_id = None
+            self.response_id = None
 
     async def begin(self, session, voice_client, item_id, response_id):
         await self.interrupt(auto_cancelled_session=session)
@@ -4831,6 +4844,7 @@ class GBOPOutputManager:
             self.session = None
             self.voice_client = None
             self.item_id = None
+            self.response_id = None
 
 
 def gbop_output_manager(guild_id: int):
@@ -4866,6 +4880,10 @@ class GBOPRealtimeSession:
         self.sent_audio_bytes = 0
         self.speech_starts = 0
         self.speech_stops = 0
+        self.local_speech_ms = 0.0
+        self.local_last_frame_at = 0.0
+        self.local_interrupt_task = None
+        self.local_interrupts = 0
 
     def instructions(self):
         member_state = ai_member_context(self.member.id)
@@ -4874,6 +4892,7 @@ class GBOPRealtimeSession:
             GTOP_AI_PROMPT
             + "\n\nLIVE DISCORD VOICE MODE\n"
             + "- This voice channel is in dedicated GBOP mode. Treat authorized member speech as addressed to you.\n"
+            + "- If speech is unclear or incomplete, ask for a brief repeat; never invent what the member said.\n"
             + "- Respond naturally and quickly. Default to 1-3 short sentences unless detail is requested.\n"
             + "- Do not read markdown, headings, tables, or long lists aloud.\n"
             + "- If exactly one fact is missing for an action, ask only for that fact.\n"
@@ -4948,7 +4967,7 @@ class GBOPRealtimeSession:
             return False
 
         try:
-            await self.websocket.send(json.dumps(event))
+            await asyncio.wait_for(self.websocket.send(json.dumps(event)), timeout=3.0)
             return True
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
@@ -4965,6 +4984,9 @@ class GBOPRealtimeSession:
         if time.monotonic() - captured_at > 1.0:
             self.dropped_audio_frames += 1
             return
+        # A sustained, audible signal can stop local playback before the
+        # WebSocket VAD round trip. Server VAD still decides conversational turns.
+        self.check_local_interruption(pcm24_mono, captured_at)
         frame = (captured_at, pcm24_mono)
         try:
             self.audio_queue.put_nowait(frame)
@@ -4979,6 +5001,33 @@ class GBOPRealtimeSession:
                 self.audio_queue.put_nowait(frame)
             except asyncio.QueueFull:
                 pass
+
+    def check_local_interruption(self, pcm, captured_at):
+        manager = gbop_output_manager(self.member.guild.id)
+        if manager.source is None or manager.source.aborted:
+            self.local_speech_ms = 0.0
+            return
+        samples = array("h")
+        samples.frombytes(pcm)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        if not samples:
+            return
+        rms_squared = sum(int(v) * int(v) for v in samples) / len(samples)
+        if captured_at - self.local_last_frame_at > 0.15:
+            self.local_speech_ms = 0.0
+        self.local_last_frame_at = captured_at
+        threshold = GBOP_BARGE_IN_RMS
+        if rms_squared >= threshold * threshold:
+            self.local_speech_ms += len(pcm) / 48.0
+        else:
+            self.local_speech_ms = 0.0
+        if (self.local_speech_ms >= 100.0
+                and (self.local_interrupt_task is None or self.local_interrupt_task.done())):
+            self.local_speech_ms = 0.0
+            self.local_interrupts += 1
+            self.turn_epoch += 1
+            self.local_interrupt_task = self.start_background(manager.interrupt())
 
     async def sender_loop(self):
         # 20 ms at 24 kHz, mono, signed 16-bit PCM.
@@ -5076,6 +5125,9 @@ class GBOPRealtimeSession:
                     or response_id in self.interrupted_responses):
                 return
             for item in items:
+                if (self.closed or epoch != self.turn_epoch
+                        or response_id in self.interrupted_responses):
+                    break
                 await self.execute_tool(item)
             await self.refresh_context()
             # An action already started may finish after an interruption, but
@@ -5188,6 +5240,13 @@ class GBOPRealtimeSession:
                 response_id = response.get("id")
                 if self.active_response_id == response_id:
                     self.active_response_id = None
+                manager = gbop_output_manager(self.member.guild.id)
+                if manager.session is self and manager.response_id == response_id:
+                    if manager.source is not None:
+                        manager.source.finish()
+                if status == "failed":
+                    self.last_error = str(response.get("status_details") or "Response failed")
+                    print("[GBOP-RT] response failed:", self.last_error)
                 items = self.pending_tool_items.pop(response_id, [])
                 if (items and status == "completed" and not self.user_speaking
                         and response_id not in self.interrupted_responses):
@@ -5457,7 +5516,7 @@ def gbop_start_realtime_listener(voice_client):
         )
     )
 
-    print("[GBOP-RT] voice-v6 realtime Discord audio bridge ACTIVE")
+    print("[GBOP-RT] voice-v7 realtime Discord audio bridge ACTIVE")
 
 
 async def gbop_voice_health_text(interaction):
@@ -5488,13 +5547,16 @@ async def gbop_voice_health_text(interaction):
             ),
             f"Realtime model: **{GBOP_REALTIME_MODEL}**",
             f"Realtime voice: **{GBOP_REALTIME_VOICE}**",
-            "Repair build: **voice-v6 / receive-v1**",
+            "Repair build: **voice-v7 / receive-v2**",
             f"Process-wide decoded / Opus errors: **{GBOP_RX_STATS['decoded']} / {GBOP_RX_STATS['opus_errors']}**",
             f"Process-wide DAVE errors / concealed: **{GBOP_RX_STATS['dave_errors']} / {GBOP_RX_STATS['concealed']}**",
             f"DAVE ready: **{bool(getattr(getattr(getattr(vc, '_connection', None), 'dave_session', None), 'ready', False))}**",
             f"Your received audio: **{session.received_audio_bytes // 48 if session else 0} ms**",
             f"Your audio sent to OpenAI: **{session.sent_audio_bytes // 48 if session else 0} ms**",
             f"Your input queue / dropped frames: **{session.audio_queue.qsize() if session else 0} / {session.dropped_audio_frames if session else 0}**",
+            f"Local interruptions: **{session.local_interrupts if session else 0}**",
+            f"Receive decrypted / key waits / unknown sender: **{GBOP_RX_STATS['dave_decrypted']} / {GBOP_RX_STATS['dave_wait']} / {GBOP_RX_STATS['unknown_sender']}**",
+            f"DAVE protocol: **{getattr(getattr(vc, '_connection', None), 'dave_protocol_version', 0)}**",
             f"Your speech starts / stops: **{session.speech_starts if session else 0} / {session.speech_stops if session else 0}**",
             f"Your session exists: **{session is not None}**",
             f"Your WebSocket ready: **{bool(session and session.ready.is_set())}**",
