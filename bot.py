@@ -5359,7 +5359,37 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "input_audio_buffer.speech_started":
-                await gbop_output_manager(self.member.guild.id).interrupt()
+                # OpenAI's Realtime server already cancels the active response
+                # when interrupt_response=True. Locally stop Discord playback
+                # immediately, but do NOT send a second response.cancel/truncate
+                # from here: that races the server-side cancellation and can
+                # produce delayed/stale replies after natural barge-in.
+                manager = gbop_output_manager(self.member.guild.id)
+                source = manager.source
+
+                if source is not None:
+                    source.abort()
+
+                vc = manager.voice_client
+                if vc is not None and vc.is_playing():
+                    try:
+                        if hasattr(vc, "stop_playing"):
+                            vc.stop_playing()
+                        else:
+                            discord.VoiceClient.stop(vc)
+                    except Exception as exc:
+                        print(
+                            "[GBOP-RT] local barge-in stop error:",
+                            type(exc).__name__,
+                            exc,
+                        )
+
+                manager.source = None
+                manager.session = None
+                manager.voice_client = None
+                manager.item_id = None
+                self.output_source = None
+                self.output_item_id = None
                 continue
 
             if event_type == "response.output_audio.delta":
