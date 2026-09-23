@@ -5164,6 +5164,8 @@ class GBOPRealtimeSession:
         self.output_source = None
         self.output_item_id = None
         self.tool_output_pending = False
+        self._voice_turn_count = 0
+        self._logged_audio_items = set()
 
     def instructions(self):
         member_state = ai_member_context(self.member.id)
@@ -5350,6 +5352,7 @@ class GBOPRealtimeSession:
 
             if event_type == "session.updated":
                 self.ready.set()
+                print("[GBOP-RT-EVENT] session.updated:", self.member)
                 continue
 
             if event_type == "error":
@@ -5359,6 +5362,15 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "input_audio_buffer.speech_started":
+                self._voice_turn_count += 1
+                print(
+                    "[GBOP-RT-EVENT] speech_started:",
+                    self.member,
+                    "turn=",
+                    self._voice_turn_count,
+                    "item_id=",
+                    event.get("item_id"),
+                )
                 # OpenAI's Realtime server already cancels the active response
                 # when interrupt_response=True. Locally stop Discord playback
                 # immediately, but do NOT send a second response.cancel/truncate
@@ -5392,6 +5404,31 @@ class GBOPRealtimeSession:
                 self.output_item_id = None
                 continue
 
+            if event_type == "input_audio_buffer.speech_stopped":
+                print(
+                    "[GBOP-RT-EVENT] speech_stopped:",
+                    self.member,
+                    "turn=",
+                    self._voice_turn_count,
+                    "item_id=",
+                    event.get("item_id"),
+                )
+                continue
+
+            if event_type == "response.created":
+                response = event.get("response") or {}
+                print(
+                    "[GBOP-RT-EVENT] response.created:",
+                    self.member,
+                    "turn=",
+                    self._voice_turn_count,
+                    "response_id=",
+                    response.get("id"),
+                    "status=",
+                    response.get("status"),
+                )
+                continue
+
             if event_type == "response.output_audio.delta":
                 delta = event.get("delta")
                 if not delta:
@@ -5405,6 +5442,17 @@ class GBOPRealtimeSession:
                 item_id = event.get("item_id")
                 manager = gbop_output_manager(self.member.guild.id)
 
+                if item_id not in self._logged_audio_items:
+                    self._logged_audio_items.add(item_id)
+                    print(
+                        "[GBOP-RT-EVENT] output_audio.start:",
+                        self.member,
+                        "turn=",
+                        self._voice_turn_count,
+                        "item_id=",
+                        item_id,
+                    )
+
                 if self.output_source is None or self.output_item_id != item_id:
                     self.output_source = await manager.begin(
                         self,
@@ -5417,6 +5465,17 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "response.output_audio.done":
+                item_id = event.get("item_id")
+                print(
+                    "[GBOP-RT-EVENT] output_audio.done:",
+                    self.member,
+                    "turn=",
+                    self._voice_turn_count,
+                    "item_id=",
+                    item_id,
+                )
+                if item_id in self._logged_audio_items:
+                    self._logged_audio_items.discard(item_id)
                 if self.output_source is not None:
                     self.output_source.finish()
                 self.output_source = None
@@ -5438,6 +5497,18 @@ class GBOPRealtimeSession:
             if event_type == "response.done":
                 response = event.get("response") or {}
                 status = response.get("status")
+                print(
+                    "[GBOP-RT-EVENT] response.done:",
+                    self.member,
+                    "turn=",
+                    self._voice_turn_count,
+                    "response_id=",
+                    response.get("id"),
+                    "status=",
+                    status,
+                    "status_details=",
+                    response.get("status_details"),
+                )
 
                 if self.tool_output_pending and status not in ("cancelled", "failed"):
                     self.tool_output_pending = False
@@ -5701,6 +5772,10 @@ async def gbop_voice_health_text(interaction):
             f"Max response tokens: **{GBOP_REALTIME_MAX_OUTPUT_TOKENS}**",
             f"Your session exists: **{session is not None}**",
             f"Your WebSocket ready: **{bool(session and session.ready.is_set())}**",
+            f"Detected voice turns: **{session._voice_turn_count if session else 0}**",
+            f"Receive decoded frames: **{GBOP_RX_STATS.get('decoded', 0)}**",
+            f"Receive DAVE errors: **{GBOP_RX_STATS.get('dave_errors', 0)}**",
+            f"Receive Opus errors: **{GBOP_RX_STATS.get('opus_errors', 0)}**",
             (
                 f"Your last error: "
                 f"**{session.last_error if session and session.last_error else 'None'}**"
