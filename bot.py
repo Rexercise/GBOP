@@ -20,6 +20,129 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import websockets
 
+# -------------------------------------------------
+# GBOP DISCORD RECEIVE REPAIR V2
+# Pinned discord.py 2.7.1 + porgeeratad voice_recv:
+# keep a single bad/DAVE-transition Opus packet from
+# killing the entire Discord receive listener.
+# -------------------------------------------------
+from discord.ext.voice_recv import opus as gbop_recv_opus
+import davey
+
+GBOP_RX_STATS = {
+    "decoded": 0,
+    "opus_errors": 0,
+    "concealed": 0,
+    "dave_errors": 0,
+    "dave_wait": 0,
+    "unknown_sender": 0,
+    "dave_decrypted": 0,
+    "plain": 0,
+}
+
+
+def _gbop_rx_note(decoder, reason):
+    tick = time.monotonic()
+    if tick - getattr(decoder, "_gbop_last_error", 0.0) >= 5.0:
+        decoder._gbop_last_error = tick
+        state = getattr(decoder.sink.voice_client, "_connection", None)
+        session = getattr(state, "dave_session", None)
+        print(
+            "[GBOP-RX]",
+            reason,
+            "ssrc=",
+            decoder.ssrc,
+            "protocol=",
+            getattr(state, "dave_protocol_version", None),
+            "ready=",
+            bool(session and session.ready),
+            "sender_known=",
+            decoder._cached_id is not None,
+            "totals=",
+            dict(GBOP_RX_STATS),
+        )
+
+
+def _gbop_process_packet(self, packet):
+    member = self._get_cached_member()
+    if member is None:
+        self._cached_id = self.sink.voice_client._get_id_from_ssrc(self.ssrc)
+        member = self._get_cached_member()
+
+    payload = bytes(packet.decrypted_data or b"") if packet else None
+    usable = bool(packet and payload)
+
+    if usable and payload != b"\xf8\xff\xfe":
+        state = getattr(self.sink.voice_client, "_connection", None)
+        session = getattr(state, "dave_session", None)
+        protocol = getattr(state, "dave_protocol_version", 0)
+
+        if protocol:
+            if session is None or not session.ready:
+                GBOP_RX_STATS["dave_wait"] += 1
+                _gbop_rx_note(self, "Waiting for DAVE keys")
+                usable = False
+            elif self._cached_id is None:
+                GBOP_RX_STATS["unknown_sender"] += 1
+                _gbop_rx_note(self, "Waiting for sender mapping")
+                usable = False
+            else:
+                try:
+                    payload = bytes(
+                        session.decrypt(
+                            int(self._cached_id),
+                            davey.MediaType.audio,
+                            payload,
+                        )
+                    )
+                    usable = bool(payload)
+                    GBOP_RX_STATS["dave_decrypted"] += 1
+                except Exception as exc:
+                    GBOP_RX_STATS["dave_errors"] += 1
+                    _gbop_rx_note(
+                        self,
+                        "DAVE decrypt failed: " + type(exc).__name__,
+                    )
+                    usable = False
+        else:
+            GBOP_RX_STATS["plain"] += 1
+
+    pcm = b""
+    try:
+        if self.sink.wants_opus():
+            if not usable:
+                return None
+            packet.decrypted_data = payload
+        elif usable:
+            try:
+                pcm = self._decoder.decode(payload, fec=False)
+                GBOP_RX_STATS["decoded"] += 1
+            except discord.opus.OpusError:
+                GBOP_RX_STATS["opus_errors"] += 1
+                _gbop_rx_note(
+                    self,
+                    "Opus decode failed after receive processing",
+                )
+                # Conceal one bad 20 ms frame with silence instead of
+                # allowing the receiver thread/listener to die.
+                pcm = bytes(3840)
+                GBOP_RX_STATS["concealed"] += 1
+        else:
+            pcm = bytes(3840)
+            GBOP_RX_STATS["concealed"] += 1
+
+        return gbop_recv_opus.VoiceData(packet, member, pcm=pcm)
+    finally:
+        if packet is not None:
+            self._last_seq = packet.sequence
+            self._last_ts = packet.timestamp
+
+
+gbop_recv_opus.PacketDecoder._process_packet = _gbop_process_packet
+logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+logging.getLogger("discord.ext.voice_recv.gateway").setLevel(logging.WARNING)
+print("[GBOP-RT] receive repair v2 installed; discord.py", discord.__version__)
+
 load_dotenv()
 
 # Render captures stdout; flush each line so startup progress is visible.
