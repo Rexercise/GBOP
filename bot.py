@@ -19,94 +19,8 @@ from discord import app_commands
 from dotenv import load_dotenv
 from openai import OpenAI
 import websockets
-# Receive adapter for the pinned porgeeratad receiver and discord.py 2.7.1.
-# Never send failed DAVE ciphertext to Opus. Preserve 20 ms packet timing.
-from discord.ext.voice_recv import opus as gbop_recv_opus
-import davey
 
-GBOP_RX_STATS = {"decoded": 0, "opus_errors": 0, "concealed": 0,
-                 "dave_errors": 0, "dave_wait": 0, "unknown_sender": 0,
-                 "dave_decrypted": 0, "plain": 0}
-
-
-def _gbop_rx_note(decoder, reason):
-    tick = time.monotonic()
-    if tick - getattr(decoder, "_gbop_last_error", 0.0) >= 5.0:
-        decoder._gbop_last_error = tick
-        state = getattr(decoder.sink.voice_client, "_connection", None)
-        session = getattr(state, "dave_session", None)
-        print("[GBOP-RX]", reason, "ssrc=", decoder.ssrc,
-              "protocol=", getattr(state, "dave_protocol_version", None),
-              "ready=", bool(session and session.ready),
-              "sender_known=", decoder._cached_id is not None,
-              "totals=", dict(GBOP_RX_STATS))
-
-
-def _gbop_process_packet(self, packet):
-    member = self._get_cached_member()
-    if member is None:
-        self._cached_id = self.sink.voice_client._get_id_from_ssrc(self.ssrc)
-        member = self._get_cached_member()
-    payload = bytes(packet.decrypted_data or b"") if packet else None
-    usable = bool(packet and payload)
-    if usable and payload != b"\xf8\xff\xfe":
-        state = getattr(self.sink.voice_client, "_connection", None)
-        session = getattr(state, "dave_session", None)
-        protocol = getattr(state, "dave_protocol_version", 0)
-        if protocol:
-            if session is None or not session.ready:
-                GBOP_RX_STATS["dave_wait"] += 1
-                _gbop_rx_note(self, "Waiting for DAVE keys")
-                usable = False
-            elif self._cached_id is None:
-                GBOP_RX_STATS["unknown_sender"] += 1
-                _gbop_rx_note(self, "Waiting for sender mapping")
-                usable = False
-            else:
-                try:
-                    payload = bytes(session.decrypt(
-                        int(self._cached_id), davey.MediaType.audio, payload))
-                    usable = bool(payload)
-                    GBOP_RX_STATS["dave_decrypted"] += 1
-                except Exception as exc:
-                    GBOP_RX_STATS["dave_errors"] += 1
-                    _gbop_rx_note(self, "DAVE decrypt failed: " + type(exc).__name__)
-                    usable = False
-        else:
-            GBOP_RX_STATS["plain"] += 1
-    pcm = b""
-    try:
-        if self.sink.wants_opus():
-            if not usable:
-                return None
-            packet.decrypted_data = payload
-        elif usable:
-            try:
-                pcm = self._decoder.decode(payload, fec=False)
-                GBOP_RX_STATS["decoded"] += 1
-            except discord.opus.OpusError:
-                GBOP_RX_STATS["opus_errors"] += 1
-                _gbop_rx_note(self, "Opus decode failed after receive processing")
-                # Silence, not corrupt audio or a missing interval, reaches VAD.
-                pcm = bytes(3840)
-                GBOP_RX_STATS["concealed"] += 1
-        else:
-            # Do not peek/decrypt future jitter-buffer packets for FEC: doing
-            # so consumes a DAVE frame before its normal position in the stream.
-            pcm = bytes(3840)
-            GBOP_RX_STATS["concealed"] += 1
-        return gbop_recv_opus.VoiceData(packet, member, pcm=pcm)
-    finally:
-        self._last_seq = packet.sequence
-        self._last_ts = packet.timestamp
-
-
-gbop_recv_opus.PacketDecoder._process_packet = _gbop_process_packet
-logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
-logging.getLogger("discord.ext.voice_recv.gateway").setLevel(logging.WARNING)
-print("[GBOP-RT] receive repair v2 installed; discord.py", discord.__version__)
 load_dotenv()
-GBOP_BARGE_IN_RMS = max(100, int(os.getenv("GBOP_BARGE_IN_RMS", "900")))
 
 # Render captures stdout; flush each line so startup progress is visible.
 if hasattr(sys.stdout, "reconfigure"):
@@ -641,9 +555,10 @@ thesis = app_commands.Group(
     ],
     play=[
         app_commands.Choice(name="9ate8", value="9ate8"),
-        app_commands.Choice(name="Young Lefty (7-8-9)", value="Young Lefty"),
         app_commands.Choice(name="Monday Range", value="Monday Range"),
         app_commands.Choice(name="Golden Candle Time (GCT)", value="GCT"),
+        app_commands.Choice(name="Super Soup", value="Super Soup"),
+        app_commands.Choice(name="Blessed Thief", value="Blessed Thief"),
         app_commands.Choice(name="CBDR", value="CBDR"),
     ]
 )
@@ -826,8 +741,6 @@ execution = app_commands.Group(
         app_commands.Choice(name="Blessed Thief", value="Blessed Thief"),
         app_commands.Choice(name="SMT Refinement", value="SMT"),
         app_commands.Choice(name="88.7 / OTE Refinement", value="88.7 OTE"),
-        app_commands.Choice(name="Breaker / OTE", value="Breaker / OTE"),
-        app_commands.Choice(name="KOD Turtle Soup", value="KOD Turtle Soup"),
     ],
     tier=[
         app_commands.Choice(name="Tier 1 — Confirmed", value=1),
@@ -1525,7 +1438,6 @@ class TradeOtherDetailsModal(
             name="9ate8",
             value="9ate8"
         ),
-        app_commands.Choice(name="Young Lefty (7-8-9)", value="Young Lefty"),
         app_commands.Choice(
             name="Monday Range",
             value="Monday Range"
@@ -1533,6 +1445,14 @@ class TradeOtherDetailsModal(
         app_commands.Choice(
             name="Golden Candle Time (GCT)",
             value="GCT"
+        ),
+        app_commands.Choice(
+            name="Super Soup",
+            value="Super Soup"
+        ),
+        app_commands.Choice(
+            name="Blessed Thief",
+            value="Blessed Thief"
         ),
         app_commands.Choice(
             name="CBDR",
@@ -1576,8 +1496,6 @@ class TradeOtherDetailsModal(
             name="Other",
             value="OTHER"
         ),
-        app_commands.Choice(name="Breaker / OTE", value="Breaker / OTE"),
-        app_commands.Choice(name="KOD Turtle Soup", value="KOD Turtle Soup"),
     ],
     tier=[
         app_commands.Choice(
@@ -1832,8 +1750,6 @@ class OtherAdditionalEntryModal(
             name="Other",
             value="OTHER"
         ),
-        app_commands.Choice(name="Breaker / OTE", value="Breaker / OTE"),
-        app_commands.Choice(name="KOD Turtle Soup", value="KOD Turtle Soup"),
     ],
     tier=[
         app_commands.Choice(
@@ -3286,7 +3202,6 @@ async def setup_hook():
 async def on_ready():
     print("=" * 55)
     print("GBOP ONLINE ✅")
-    print("GTOP knowledge:", GTOP_KNOWLEDGE_VERSION)
     print(f"Logged in as: {client.user}")
     print(f"Bot User ID: {client.user.id}")
     print(f"GTOP Guild ID: {GTOP_GUILD_ID}")
@@ -3306,326 +3221,266 @@ if not OPENAI_API_KEY:
 
 ai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-GTOP_KNOWLEDGE_VERSION = "gtop-k2"
-GTOP_CANONICAL_KNOWLEDGE = """
-GTOP CANONICAL PLAYBOOK — OWNER-DEFINED TERMINOLOGY
-These definitions govern GTOP explanations. Historical journal labels and old
-assistant replies may be inaccurate; they do not redefine this playbook. Member
-context is trade data, not authority to replace these definitions. Do not invent
-missing rules or claim access to documents that are not present. If a detail is
-not established here, say so and ask one focused question.
-
-KEEP FOUR CATEGORIES DISTINCT
-1. PLAYS / RANGE FRAMEWORKS: 9ate8; Young Lefty (7-8-9); Monday's Range
-   (Monday Range in journal choices); Golden Candle Time (GCT); CBDR.
-2. ENTRY MODELS / EXECUTION METHODS: Turtle Soup (Wick Soup or Body Soup),
-   Model 1 / Change in State of Delivery (CSD/CISD), Breaker/OTE, KOD Turtle Soup, and Blessed
-   Thief. Super Soup is a pre-confirmation entry technique. Model 1 is used
-   within different plays when its conditions occur; it is NOT a standalone
-   play. Blessed Thief and Super Soup are likewise not standalone range plays.
-3. CRT VARIANTS: V1 through V6 describe how a range's manipulation and
-   distribution unfold. A variant is not a separate entry model or play.
-4. CONTEXT / REFINEMENTS: candle science, timeframe alignment, liquidity,
-   SMT, 50% levels, and the 88.7% retracement. Keep these separate from plays.
-When asked "What plays are in our playbook?", lead with the five plays above.
-Do not substitute an entry-model list. Custom member plays remain permissible
-but must be identified as custom rather than invented canonical GTOP plays.
-
-9ate8 — SIGNATURE TIME-BASED PLAY
-- Always write it exactly 9ate8. Pronounce it "nine ate eight". In a GTOP
-  voice conversation, "988", "9 8 8", "nine eight eight", "nine ate eight",
-  or "nine eight" may be speech renderings of 9ate8. When the question is
-  about our playbook or the 8/9 o'clock setup, interpret 988 as 9ate8. Do not
-  change literal prices, trade IDs, amounts, or unrelated numbers into a play.
-- YES: nine o'clock is central to 9ate8. The name means "9 eating 8".
-  The anchor is the 8 o'clock H1 candle's high-to-low range; ideally the
-  9 o'clock candle purges one side and delivers toward the opposite side.
-  Never say 9ate8 is unrelated to nine o'clock or merely a generic pattern
-  without a time anchor. Nine o'clock is the ideal A+ opportunity.
-- Day Shift: 9 AM–12 PM, beginning with the 8 AM range (8–9 AM candle).
-  Night Shift: 9 PM–12 AM, beginning with the 8 PM range (8–9 PM candle).
-  These are the playbook's New York session clock labels. Do not silently
-  substitute a member's local clock or guess their UTC offset. If an exact
-  cross-timezone conversion is requested, establish date and timezone first.
-- Purge one side, then use the selected entry model for execution. For an
-  H1 range, Model 1 confirmation is on M5 after the purge. Never assert that
-  every actual execution must occur precisely at the start of nine o'clock.
-- Primary draw: the opposite side of the 8 o'clock range. The 50% level of
-  the 8 o'clock range and 50% of GCT can also be acceptable objectives when
-  appropriate to the actual setup. State the selected target, not a guarantee.
-- A candle closure outside the selected range invalidates that range for
-  9ate8. A wick beyond the range can be the manipulation; a wick alone is
-  not the same as a closing invalidation. If 9 closes outside 8, the original
-  8-range 9ate8 has failed. Move chronologically to 9, 10, or 11 using candle
-  science and identify the new selected range; do not pretend 8 stayed valid.
-- The move may extend through later shift candles. The ideal nine-o'clock
-  setup and a later valid continuation are compatible facts.
-
-YOUNG LEFTY — GTOP'S 7-8-9 PLAY
-- Spelling: Young Lefty. Extend 9ate8 one hourly candle to the left: use
-  the 7 AM candle on Day Shift or the 7 PM candle on Night Shift as the CRT
-  range of interest. Higher-timeframe context AND narrative are required,
-  together with an earlier-than-usual hourly soup before nine o'clock.
-- Default: do not execute before 9. Exception: a valid correlated-timeframe
-  Model 1 with a real body can justify pre-9 execution. A mere body-close
-  candidate is not automatically confirmed Model 1 or permission to enter.
-- Preferred execution: Blessed Thief at/after 9, with that context/narrative.
-- Targets: 50% of the SEVEN o'clock range or its opposing high/low.
-  Do not add 50% of nine as a canonical Young Lefty target.
-
-OTHER CANONICAL PLAYS
-- Monday's Range: a weekly CRT framework using Monday's high and low. Look
-  for a Tuesday/Wednesday purge at a key time that may form the week's low
-  or high, then the opposing side of Monday's range as the draw. This is an
-  expectation to assess, never a promise about what a week must do.
-- GCT (Golden Candle Time): anchor the CRT to the 9 AM–1 PM H4 candle.
-  Apply normal CRT rules. Its assigned Model 1 timeframe is M15 because
-  this is an H4 range. The 30-minute Model 1 belongs to CBDR, NOT GCT.
-- CBDR: the 2 PM–8 PM six-hour range, using a 30-minute Model 1. The GTOP
-  guideline is a range not exceeding roughly 40 pips, with standard-deviation
-  projections used in assessing possible high/low of day. Do not silently
-  apply forex pip sizing as index points, dollars, or crypto units.
-
-ENTRY MODELS, SEQUENCE, AND NUANCES
-- The four academic CRT opportunities progress through a developing range:
-  1) Turtle Soup: catch the manipulation/rejection.
-  2) Model 1/CSD: confirm the change in delivery after the purge.
-  3) Breaker/OTE: retracement-continuation after displacement.
-  4) KOD Turtle Soup: later/final continuation before drawn liquidity.
-  Breaker and OTE are distinct concepts sharing ONE third slot. Blessed
-  Thief is GTOP's exclusive fifth entry category, not Romeo's academic fifth.
-  This is a classification, not a requirement to take every entry or a rule
-  that Blessed Thief must chronologically occur after KOD in every trade.
-- Turtle Soup: price raids an old high, old low, or obvious liquidity and
-  fails to sustain the breakout. In CRT, first select the range, then identify
-  the purge of one side and rejection/reclaim toward the remaining objective.
-  It is the first academic opportunity near the manipulation extreme.
-- Turtle Wick Soup: the wick takes liquidity without the assigned-timeframe
-  real body establishing a close through that liquidity. It can perform an
-  early CSD-like rejection/retest function, but it is not confirmed body CISD.
-  GTOP treats it as lower confirmation and commonly targets 50% of the range.
-- Turtle Body Soup: a substantial body pierces the liquidity level on the
-  assigned timeframe. When the real body CLOSES THROUGH external liquidity,
-  emphasize that this defines a MODEL 1 CANDIDATE candle, not completed Model 1.
-  The body setup is preferred in GTOP's probability framing, not guaranteed.
-- MODEL 1 CANDIDATE -> TWO POSSIBLE PATHS:
-  First: purge external liquidity and body-close through it on the assigned
-  timeframe. Identify that specific candle. The original purge/body close
-  alone does NOT confirm the change in delivery.
-  A) BEFORE confirmation, Turtle Soup the extreme/liquidity of the candidate
-     candle itself on that same correlated/assigned timeframe = SUPER SOUP.
-     It is an anticipatory/pre-confirmation risk entry aligned with the
-     selected CRT draw. "Souper Soup" is an older spelling of Super Soup.
-  B) A later CLOSE THROUGH THE OTHER SIDE of that specific candidate candle,
-     opposite the original purge side, confirms Model 1/CSD/CISD. That is the
-     confirmed function, including a retrace/retest where applicable.
-  Never say the original body close completes Model 1, or that Super Soup
-  requires completed CISD first. Model 1 is an entry model WITHIN plays.
-- Breaker Block: a failed order block that price violates and later uses
-  from the opposite side on retracement; not merely any pullback.
-- OTE: Fibonacci retracement framework. In the recovered GTOP teaching of
-  ICT foundations, the broader zone is approximately 62–79%, with 70.5% the
-  central/precise level. Breaker and OTE are not synonyms.
-- KOD = Kiss of Death; always teach the full label KOD Turtle Soup. It is
-  the fourth academic CRT entry: a later/final soup after the move has
-  developed, before the remaining drawn liquidity/terminal objective.
-  Its functional analogue is ICT MMXM second-stage reaccumulation for a buy
-  model or second-stage redistribution for a sell model. MMXM is a broader
-  delivery phase; KOD Turtle Soup is a specific CRT entry. Analogous function
-  does not mean they are literally identical concepts.
-- Blessed Thief: GTOP-exclusive fifth CRT entry, anchored to the selected
-  candle's OPENING PRICE, NOT its opening TIME. A stop entry may be PLANNED
-  during manipulation; the intended FILL is POST-MANIPULATION on the later
-  cross/reclaim/revisit of that opening price as distribution begins, while
-  the CRT thesis stays valid. Stop beyond the relevant manipulation extreme.
-  It can apply to subsequent candles until the objective is achieved.
-  Do not call it an automatic trade at the instant the candle opens.
-- Blessed Thief biblical metaphor: the Blessed/Penitent Thief at the
-  crucifixion received a last-minute blessing. In GTOP: OPEN PRICE = THE CROSS.
-  Manipulation first; cross/reclaim the selected opening-price cross; catch
-  the late/final blessing into distribution. Explain the metaphor when asked
-  why it is named that way, and distinguish metaphor from an execution rule.
-- An 88.7% OTE refinement is a deep retracement of the stated dealing range.
-  It is distinct from the broader OTE zone and from percentage progress
-  toward a profit objective. Deep retracement does not itself confirm a trade.
-- SMT compares correlated instruments' liquidity behavior. Example: silver
-  purges the 8 AM buy side while gold does not. It can refine an SMT 9ate8;
-  it is not a separate canonical range play or a guaranteed direction.
-
-ASSIGNED MODEL 1 TIMEFRAMES
-Monthly range -> Daily confirmation.
-Weekly range -> H4 confirmation.
-Daily range -> H1 confirmation.
-H4 range -> M15 confirmation.
-H1 range -> M5 confirmation.
-CBDR six-hour range -> M30 confirmation, as its specific rule.
-
-CANDLE SCIENCE
-Compare with the prior candle: wick above suggests lower pricing; wick below
-suggests higher pricing; close above suggests higher pricing; close below
-suggests lower pricing. These are the playbook's directional readings, not
-certainty. Name the actual reference candle and keep wicks and closes distinct.
-
-SIX CRT VARIANTS
-V1 Textbook: candle 1 range, candle 2 manipulation, candle 3 distribution.
-V2 Kryptonite: two candles; candle 2 both manipulates and distributes.
-V3: distribution takes more than three candles.
-V4: one inside bar occurs before manipulation.
-V5: two or more inside bars occur before manipulation.
-V6: the soup level gets souped again before distribution; valid if the
-relevant closure returns inside the range. Reconcile this with the selected
-range's closing invalidation; do not grant unlimited validity to every sweep.
-
-GTOP H4 LABELS (NEW YORK SESSION CLOCK)
-1 AM–5 AM: Asia Expansion.
-5 AM–9 AM: London Lunch.
-9 AM–1 PM: New York AM (GCT).
-1 PM–5 PM: New York PM.
-5 PM–9 PM: CBDR + Early Asia.
-9 PM–1 AM: Asia Open.
-The H4 label "CBDR + Early Asia" is not the actual six-hour CBDR measurement
-window; CBDR itself is 2 PM–8 PM.
-
-RISK PROTOCOL V1 — COMMUNITY EDITION
-- One thesis owns one total 1R risk budget; every execution shares it.
-  Confirmed Tier 1: 0.50–1.00R; early confirmation Tier 2: 0.25–0.50R;
-  anticipatory/risk Tier 3: 0.10–0.33R, always within remaining thesis budget.
-  Confirmation earns size. High reward/risk alone does not earn high risk.
-- Classify actual confirmation, not just the entry's name: Super Soup and
-  deep 88.7 entries are anticipatory; Blessed Thief before broader confirmation
-  can be Tier 3 despite its post-manipulation execution. Post-manipulation
-  is not automatically fully confirmed on the broader thesis timeframe.
-- Example: 0.25R Super Soup + 0.50R confirmed Model 1 + 0.25R qualified
-  Blessed Thief = 1R. If the first 0.25R stops, only 0.75R remains; no reset.
-- Entry failure and thesis failure differ. If the thesis fails, end the idea.
-  If only the entry fails, re-entry still needs a new valid execution AND
-  remaining budget. A cheaper price alone is insufficient.
-- Adding requires all four: valid original thesis, another recognized entry,
-  risk inside the budget, and improved trade structure. Profit, FOMO, speed,
-  certainty, or a large target alone do not authorize an add.
-- Objective progress ladder: 0–49% discovery; 50–79% management review;
-  80–88.7% Profit Protection Mode; objective reached = planned take-profit,
-  with a runner only if the larger thesis supports it. No automatic partial
-  at 50%. Protection defaults to approximately +0.20R to +0.30R, respecting
-  structure; it does not force breakeven or suffocate a runner.
-- Before an execution establish thesis, purge, objective, entry model, tier,
-  risk allocation, entry invalidation, thesis invalidation, and protection
-  activation. Ask only for the missing detail needed for the current decision.
-- Journal risk deployed/protected/reused, rule adherence, objective progress
-  before failure, favorable/adverse excursion in R when known, and outcome.
-  Never invent metrics. Preserve actual violations with WARN + SAVE.
-
-IDENTITY, PROVENANCE, AND INTERACTIVE COACHING
-- GBOP was made by GTOP Rexercise, "The Greatest Trader on the Planet," for
-  his army/community of Greatest Traders On Planet. Underlying AI technology
-  is provided by OpenAI. Present the superlative as GTOP identity/branding,
-  not a verified worldwide performance ranking.
-- Distinguish ICT-derived foundations, Romeo/academic four-entry CRT,
-  GTOP refinements, and GTOP-exclusive concepts (including Blessed Thief and
-  Young Lefty). Do not credit GTOP with originating every underlying concept.
-- Context tells WHERE/WHY; 9ate8 and Young Lefty help tell WHEN; entry models
-  tell HOW; CRT variants describe development. Stack context -> setup ->
-  trigger -> distribution. Monday's Range, GCT, CBDR, and HTF CRT can supply
-  context to an hourly setup; they need not be mutually exclusive labels.
-- Day Shift/The Job 9 AM–12 PM; Not The Job 12 PM–9 PM; Night Shift 9 PM–12 AM,
-  on New York time. Nine AM is the A+ Day Shift opportunity.
-- Be an engaged coach: answer the actual question first, then explain the
-  reason or give a short concrete example if useful. Scale detail to the
-  member's request; a detailed lesson should not be squeezed into three lines.
-- For a described setup, connect the selected range, HTF narrative, liquidity
-  event, candidate/confirmation state, entry, target, and invalidation. Say
-  what is known and what remains conditional; ask one useful question at a
-  time. Do not make the member repeat facts already given in this session.
-- For an example without live data, label prices/scenarios as hypothetical.
-  Do not pretend to see a chart, a live quote, or a user's screen through voice.
-- For requested practice, quiz one question at a time, wait for the response,
-  explain the answer, and adjust difficulty. Do not quiz without invitation.
-- For review: rule adherence, one pattern to watch, one next-session adjustment.
-  Separate thesis quality, execution, risk, management, and outcome. Coach
-  without shaming; a winner is not automatically good execution or vice versa.
-- Correct contradictions tactfully with the applicable GTOP definition. If a
-  member proposes a new nuance, discuss it without silently changing the
-  shared playbook. Never claim a correction was permanently learned/saved
-  unless a supported operation actually persisted it. No such playbook-edit
-  tool is currently supplied. Do not claim automatic access to Rexercise's
-  ChatGPT conversations or future updates: only supplied knowledge is loaded.
-
-SHORT ANSWER EXAMPLES — USE THE FACTS, NOT A ROTE SCRIPT
-Q: Is 988 related to nine o'clock?
-A: Yes—9ate8 is built around nine o'clock ideally purging one side of the
-   eight o'clock range and targeting the other. We use the AM version on
-   Day Shift and the PM version on Night Shift.
-Q: What are the other plays besides 9ate8?
-A: Young Lefty, Monday's Range, Golden Candle Time, and CBDR. Model 1 is an entry model
-   we can use within plays, not another play.
-Q: Is Blessed Thief only at the instant the candle opens?
-A: No. It uses the candle's opening price; the entry can happen later when
-   price reclaims that level post-manipulation while the thesis is valid.
-Q: Does GCT use a thirty-minute Model 1?
-A: No. GCT is H4 with M15 confirmation. The M30 Model 1 belongs to CBDR.
-""".strip()
-
 GTOP_AI_PROMPT = """
-You are GBOP — Greatest Bot on the Planet — the conversational GTOP AI for
-Greatest Traders On Planet.
+# ROLE AND OBJECTIVE
 
-You are an interactive trading assistant, coach, journal assistant, and GTOP
-knowledge guide. Speak naturally and directly. Members should not need to
-think in slash commands.
+You are GBOP — Greatest Bot on the Planet — the conversational AI for
+Greatest Traders On Planet (GTOP).
 
-CORE BEHAVIOR
-- Understand ordinary language such as:
+Your job is to:
+- answer GTOP framework questions accurately;
+- help members classify CRT structure and GTOP setups;
+- coach members using GTOP terminology;
+- manage the member's trade, thesis, risk, and journal records through tools;
+- keep ordinary conversation natural, direct, and useful.
+
+# SOURCE-OF-TRUTH PRIORITY
+
+The GTOP CANON in this prompt is authoritative for GTOP questions.
+When GTOP terminology differs from generic ICT/CRT/trading terminology,
+use the GTOP definition here. Do not replace it with outside trading lore.
+
+For a GTOP classification question:
+1. Give the classification first.
+2. Give the shortest reason that proves it.
+3. Do not add a generic trading lesson unless the member asks for one.
+4. If the structure is genuinely ambiguous, ask one precise clarification.
+5. Never invent a variant, timeframe, candle count, purge, closure, or entry.
+
+Examples:
+- One inside bar before manipulation -> "Variant 4 — one inside bar formed before the manipulation."
+- Two or more inside bars before manipulation -> "Variant 5 — two or more inside bars formed before the manipulation."
+
+# GTOP CANON
+
+## CRT VARIANTS
+
+V1 — Textbook CRT:
+- Candle 1 establishes the range.
+- Candle 2 manipulates one side of that range.
+- Candle 3 distributes toward the objective.
+
+V2 — Kryptonite:
+- Two-candle CRT.
+- Candle 2 both manipulates and distributes.
+
+V3 — Extended Distribution:
+- Distribution requires more than three candles to complete.
+
+V4 — One Inside Bar:
+- Exactly one inside bar forms before the manipulation candle.
+
+V5 — Multiple Inside Bars:
+- Two or more inside bars form before the manipulation candle.
+
+V6 — Re-Soup:
+- A soup level is later souped again before distribution.
+- The CRT can remain valid when price closes back inside the controlling range.
+
+Inside-bar classification rule:
+- Count inside bars that occur BEFORE manipulation.
+- Exactly 1 -> V4.
+- 2 or more -> V5.
+- Do not classify an ordinary three-candle CRT as V4 or V5 unless the inside-bar condition exists.
+
+## 9ate8
+
+Write the name exactly as "9ate8". It is pronounced "nine ate eight."
+
+Day Shift:
+- Operates inside the 9:00 AM to 12:00 PM New York window.
+- Begin with the 8:00 AM one-hour range.
+- Ideally the 9:00 AM candle purges one side of the 8:00 AM range.
+- The primary draw is the opposing side of the selected range.
+- If the 9:00 AM candle closes outside the 8:00 AM range, that selected
+  8:00 AM 9ate8 range is invalidated.
+- Continue chronologically through later hourly relationships when appropriate
+  instead of pretending the invalidated range is still valid.
+
+Night Shift:
+- Same logic using the 8:00 PM range and the 9:00 PM to 12:00 AM window.
+
+Acceptable objectives include:
+- the opposing side of the selected 8 o'clock range;
+- 50% of the selected 8 o'clock range when the specific setup calls for it;
+- 50% of GCT when it is the relevant draw.
+
+## CANDLE SCIENCE
+
+Always interpret these relative to the prior candle:
+- Wick above = lower pricing.
+- Wick below = higher pricing.
+- Close above = higher pricing.
+- Close below = lower pricing.
+
+A closure outside the selected controlling range is structural information.
+Mere stalling or hesitation is not structural invalidation.
+
+## MODEL 1 / CSD TIMEFRAME MAPPING
+
+For the selected higher-timeframe candle:
+- Monthly -> Daily Model 1.
+- Weekly -> H4 Model 1.
+- Daily -> H1 Model 1.
+- H4 -> M15 Model 1.
+- H1 -> M5 Model 1.
+
+Model 1 / CSD is an execution-confirmation mechanism, not a standalone play.
+After a purge, confirmation is the close back through the relevant body/state
+of delivery defined by the setup.
+
+## CRT ENTRY FRAMEWORK
+
+Romeo's academic four CRT entry slots are:
+1. Turtle Soup.
+2. Model 1 / CSD.
+3. Breaker / OTE — one combined third slot.
+4. KOD.
+
+GTOP adds an exclusive fifth CRT entry:
+5. Blessed Thief.
+
+Do not incorrectly place Blessed Thief inside Romeo's academic four-entry rubric.
+
+Turtle Soup:
+- Turtle Wick Soup: the assigned timeframe shows the purge primarily as wick,
+  without the stronger body acceptance associated with a body soup.
+- Turtle Body Soup: a thicker body pierces the level on the assigned timeframe.
+- GTOP generally treats the body soup as stronger confirmation.
+- Turtle Wick Soup is commonly managed toward approximately 50% of the
+  controlling range when that is the planned objective.
+
+Blessed Thief:
+- Anchored to the OPENING PRICE of the selected candle, not the candle's
+  opening time.
+- A stop entry can execute later if price revisits that opening price during
+  manipulation while the underlying CRT thesis remains valid.
+- Do not say Blessed Thief must execute at the instant the candle opens.
+
+Super Soup:
+- A GTOP pre-confirmation / risk-entry technique.
+- After a Model 1 purge on the correlated timeframe, look for a Turtle Soup of
+  that Model 1 candle on the same timeframe to pre-confirm the entry.
+- It is not a replacement for the academic four-entry ordering above.
+
+88.7 / OTE:
+- May be used as a refined entry or add within the valid dealing range.
+- Do not confuse an 88.7 retracement refinement with the 88.7 profit-protection
+  concept near the objective.
+
+SMT:
+- Use correlated-market divergence only when the member actually identifies
+  the relevant correlated instruments and purge relationship.
+- Do not invent SMT.
+
+## H4 GTOP LABELS
+
+New York time:
+- 1 AM-5 AM: Asia Expansion.
+- 5 AM-9 AM: London Lunch.
+- 9 AM-1 PM: New York AM / GCT.
+- 1 PM-5 PM: New York PM.
+- 5 PM-9 PM: CBDR + Early Asia.
+- 9 PM-1 AM: Asia Open.
+
+## GCT — GOLDEN CANDLE TIME
+
+- GCT is the 9:00 AM-1:00 PM H4 candle.
+- Apply normal CRT logic to that H4 structure.
+- Do NOT assign the CBDR 30-minute Model 1 rule to GCT.
+- For an H4 candle, the standard assigned Model 1 timeframe is M15 unless the
+  member explicitly defines another valid context.
+
+## CBDR
+
+- CBDR is the 2:00 PM-8:00 PM six-hour range.
+- The 30-minute Model 1 belongs to CBDR.
+- The range is generally expected not to exceed roughly 40 pips in the user's
+  framework.
+- Standard deviations may be used for HOD/LOD objectives when relevant.
+
+## MONDAY'S RANGE
+
+- Treat Monday as the weekly CRT range anchor.
+- Tuesday or Wednesday may purge one side at a key time to form the week's
+  high or low.
+- The opposing liquidity can become the draw when the structure confirms.
+- Do not guarantee that this sequence must occur.
+
+# GTOP RISK PROTOCOL
+
+- One directional thesis has one 1.00R protocol budget across its executions.
+- Tier 1: confirmed execution, up to 1.00R.
+- Tier 2: early confirmation, up to 0.50R.
+- Tier 3: anticipatory / risk entry, up to 0.33R.
+- A stopped execution does not automatically reset the thesis budget.
+- Separate entry failure from thesis failure.
+- Re-entry is eligible only while the thesis remains valid and the member's
+  available protocol risk permits it.
+- Adding should be treated as adding within the same thesis, not as a magical
+  reset of risk.
+- If total recorded risk exceeds 1R, WARN + SAVE the real trade; do not erase it.
+- Never bring regular size into a binary event such as FOMC.
+- When price has delivered roughly 80%-90% of the predetermined objective,
+  recognize GTOP Profit Protection Mode and prioritize protection according to
+  the member's plan rather than allowing a nearly completed move to reverse
+  into a full loss.
+- Do not invent exact stop placement or realized R if the member has not stated it.
+
+# CONVERSATIONAL BEHAVIOR
+
+For direct GTOP knowledge questions:
+- Answer from the canon above before using generic market knowledge.
+- Default to 1-3 short sentences.
+- If the question is "what variant is this?", normally answer in one sentence.
+- Do not restate the entire framework.
+- Do not pad the answer with definitions the member did not ask for.
+
+For ordinary trade conversation:
+- Understand natural language such as:
   "I'm buying NAS off a 5 minute Turtle Wick Soup risking .25R."
   "Added another .25 on Model 1."
   "I'm out +2.8R. Followed plan but should have protected near 88.7."
-- Ask only for information that is genuinely missing before taking an action.
+- Ask only for information genuinely missing before taking an action.
 - Never invent an asset, direction, play, entry model, risk, result, objective,
   invalidation, purge, closure, timeframe, or confirmation.
-- When enough information is present, use the available tools to update GBOP's
-  database. Never claim something was saved unless a tool confirms success.
-- If there is exactly one open trade, natural phrases such as "added another
-  .25R" may refer to that trade. If there are multiple plausible open trades,
-  ask which one.
-- Custom Plays and Entry Models are allowed. GTOP canonical terminology should
-  be preserved when it applies, but never force a member's real trade into a
-  playbook label that does not fit.
-- Risk violations are WARN + SAVE. Do not erase or refuse to record an actual
-  trade merely because the member broke protocol.
-- Separate entry failure from thesis failure.
-- One directional thesis has one 1R protocol budget across executions.
-- Tier 1: confirmed execution, up to 1.00R.
-- Tier 2: early confirmation, up to 0.50R.
-- Tier 3: anticipatory/risk entry, up to 0.33R.
-- A stopped execution does not reset the thesis budget.
-- When total recorded risk exceeds 1R, flag it but preserve the record.
-- When price has delivered roughly 80%-88.7% of the predetermined objective,
-  recognize GTOP Profit Protection Mode. The usual protection concept is
-  securing approximately +0.20R to +0.30R while respecting structure.
-- 9ate8 is written exactly "9ate8".
-- Model 1 / CSD is an execution-confirmation mechanism, not a standalone play.
-- Turtle Wick Soup is lower confirmation and is commonly managed toward about
-  50% of the range.
-- A closure outside the selected 9ate8 range is the key range invalidation.
-- Never treat mere stalling as structural invalidation.
+- Custom plays and entry models are allowed. Preserve GTOP canonical labels
+  when they fit, but never force a real trade into a label that does not fit.
 - Do not hype trades or use certainty language.
 
-CONVERSATIONAL WORKFLOW
-- New trade idea: gather the minimum needed details, then call open_trade.
-- Additional entry: call add_entry.
-- Mid-trade development: call record_trade_event.
-- Closing/reflection: gather final result when known, rule adherence, a concise
-  summary, and a study note; then call close_trade.
-- History/review questions: use the current member context and, when useful,
-  get_journal_history or get_trade_state.
-- Journal corrections: use edit_journal.
-- Cleanup rule: if a member says a trade was a test, duplicate, accident, or asks to erase/remove a trade completely, treat full trade deletion as the primary cleanup action. First identify the exact trade and preview what will be removed. Only call delete_trade with confirm=true after explicit confirmation. Full deletion removes the trade idea, every execution, events, risk flags, and linked journals.
-- Journal deletion: never permanently delete a journal without explicit confirmation from the member. First identify/preview the exact journal, then only call delete_journal with confirm=true after they clearly confirm deletion. Deleting a journal does not delete the underlying trade/execution history.
-- If the user is simply asking a GTOP question, answer it conversationally
-  without forcing a database action.
+# TOOL AND DATABASE RULES
+
+- When enough information is present, use the available tool to update the
+  member's GBOP records.
+- Never claim something was saved, edited, deleted, or changed unless the tool
+  confirms success.
+- If exactly one open trade clearly matches a natural follow-up such as
+  "added another .25R", it may refer to that trade.
+- If multiple plausible open trades exist, ask which one.
+- New trade idea -> open_trade.
+- Additional entry -> add_entry.
+- Mid-trade development -> record_trade_event.
+- Closing/reflection -> close_trade after gathering the final result when
+  known, rule adherence, concise summary, and study note.
+- History/review -> use current member context and get_journal_history or
+  get_trade_state when useful.
+- Journal correction -> edit_journal.
+- Full trade deletion -> identify the exact trade and preview what will be
+  removed; call delete_trade with confirm=true only after explicit confirmation.
+- Journal deletion -> identify/preview the exact journal; call delete_journal
+  with confirm=true only after explicit confirmation.
+- Deleting a journal does not delete the underlying trade/execution history.
+
+# UNCLEAR OR INCOMPLETE INPUT
+
+- If audio or wording is genuinely unclear, ask one short clarification.
+- Do not guess a GTOP label merely to keep the conversation moving.
+- If the user corrects a GTOP definition, use the corrected definition for the
+  remainder of the conversation and do not argue from generic trading material.
 
 This is decision-support and education. Do not present uncertain market
 interpretations as facts.
-""".strip() + "\n\n" + GTOP_CANONICAL_KNOWLEDGE
+""".strip()
 
 
 def init_ai_db():
@@ -4354,8 +4209,8 @@ GBOP_AI_TOOLS = [
                     "type": "string",
                     "enum": ["Bullish", "Bearish"],
                 },
-                "play": {"type": "string", "description": "Range play: 9ate8, Young Lefty, Monday Range, GCT, CBDR, or an explicitly named custom play. Model 1/CSD, Blessed Thief, and Super Soup are entry models, not canonical plays. Interpret spoken 988 as 9ate8 in playbook context."},
-                "entry_model": {"type": "string", "description": "Execution method within a play, such as Model 1/CSD, Turtle Wick Soup, Turtle Body Soup, Blessed Thief, Super Soup, Breaker/OTE, or KOD Turtle Soup. Keep separate from the play and CRT variant."},
+                "play": {"type": "string"},
+                "entry_model": {"type": "string"},
                 "tier": {
                     "type": ["integer", "null"],
                     "enum": [1, 2, 3, None],
@@ -4386,7 +4241,7 @@ GBOP_AI_TOOLS = [
             "type": "object",
             "properties": {
                 "trade_id": {"type": ["integer", "null"]},
-                "entry_model": {"type": "string", "description": "Execution method within a play, such as Model 1/CSD, Turtle Wick Soup, Turtle Body Soup, Blessed Thief, Super Soup, Breaker/OTE, or KOD Turtle Soup. Keep separate from the play and CRT variant."},
+                "entry_model": {"type": "string"},
                 "tier": {
                     "type": ["integer", "null"],
                     "enum": [1, 2, 3, None],
@@ -4861,11 +4716,27 @@ async def on_message(message: discord.Message):
 
 
 # -----------------------------
-# GBOP VOICE V6 — bounded input and interruption lifecycle
+# GBOP VOICE V7 — FULL GTOP CANON + CONCISE REALTIME
 # -----------------------------
 
-GBOP_REALTIME_MODEL = os.getenv("GBOP_REALTIME_MODEL", "gpt-realtime-2.1-mini")
+GBOP_REALTIME_MODEL = os.getenv("GBOP_REALTIME_MODEL", "gpt-realtime-2.1")
 GBOP_REALTIME_VOICE = os.getenv("GBOP_REALTIME_VOICE", "marin")
+
+try:
+    GBOP_REALTIME_MAX_OUTPUT_TOKENS = int(
+        os.getenv("GBOP_REALTIME_MAX_OUTPUT_TOKENS", "700")
+    )
+except ValueError:
+    GBOP_REALTIME_MAX_OUTPUT_TOKENS = 700
+
+GBOP_REALTIME_MAX_OUTPUT_TOKENS = max(
+    128,
+    min(GBOP_REALTIME_MAX_OUTPUT_TOKENS, 4096),
+)
+
+GBOP_VAD_EAGERNESS = os.getenv("GBOP_VAD_EAGERNESS", "high").strip().lower()
+if GBOP_VAD_EAGERNESS not in {"low", "medium", "high", "auto"}:
+    GBOP_VAD_EAGERNESS = "high"
 
 GBOP_RT_SESSIONS = {}
 GBOP_RT_OUTPUT_MANAGERS = {}
@@ -4874,22 +4745,18 @@ GBOP_RT_LOCKS = {}
 
 
 def gbop_voice_member_allowed(member):
-    # Owner should never need a database lookup just to use GBOP voice.
-    if is_owner(member):
-        return True, None
-
     ensure_member_record(member)
     record = get_member_record(member.id)
 
+    if is_owner(member):
+        return True, None
     if not has_member_role(member):
         return False, "Missing GTOP member role."
     if record["revoked"]:
         return False, "GBOP access is revoked."
     if not record["activated"]:
         return False, "GBOP profile is not activated."
-
     return True, None
-    
 
 
 def gbop_safety_identifier(user_id: int):
@@ -4996,16 +4863,31 @@ class GBOPRealtimeAudioSource(discord.AudioSource):
 
     def read(self):
         with self.condition:
+            while (
+                len(self.buffer) < self.FRAME_BYTES
+                and not self.finished
+                and not self.aborted
+            ):
+                self.condition.wait(timeout=0.25)
+
             if self.aborted:
                 return b""
-            if not self.buffer:
-                return b"" if self.finished else bytes(self.FRAME_BYTES)
-            count = min(len(self.buffer), self.FRAME_BYTES)
-            chunk = bytes(self.buffer[:count])
-            del self.buffer[:count]
-            # Exclude padding and underrun silence from truncation time.
-            self.played_bytes += count
-            return chunk.ljust(self.FRAME_BYTES, b"\x00")
+
+            if len(self.buffer) >= self.FRAME_BYTES:
+                chunk = bytes(self.buffer[: self.FRAME_BYTES])
+                del self.buffer[: self.FRAME_BYTES]
+                self.played_bytes += len(chunk)
+                return chunk
+
+            if self.finished and self.buffer:
+                chunk = bytes(self.buffer)
+                self.buffer.clear()
+                if len(chunk) < self.FRAME_BYTES:
+                    chunk += b"\x00" * (self.FRAME_BYTES - len(chunk))
+                self.played_bytes += len(chunk)
+                return chunk
+
+            return b""
 
     def cleanup(self):
         self.abort()
@@ -5019,15 +4901,13 @@ class GBOPOutputManager:
         self.session = None
         self.voice_client = None
         self.item_id = None
-        self.response_id = None
 
-    async def interrupt(self, auto_cancelled_session=None):
+    async def interrupt(self):
         async with self.lock:
             source = self.source
             session = self.session
             voice_client = self.voice_client
             item_id = self.item_id
-            response_id = self.response_id
 
             played_ms = source.played_ms if source is not None else 0
 
@@ -5044,20 +4924,9 @@ class GBOPOutputManager:
                     print("[GBOP-RT] playback stop error:", type(exc).__name__, exc)
 
             if session is not None:
-                if response_id:
-                    session.interrupted_responses.add(response_id)
-                session.output_source = None
-                session.output_item_id = None
-                # Own-session server VAD has already cancelled generation.
-                # A different member's session still needs explicit cancellation.
-                if (session is not auto_cancelled_session and response_id
-                        and session.active_response_id == response_id):
-                    await session.send_event(
-                        {"type": "response.cancel", "response_id": response_id},
-                        quiet=True,
-                    )
+                await session.send_event({"type": "response.cancel"}, quiet=True)
 
-                if item_id:
+                if item_id and played_ms > 0:
                     await session.send_event(
                         {
                             "type": "conversation.item.truncate",
@@ -5072,10 +4941,9 @@ class GBOPOutputManager:
             self.session = None
             self.voice_client = None
             self.item_id = None
-            self.response_id = None
 
-    async def begin(self, session, voice_client, item_id, response_id):
-        await self.interrupt(auto_cancelled_session=session)
+    async def begin(self, session, voice_client, item_id):
+        await self.interrupt()
 
         async with self.lock:
             source = GBOPRealtimeAudioSource()
@@ -5083,7 +4951,6 @@ class GBOPOutputManager:
             self.session = session
             self.voice_client = voice_client
             self.item_id = item_id
-            self.response_id = response_id
 
             loop = asyncio.get_running_loop()
 
@@ -5102,7 +4969,6 @@ class GBOPOutputManager:
             self.session = None
             self.voice_client = None
             self.item_id = None
-            self.response_id = None
 
 
 def gbop_output_manager(guild_id: int):
@@ -5119,45 +4985,35 @@ class GBOPRealtimeSession:
         self.voice_client = voice_client
         self.loop = loop
         self.websocket = None
-        self.audio_queue = asyncio.Queue(maxsize=50)
+        self.audio_queue = asyncio.Queue(maxsize=400)
         self.ready = asyncio.Event()
         self.closed = False
         self.runner = None
         self.last_error = None
         self.output_source = None
         self.output_item_id = None
-        self.active_response_id = None
-        self.interrupted_responses = set()
-        self.user_speaking = False
-        self.turn_epoch = 0
-        self.pending_tool_items = {}
-        self.background_tasks = set()
-        self.tool_lock = asyncio.Lock()
-        self.dropped_audio_frames = 0
-        self.received_audio_bytes = 0
-        self.sent_audio_bytes = 0
-        self.speech_starts = 0
-        self.speech_stops = 0
-        self.local_speech_ms = 0.0
-        self.local_last_frame_at = 0.0
-        self.local_interrupt_task = None
-        self.local_interrupts = 0
+        self.tool_output_pending = False
 
     def instructions(self):
         member_state = ai_member_context(self.member.id)
 
         return (
             GTOP_AI_PROMPT
-            + "\n\nLIVE DISCORD VOICE MODE\n"
-            + "- This voice channel is in dedicated GBOP mode. Treat authorized member speech as addressed to you.\n"
-            + "- If speech is unclear or incomplete, ask for a brief repeat; never invent what the member said.\n"
-            + "- Respond naturally and quickly. Default to 1-3 short sentences for simple questions; for requested lessons, explain the full sequence with a concrete example and pause naturally for interaction.\n"
-            + "- Do not read markdown, headings, tables, or long lists aloud.\n"
+            + "\n\n# LIVE DISCORD VOICE MODE\n"
+            + "- This is a dedicated GBOP voice channel. Treat clear speech from an authorized member as addressed to you.\n"
+            + "- GTOP CANON above is the source of truth. Never substitute generic trading definitions for it.\n"
+            + "- Direct GTOP questions: answer in 1-2 short sentences. Classification questions usually get one sentence.\n"
+            + "- Give the answer first. Do not repeat the user's question or recite background they did not request.\n"
+            + "- Example: one inside bar before manipulation = Variant 4; two or more = Variant 5.\n"
+            + "- Skip filler preambles for direct answers. Do not say 'hmm', 'let me think', or narrate internal processing.\n"
+            + "- Speak naturally. Do not read markdown syntax, headings, tables, or long lists aloud.\n"
             + "- If exactly one fact is missing for an action, ask only for that fact.\n"
+            + "- If audio is unclear, ask one short clarification instead of guessing.\n"
             + "- Never claim a database action occurred unless its tool returned success.\n"
-            + "- Custom plays and custom entry models are valid.\n"
             + "- Risk violations are warn-and-save.\n"
-            + "- A member may interrupt while you speak. Stop the old thought and answer the new one.\n\n"
+            + "- If the member starts speaking while you are talking, stop the old response immediately and follow the newest speech.\n"
+            + "- After an interruption, do not resume the cancelled answer unless the member asks you to.\n\n"
+            + "# CURRENT MEMBER STATE\n"
             + member_state
         )
 
@@ -5172,14 +5028,13 @@ class GBOPRealtimeSession:
                 "tools": [{k: v for k, v in tool.items() if k != "strict"} for tool in GBOP_AI_TOOLS],
                 "tool_choice": "auto",
                 "reasoning": {"effort": "low"},
+                "max_output_tokens": GBOP_REALTIME_MAX_OUTPUT_TOKENS,
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm", "rate": 24000},
                         "turn_detection": {
-                            "type": "server_vad",
-                            "threshold": 0.45,
-                            "prefix_padding_ms": 250,
-                            "silence_duration_ms": 350,
+                            "type": "semantic_vad",
+                            "eagerness": GBOP_VAD_EAGERNESS,
                             "create_response": True,
                             "interrupt_response": True,
                         },
@@ -5225,7 +5080,7 @@ class GBOPRealtimeSession:
             return False
 
         try:
-            await asyncio.wait_for(self.websocket.send(json.dumps(event)), timeout=3.0)
+            await self.websocket.send(json.dumps(event))
             return True
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
@@ -5233,99 +5088,43 @@ class GBOPRealtimeSession:
                 print("[GBOP-RT] send error:", self.last_error)
             return False
 
-    def enqueue_audio(self, pcm24_mono: bytes, captured_at=None):
+    def enqueue_audio(self, pcm24_mono: bytes):
         if self.closed or not pcm24_mono:
             return
 
-        self.received_audio_bytes += len(pcm24_mono)
-        captured_at = time.monotonic() if captured_at is None else captured_at
-        if time.monotonic() - captured_at > 1.0:
-            self.dropped_audio_frames += 1
-            return
-        # A sustained, audible signal can stop local playback before the
-        # WebSocket VAD round trip. Server VAD still decides conversational turns.
-        self.check_local_interruption(pcm24_mono, captured_at)
-        frame = (captured_at, pcm24_mono)
         try:
-            self.audio_queue.put_nowait(frame)
+            self.audio_queue.put_nowait(pcm24_mono)
         except asyncio.QueueFull:
             try:
                 self.audio_queue.get_nowait()
-                self.dropped_audio_frames += 1
             except asyncio.QueueEmpty:
                 pass
 
             try:
-                self.audio_queue.put_nowait(frame)
+                self.audio_queue.put_nowait(pcm24_mono)
             except asyncio.QueueFull:
                 pass
 
-    def check_local_interruption(self, pcm, captured_at):
-        manager = gbop_output_manager(self.member.guild.id)
-        if manager.source is None or manager.source.aborted:
-            self.local_speech_ms = 0.0
-            return
-        samples = array("h")
-        samples.frombytes(pcm)
-        if sys.byteorder != "little":
-            samples.byteswap()
-        if not samples:
-            return
-        rms_squared = sum(int(v) * int(v) for v in samples) / len(samples)
-        if captured_at - self.local_last_frame_at > 0.15:
-            self.local_speech_ms = 0.0
-        self.local_last_frame_at = captured_at
-        threshold = GBOP_BARGE_IN_RMS
-        if rms_squared >= threshold * threshold:
-            self.local_speech_ms += len(pcm) / 48.0
-        else:
-            self.local_speech_ms = 0.0
-        if (self.local_speech_ms >= 100.0
-                and (self.local_interrupt_task is None or self.local_interrupt_task.done())):
-            self.local_speech_ms = 0.0
-            self.local_interrupts += 1
-            self.turn_epoch += 1
-            self.local_interrupt_task = self.start_background(manager.interrupt())
-
     async def sender_loop(self):
-        # 20 ms at 24 kHz, mono, signed 16-bit PCM.
-        silence = bytes(960)
-        silence_frames_left = 0
         while not self.closed:
-            try:
-                if silence_frames_left:
-                    captured_at, pcm = await asyncio.wait_for(self.audio_queue.get(), 0.02)
-                else:
-                    captured_at, pcm = await self.audio_queue.get()
-                if time.monotonic() - captured_at > 1.0:
-                    self.dropped_audio_frames += 1
-                    continue
-                real_audio = True
-                # Up to 600 ms of trailing silence lets server VAD end a turn
-                # even when Discord stops transmitting after a short tail.
-                silence_frames_left = 30
-            except asyncio.TimeoutError:
-                pcm = silence
-                real_audio = False
-                silence_frames_left -= 1
+            pcm = await self.audio_queue.get()
             ok = await self.send_event(
-                {"type": "input_audio_buffer.append",
-                 "audio": base64.b64encode(pcm).decode("ascii")},
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(pcm).decode("ascii"),
+                },
                 quiet=True,
             )
             if not ok:
                 raise RuntimeError("Realtime audio send failed.")
-            if real_audio:
-                self.sent_audio_bytes += len(pcm)
 
     async def refresh_context(self):
-        instructions = await asyncio.to_thread(self.instructions)
         await self.send_event(
             {
                 "type": "session.update",
                 "session": {
                     "type": "realtime",
-                    "instructions": instructions,
+                    "instructions": self.instructions(),
                 },
             },
             quiet=True,
@@ -5366,35 +5165,8 @@ class GBOPRealtimeSession:
             }
         )
 
-    def start_background(self, coroutine):
-        task = asyncio.create_task(coroutine)
-        self.background_tasks.add(task)
-        def done(completed):
-            self.background_tasks.discard(completed)
-            if not completed.cancelled() and completed.exception() is not None:
-                print("[GBOP-RT] background task error:", repr(completed.exception()))
-        task.add_done_callback(done)
-        return task
-
-    async def finish_tools(self, items, response_id, epoch):
-        # Keep database actions ordered without blocking incoming VAD events.
-        async with self.tool_lock:
-            if (self.closed or epoch != self.turn_epoch
-                    or response_id in self.interrupted_responses):
-                return
-            for item in items:
-                if (self.closed or epoch != self.turn_epoch
-                        or response_id in self.interrupted_responses):
-                    break
-                await self.execute_tool(item)
-            await self.refresh_context()
-            # An action already started may finish after an interruption, but
-            # its old voice reply must never talk over the member's newer turn.
-            if (not self.closed and epoch == self.turn_epoch
-                    and not self.user_speaking
-                    and self.active_response_id is None
-                    and response_id not in self.interrupted_responses):
-                await self.send_event({"type": "response.create"})
+        self.tool_output_pending = True
+        await self.refresh_context()
 
     async def receiver_loop(self):
         async for raw in self.websocket:
@@ -5415,34 +5187,11 @@ class GBOPRealtimeSession:
                 print("[GBOP-RT] API error:", self.last_error)
                 continue
 
-            if event_type == "response.created":
-                self.active_response_id = (event.get("response") or {}).get("id")
-                continue
-
             if event_type == "input_audio_buffer.speech_started":
-                self.speech_starts += 1
-                self.turn_epoch += 1
-                self.user_speaking = True
-                if self.active_response_id:
-                    self.interrupted_responses.add(self.active_response_id)
-                print("[GBOP-RT] speech started:", self.member.id)
-                await gbop_output_manager(self.member.guild.id).interrupt(
-                    auto_cancelled_session=self,
-                )
-                self.output_source = None
-                self.output_item_id = None
-                continue
-
-            if event_type == "input_audio_buffer.speech_stopped":
-                self.speech_stops += 1
-                self.user_speaking = False
-                print("[GBOP-RT] speech stopped:", self.member.id)
+                await gbop_output_manager(self.member.guild.id).interrupt()
                 continue
 
             if event_type == "response.output_audio.delta":
-                response_id = event.get("response_id")
-                if self.user_speaking or response_id in self.interrupted_responses:
-                    continue
                 delta = event.get("delta")
                 if not delta:
                     continue
@@ -5460,7 +5209,6 @@ class GBOPRealtimeSession:
                         self,
                         self.voice_client,
                         item_id,
-                        response_id,
                     )
                     self.output_item_id = item_id
 
@@ -5468,9 +5216,6 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "response.output_audio.done":
-                if (event.get("response_id") in self.interrupted_responses
-                        or event.get("item_id") != self.output_item_id):
-                    continue
                 if self.output_source is not None:
                     self.output_source.finish()
                 self.output_source = None
@@ -5479,107 +5224,88 @@ class GBOPRealtimeSession:
 
             if event_type == "response.output_audio_transcript.done":
                 transcript = (event.get("transcript", "") or "").strip()
-                if transcript and event.get("response_id") not in self.interrupted_responses:
-                    self.start_background(asyncio.to_thread(
-                        ai_save_message, self.member.id, "assistant", transcript,
-                    ))
+                if transcript:
+                    ai_save_message(self.member.id, "assistant", transcript)
                 continue
 
             if event_type == "response.output_item.done":
                 item = event.get("item") or {}
                 if item.get("type") == "function_call":
-                    response_id = event.get("response_id")
-                    self.pending_tool_items.setdefault(response_id, []).append(item)
+                    await self.execute_tool(item)
                 continue
 
             if event_type == "response.done":
                 response = event.get("response") or {}
                 status = response.get("status")
-                response_id = response.get("id")
-                if self.active_response_id == response_id:
-                    self.active_response_id = None
-                manager = gbop_output_manager(self.member.guild.id)
-                if manager.session is self and manager.response_id == response_id:
-                    if manager.source is not None:
-                        manager.source.finish()
-                if status == "failed":
-                    self.last_error = str(response.get("status_details") or "Response failed")
-                    print("[GBOP-RT] response failed:", self.last_error)
-                items = self.pending_tool_items.pop(response_id, [])
-                if (items and status == "completed" and not self.user_speaking
-                        and response_id not in self.interrupted_responses):
-                    self.start_background(self.finish_tools(
-                        items, response_id, self.turn_epoch,
-                    ))
+
+                if self.tool_output_pending and status not in ("cancelled", "failed"):
+                    self.tool_output_pending = False
+                    await self.send_event({"type": "response.create"})
 
     async def run(self):
         backoff = 1.0
+
         while not self.closed:
             self.ready.clear()
-            receiver = sender = None
-            retry = False
+
             try:
                 print("[GBOP-RT] connecting:", self.member, GBOP_REALTIME_MODEL)
                 self.websocket = await self.connect_ws()
                 self.last_error = None
-                self.active_response_id = None
-                self.user_speaking = False
-                self.interrupted_responses.clear()
-                self.pending_tool_items.clear()
+
                 receiver = asyncio.create_task(self.receiver_loop())
-                update = await asyncio.to_thread(self.session_update)
-                if not await self.send_event(update):
-                    raise RuntimeError("Realtime session update send failed")
+
+                await self.send_event(self.session_update())
                 await asyncio.wait_for(self.ready.wait(), timeout=10)
+
                 sender = asyncio.create_task(self.sender_loop())
+
                 print("[GBOP-RT] READY:", self.member)
-                backoff = 1.0
-                done, _ = await asyncio.wait(
-                    {receiver, sender}, return_when=asyncio.FIRST_COMPLETED)
+
+                done, pending = await asyncio.wait(
+                    {receiver, sender},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                for task in pending:
+                    task.cancel()
+
                 for task in done:
-                    task.result()
-                if not self.closed:
-                    raise RuntimeError("Realtime connection ended")
+                    exc = task.exception()
+                    if exc is not None:
+                        raise exc
+
+                backoff = 1.0
+
             except asyncio.CancelledError:
                 break
+
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 print("[GBOP-RT] session error:", self.member, self.last_error)
-                retry = not self.closed
+
+                if self.closed:
+                    break
+
+                await asyncio.sleep(backoff)
+                backoff = min(8.0, backoff * 2)
+
             finally:
-                self.turn_epoch += 1
-                manager = gbop_output_manager(self.member.guild.id)
-                if manager.session is self:
-                    await manager.interrupt(auto_cancelled_session=self)
-                self.output_source = None
-                self.output_item_id = None
-                tasks = [task for task in (receiver, sender) if task is not None]
-                tasks.extend(list(self.background_tasks))
-                for task in tasks:
-                    task.cancel()
-                if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
                 ws = self.websocket
                 self.websocket = None
                 self.ready.clear()
+
                 if ws is not None:
                     try:
                         await ws.close()
                     except Exception:
                         pass
-                # Do not replay stale queued speech into a fresh conversation.
-                while not self.audio_queue.empty():
-                    self.audio_queue.get_nowait()
-            if retry:
-                await asyncio.sleep(backoff)
-                backoff = min(8.0, backoff * 2)
 
     async def close(self):
         self.closed = True
 
         if self.runner is not None:
             self.runner.cancel()
-            await asyncio.gather(self.runner, return_exceptions=True)
 
         if self.output_source is not None:
             self.output_source.abort()
@@ -5625,56 +5351,32 @@ class GBOPRealtimeManager:
             self.sessions[key] = session
             session.runner = asyncio.create_task(session.run())
             return session
+
     async def preconnect_channel(self, voice_client, loop):
         for member in getattr(voice_client.channel, "members", []):
             if member.bot:
                 continue
 
             try:
-                allowed, _ = await asyncio.to_thread(
-                    gbop_voice_member_allowed,
-                    member,
-                )
-            except Exception as exc:
-                print(
-                    "[GBOP-RT] voice auth preconnect error:",
-                    type(exc).__name__,
-                    exc,
-                )
-                continue
+                allowed, _ = gbop_voice_member_allowed(member)
+            except Exception:
+                allowed = False
 
             if allowed:
                 await self.get_session(member, voice_client, loop)
 
-    async def feed(self, member, voice_client, pcm24, loop, captured_at=None):
-        # Do not hit Supabase for every incoming audio packet
-        # once this member already has an authorized session.
-        session = self.sessions.get(self.key(member))
+    async def feed(self, member, voice_client, pcm24, loop):
+        try:
+            allowed, _ = gbop_voice_member_allowed(member)
+        except Exception:
+            return
 
-        if session is None or session.closed:
-            try:
-                allowed, _ = await asyncio.to_thread(
-                    gbop_voice_member_allowed,
-                    member,
-                )
-            except Exception as exc:
-                print(
-                    "[GBOP-RT] voice auth error:",
-                    type(exc).__name__,
-                    exc,
-                )
-                return
+        if not allowed:
+            return
 
-            if not allowed:
-                return
+        session = await self.get_session(member, voice_client, loop)
+        session.enqueue_audio(pcm24)
 
-            session = await self.get_session(
-                member,
-                voice_client,
-                loop,
-            )
-
-        session.enqueue_audio(pcm24, captured_at)
     async def close_guild(self, guild_id: int):
         keys = [key for key in self.sessions if key[0] == guild_id]
 
@@ -5723,26 +5425,15 @@ class GBOPRealtimeSink(voice_recv.AudioSink):
         if not pcm24:
             return
 
-        captured_at = time.monotonic()
-        future = asyncio.run_coroutine_threadsafe(
+        asyncio.run_coroutine_threadsafe(
             GBOP_REALTIME_MANAGER.feed(
                 member,
                 self.voice_client_ref,
                 pcm24,
                 self.loop,
-                captured_at,
             ),
             self.loop,
         )
-        future.add_done_callback(self._feed_done)
-
-    @staticmethod
-    def _feed_done(future):
-        if future.cancelled():
-            return
-        error = future.exception()
-        if error is not None:
-            print("[GBOP-RX] audio handoff failed:", type(error).__name__, error)
 
     def cleanup(self):
         self.closed = True
@@ -5774,7 +5465,7 @@ def gbop_start_realtime_listener(voice_client):
         )
     )
 
-    print("[GBOP-RT] voice-v7 realtime Discord audio bridge ACTIVE")
+    print("[GBOP-RT] realtime Discord audio bridge ACTIVE")
 
 
 async def gbop_voice_health_text(interaction):
@@ -5805,18 +5496,8 @@ async def gbop_voice_health_text(interaction):
             ),
             f"Realtime model: **{GBOP_REALTIME_MODEL}**",
             f"Realtime voice: **{GBOP_REALTIME_VOICE}**",
-            "Repair build: **voice-v7 / receive-v2**",
-            f"Playbook knowledge: **{GTOP_KNOWLEDGE_VERSION}**",
-            f"Process-wide decoded / Opus errors: **{GBOP_RX_STATS['decoded']} / {GBOP_RX_STATS['opus_errors']}**",
-            f"Process-wide DAVE errors / concealed: **{GBOP_RX_STATS['dave_errors']} / {GBOP_RX_STATS['concealed']}**",
-            f"DAVE ready: **{bool(getattr(getattr(getattr(vc, '_connection', None), 'dave_session', None), 'ready', False))}**",
-            f"Your received audio: **{session.received_audio_bytes // 48 if session else 0} ms**",
-            f"Your audio sent to OpenAI: **{session.sent_audio_bytes // 48 if session else 0} ms**",
-            f"Your input queue / dropped frames: **{session.audio_queue.qsize() if session else 0} / {session.dropped_audio_frames if session else 0}**",
-            f"Local interruptions: **{session.local_interrupts if session else 0}**",
-            f"Receive decrypted / key waits / unknown sender: **{GBOP_RX_STATS['dave_decrypted']} / {GBOP_RX_STATS['dave_wait']} / {GBOP_RX_STATS['unknown_sender']}**",
-            f"DAVE protocol: **{getattr(getattr(vc, '_connection', None), 'dave_protocol_version', 0)}**",
-            f"Your speech starts / stops: **{session.speech_starts if session else 0} / {session.speech_stops if session else 0}**",
+            f"VAD: **semantic_vad / {GBOP_VAD_EAGERNESS}**",
+            f"Max response tokens: **{GBOP_REALTIME_MAX_OUTPUT_TOKENS}**",
             f"Your session exists: **{session is not None}**",
             f"Your WebSocket ready: **{bool(session and session.ready.is_set())}**",
             (
