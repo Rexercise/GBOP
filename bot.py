@@ -4865,14 +4865,62 @@ GBOP_RT_SESSIONS = {}
 GBOP_RT_OUTPUT_MANAGERS = {}
 GBOP_RT_SINKS = {}
 GBOP_RT_LOCKS = {}
-
+_GBOP_VOICE_ACCESS_CACHE = {}
+_GBOP_VOICE_ACCESS_CACHE_TTL = 15.0
+_GBOP_VOICE_ACCESS_CACHE_LOCK = threading.Lock()
 
 def gbop_voice_member_allowed(member):
-    ensure_member_record(member)
-    record = get_member_record(member.id)
-
     if is_owner(member):
         return True, None
+
+    if not has_member_role(member):
+        return False, "Missing GTOP member role."
+
+    user_id = int(member.id)
+    now = time.monotonic()
+
+    with _GBOP_VOICE_ACCESS_CACHE_LOCK:
+        cached = _GBOP_VOICE_ACCESS_CACHE.get(user_id)
+
+    if cached is not None:
+        cached_at, allowed, reason = cached
+
+        if (now - cached_at) < _GBOP_VOICE_ACCESS_CACHE_TTL:
+            return allowed, reason
+
+    try:
+        ensure_member_record(member)
+        record = get_member_record(user_id)
+
+        if record["revoked"]:
+            allowed = False
+            reason = "GBOP access is revoked."
+
+        elif not record["activated"]:
+            allowed = False
+            reason = "GBOP profile is not activated."
+
+        else:
+            allowed = True
+            reason = None
+
+    except Exception:
+        logging.exception(
+            "[GBOP-VOICE] Member authorization lookup failed for user %s",
+            user_id,
+        )
+
+        allowed = False
+        reason = "GBOP access could not be verified."
+
+    with _GBOP_VOICE_ACCESS_CACHE_LOCK:
+        _GBOP_VOICE_ACCESS_CACHE[user_id] = (
+            time.monotonic(),
+            allowed,
+            reason,
+        )
+
+    return allowed, reason
     if not has_member_role(member):
         return False, "Missing GTOP member role."
     if record["revoked"]:
