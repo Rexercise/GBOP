@@ -3,6 +3,9 @@ uvicorn[standard]>=0.35
 httpx>=0.28
 openai>=2.0
 python-dotenv>=1.1
-discord.py
-discord-ext-voice-recv
+
+discord.py[voice]==2.7.1
+davey==0.1.6
+websockets>=15,<17
+git+https://github.com/porgeeratad/discord-ext-voice-recv.git@03dd1e2dafe85522cc458441cd5b143b136ac836#egg=discord-ext-voice-recv
 psycopg[binary]>=3.2,<4
