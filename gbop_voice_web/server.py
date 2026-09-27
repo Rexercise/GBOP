@@ -91,22 +91,55 @@ DISCORD_API = "https://discord.com/api/v10"
 DISCORD_AUTHORIZE_URL = "https://discord.com/oauth2/authorize"
 DISCORD_TOKEN_URL = f"{DISCORD_API}/oauth2/token"
 
-# Local preview sessions. Discord access tokens stay only in server memory.
-# Restarting GBOP Voice logs everyone out, which is fine for this local stage.
-OAUTH_STATES: dict[str, float] = {}
+# Discord access tokens stay only in server memory for authenticated sessions.
+# OAuth login state itself is stateless + browser-bound so Render restarts cannot
+# invalidate an in-progress Discord authorization redirect.
 AUTH_SESSIONS: dict[str, dict[str, Any]] = {}
 
 SESSION_COOKIE = "gbop_voice_session"
+OAUTH_STATE_COOKIE = "gbop_oauth_state_nonce"
 SESSION_TTL_SECONDS = 12 * 60 * 60
+OAUTH_STATE_TTL_SECONDS = 10 * 60
 ROLE_RECHECK_SECONDS = 60
+COOKIE_SECURE = DISCORD_REDIRECT_URI.lower().startswith("https://")
+
+
+def _sign_oauth_state(timestamp: int, nonce: str) -> str:
+    payload = f"{timestamp}.{nonce}"
+    signature = hmac.new(
+        DISCORD_CLIENT_SECRET.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def _verify_oauth_state(state: str) -> str | None:
+    try:
+        timestamp_text, nonce, signature = state.split(".", 2)
+        timestamp = int(timestamp_text)
+    except (TypeError, ValueError):
+        return None
+
+    age = time.time() - timestamp
+    if age < -60 or age > OAUTH_STATE_TTL_SECONDS:
+        return None
+
+    payload = f"{timestamp}.{nonce}"
+    expected = hmac.new(
+        DISCORD_CLIENT_SECRET.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected):
+        return None
+
+    return nonce
 
 
 def _cleanup_auth_state():
     now = time.time()
-
-    for state, created_at in list(OAUTH_STATES.items()):
-        if now - created_at > 600:
-            OAUTH_STATES.pop(state, None)
 
     for sid, session in list(AUTH_SESSIONS.items()):
         if now >= float(session.get("expires_at", 0)):
@@ -961,8 +994,8 @@ async def service_worker():
 async def auth_discord():
     _cleanup_auth_state()
 
-    state = secrets.token_urlsafe(32)
-    OAUTH_STATES[state] = time.time()
+    nonce = secrets.token_urlsafe(32)
+    state = _sign_oauth_state(int(time.time()), nonce)
 
     params = {
         "client_id": DISCORD_CLIENT_ID,
@@ -973,18 +1006,34 @@ async def auth_discord():
         "prompt": "consent",
     }
 
-    return RedirectResponse(
+    response = RedirectResponse(
         DISCORD_AUTHORIZE_URL + "?" + urlencode(params),
         status_code=302,
     )
+    response.set_cookie(
+        OAUTH_STATE_COOKIE,
+        nonce,
+        httponly=True,
+        samesite="lax",
+        secure=COOKIE_SECURE,
+        max_age=OAUTH_STATE_TTL_SECONDS,
+        path="/auth/discord",
+    )
+    return response
 
 
 @app.get("/auth/discord/callback")
-async def auth_discord_callback(code: str = "", state: str = ""):
+async def auth_discord_callback(request: Request, code: str = "", state: str = ""):
     _cleanup_auth_state()
 
-    created_at = OAUTH_STATES.pop(state, None)
-    if not state or created_at is None or time.time() - created_at > 600:
+    cookie_nonce = request.cookies.get(OAUTH_STATE_COOKIE, "")
+    state_nonce = _verify_oauth_state(state) if state else None
+
+    if (
+        not cookie_nonce
+        or not state_nonce
+        or not hmac.compare_digest(cookie_nonce, state_nonce)
+    ):
         raise HTTPException(status_code=400, detail="Invalid or expired Discord login state.")
 
     if not code:
@@ -1059,9 +1108,15 @@ async def auth_discord_callback(code: str = "", state: str = ""):
         sid,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=COOKIE_SECURE,
         max_age=min(SESSION_TTL_SECONDS, oauth_expires_in),
         path="/",
+    )
+    response.delete_cookie(
+        OAUTH_STATE_COOKIE,
+        path="/auth/discord",
+        secure=COOKIE_SECURE,
+        samesite="lax",
     )
     return response
 
