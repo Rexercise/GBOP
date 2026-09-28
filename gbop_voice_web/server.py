@@ -1,5 +1,6 @@
 
 import asyncio
+import math
 import hashlib
 import hmac
 import json
@@ -13,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db_compat import db
 from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE, tier_max_r, infer_tier, tier_used_r
+from gbop_voice_web.risk_profiles import get_profile, save_profile, tier_limit, profile_context
 from typing import Any
 from urllib.parse import urlencode
 
@@ -284,7 +286,7 @@ def member_context(user_id: int) -> str:
             (GTOP_GUILD_ID, user_id),
         ).fetchall()
 
-    lines = ["CURRENT VERIFIED GBOP MEMBER STATE"]
+    lines = ["CURRENT VERIFIED GBOP MEMBER STATE", profile_context(get_profile(db, GTOP_GUILD_ID, user_id))]
 
     if trades:
         lines.append("Open trades:")
@@ -435,8 +437,9 @@ def tool_open_trade(user_id: int, args: dict):
             "message": "Ask which GTOP risk tier applies before saving this custom/ambiguous entry.",
         }
 
+    profile = get_profile(db, GTOP_GUILD_ID, user_id)
     risk_r = float(args["risk_r"])
-    if risk_r <= 0:
+    if not math.isfinite(risk_r) or risk_r <= 0:
         return {"ok": False, "error": "Risk must be greater than 0R."}
 
     objective = args.get("objective") or "Not specified at entry"
@@ -486,9 +489,9 @@ def tool_open_trade(user_id: int, args: dict):
         execution_id = cur.lastrowid
 
     warnings = []
-    if risk_r > tier_max_r(tier) + 1e-6:
+    if risk_r > tier_limit(profile, tier) + 1e-6:
         warnings.append(
-            f"Tier {tier} guideline is {tier_max_r(tier):.2f}R; {risk_r:.2f}R was recorded."
+            f"Tier {tier} guideline is {tier_limit(profile, tier):.2f}R; {risk_r:.2f}R was recorded."
         )
     if risk_r > 1.0 + 1e-6:
         warnings.append(
@@ -518,7 +521,10 @@ def tool_add_entry(user_id: int, args: dict):
             "message": "Ask which GTOP risk tier applies before saving this entry.",
         }
 
+    profile = get_profile(db, GTOP_GUILD_ID, user_id)
     risk_r = float(args["risk_r"])
+    if not math.isfinite(risk_r) or risk_r <= 0:
+        return {"ok": False, "error": "Risk must be a finite number greater than 0R."}
     used_before = thesis_used_r(row["id"])
 
     with db() as conn:
@@ -544,13 +550,13 @@ def tool_add_entry(user_id: int, args: dict):
 
     total = used_before + risk_r
     warnings = []
-    if risk_r > tier_max_r(tier) + 1e-6:
+    if risk_r > tier_limit(profile, tier) + 1e-6:
         warnings.append(
-            f"Tier {tier} guideline is {tier_max_r(tier):.2f}R; {risk_r:.2f}R was recorded."
+            f"Tier {tier} guideline is {tier_limit(profile, tier):.2f}R; {risk_r:.2f}R was recorded."
         )
     tier_total = tier_used_r(db, row["id"], tier)
-    if tier_total > tier_max_r(tier) + 1e-6:
-        warnings.append(f"Cumulative Tier {tier} risk {tier_total:.2f}R exceeds its {tier_max_r(tier):.2f}R allocation.")
+    if tier_total > tier_limit(profile, tier) + 1e-6:
+        warnings.append(f"Cumulative Tier {tier} risk {tier_total:.2f}R exceeds its {tier_limit(profile, tier):.2f}R allocation.")
     if total > 1.0 + 1e-6:
         warnings.append(
             f"Recorded thesis risk is now {total:.2f}R, above the 1.00R protocol budget."
@@ -754,7 +760,43 @@ def tool_delete_journal(user_id: int, args: dict, confirmation_token=None):
     return {"ok": True, "deleted": True, "journal_id": deleted["id"], "trade_records_preserved": True}
 
 
+def tool_get_risk_profile(user_id: int, args: dict):
+    return {"ok": True, "profile": get_profile(db, GTOP_GUILD_ID, user_id)}
+
+
+def tool_save_risk_profile(user_id: int, args: dict):
+    if args.get("confirmed") is not True:
+        return {"ok": False, "error": "Summarize the proposed risk profile and ask the member to confirm before saving."}
+    try:
+        profile = save_profile(db, GTOP_GUILD_ID, user_id, args)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "profile": profile,
+            "message": "Saved for future risk checks, including new entries on open theses. Existing executions are unchanged."}
+
+
 TOOLS = [
+    {
+        "type": "function", "name": "get_risk_profile",
+        "description": "Read the authenticated member's saved risk preferences or unconfirmed GTOP defaults.",
+        "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+    },
+    {
+        "type": "function", "name": "save_risk_profile",
+        "description": "Save this member's chosen risk profile after summarizing and receiving confirmation. Tier percentages total 100% of 1R. Zero allocation is allowed. No other member is changed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "account_risk_pct": {"type": ["number", "null"], "description": "Account percentage represented by the entire 1R thesis budget; null if the member leaves it unspecified."},
+                "tier1_pct": {"type": "number", "minimum": 0, "maximum": 100},
+                "tier2_pct": {"type": "number", "minimum": 0, "maximum": 100},
+                "tier3_pct": {"type": "number", "minimum": 0, "maximum": 100},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["account_risk_pct", "tier1_pct", "tier2_pct", "tier3_pct", "confirmed"],
+            "additionalProperties": False,
+        },
+    },
     {
         "type": "function", "name": "prepare_journal_delete",
         "description": "Preview one of this member's journals for deletion. Ask for confirmation and end the turn; nothing is deleted yet.",
@@ -880,6 +922,8 @@ def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
     if name == "delete_journal":
         return tool_delete_journal(user_id, args, confirmation_token)
     handlers = {
+        "get_risk_profile": tool_get_risk_profile,
+        "save_risk_profile": tool_save_risk_profile,
         "prepare_journal_delete": tool_prepare_journal_delete,
         "get_trade_state": tool_get_trade_state,
         "get_journal_history": tool_get_journal_history,
@@ -917,7 +961,7 @@ GTOP protocol:
 - 9ate8 is written exactly 9ate8.
 - Model 1 / CSD is an execution-confirmation mechanism, not a standalone play.
 - One directional thesis has a 1R risk budget across executions.
-- Tier classifications and 60/30/10 allocations follow the canonical knowledge below.
+- Tier classifications follow canonical knowledge; saved member allocations override the default 60/30/10 split.
 - A stopped execution does not reset the thesis budget.
 - Risk violations are WARN + SAVE. Do not refuse to record a real trade merely
   because protocol was broken.
@@ -926,6 +970,25 @@ GTOP protocol:
 - For 9ate8, a closure outside the selected range is the key invalidation;
   mere stalling is not.
 - Custom plays and entry models are allowed.
+
+Personal risk onboarding:
+- If configured=false, invite setup at the first natural opportunity. Ask one
+  question at a time: what percentage of their account should the TOTAL thesis
+  budget (1R) represent, then how to split that budget across tiers 1, 2, and 3.
+- They may skip setup or leave account risk unspecified. Never block journaling
+  for onboarding. Do not repeatedly push setup after a refusal in this conversation.
+- Offer 60/30/10 as a starting suggestion only. Accept custom allocations including
+  75/25/0 and 100/0/0, totaling 100%. Never silently normalize their percentages.
+- Repeat the full proposed profile and save only after explicit agreement.
+- Read and update their own profile whenever they ask. Never apply the owner's
+  risk percentage to another member. Stored settings are preferences, not a claim
+  of suitability or guaranteed performance. No automatic risk recommendation.
+- 1R remains the entire thesis budget; tier percentages are shares of 1R, NOT
+  account percentages. Multiply account risk by tier share when converting.
+- Saved allocations take precedence over canonical DEFAULT allocations while
+  GTOP entry-model classifications remain intact. New checks on open theses also
+  use the current profile; past executions are never rewritten. Warn and save
+  over-budget real executions, including entries in a zero-allocation tier.
 
 Return a concise, factual result for GPT-Live to say aloud. Usually 1-4 sentences.
 """.strip()
@@ -1020,7 +1083,9 @@ For ANY request that depends on the member's private records or stored state
 trade or journal, delegate the task to the client backend. Never guess private
 state and never claim a database action succeeded without backend confirmation.
 You can delete journal entries through the backend. Delegate deletion requests
-and subsequent confirmations; never say deletion is unavailable. Read the
+and subsequent confirmations; never say deletion is unavailable.
+Delegate risk-profile setup, changes, and confirmations to the backend. Saved
+member allocations override default 60/30/10; do not override their chosen split. Read the
 backend's entry preview and ask the user to confirm before deletion. Journal
 deletion preserves trade and execution records.
 
@@ -1265,10 +1330,18 @@ async def live_session(request: Request):
     if not offer_sdp.strip():
         raise HTTPException(status_code=400, detail="Missing WebRTC SDP offer.")
 
+    risk_profile = await asyncio.to_thread(get_profile, db, GTOP_GUILD_ID, user_id)
+    member_instructions = LIVE_INSTRUCTIONS + "\n\n" + profile_context(risk_profile)
+    if not risk_profile["configured"]:
+        member_instructions += ("\nAt the first natural opening, invite personal risk setup: "
+            "What percentage of your account do you want your total thesis risk budget to represent? "
+            "Then ask about their tier split, one question at a time. They may skip. "
+            "Delegate their answers to the backend; summarize and confirm before saving.")
+
     body = {
         "session": {
             "model": LIVE_MODEL,
-            "instructions": LIVE_INSTRUCTIONS,
+            "instructions": member_instructions,
             "delegation": {"type": "client"},
             "audio": {
                 "output": {
