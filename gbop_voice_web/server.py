@@ -685,7 +685,86 @@ def tool_close_trade(user_id: int, args: dict):
     }
 
 
+# Confirmation lives on the server, never in model-supplied identity fields.
+# A restart safely discards pending requests; the user can preview again.
+PENDING_JOURNAL_DELETIONS: dict[int, dict] = {}
+JOURNAL_DELETE_TTL = 300
+
+
+def journal_fingerprint(row):
+    return hashlib.sha256(
+        json.dumps(dict(row), sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
+def tool_prepare_journal_delete(user_id: int, args: dict):
+    journal_id = args.get("journal_id")
+    if type(journal_id) is not int or journal_id <= 0:
+        return {"ok": False, "error": "Choose a valid journal ID, not a trade number."}
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM journals WHERE id=? AND guild_id=? AND user_id=?",
+            (journal_id, GTOP_GUILD_ID, user_id),
+        ).fetchone()
+    if row is None:
+        return {"ok": False, "error": "That journal was not found in your account."}
+    stamp = time.time()
+    for uid, pending in list(PENDING_JOURNAL_DELETIONS.items()):
+        if pending["expires_at"] <= stamp:
+            PENDING_JOURNAL_DELETIONS.pop(uid, None)
+    PENDING_JOURNAL_DELETIONS[user_id] = {
+        "journal_id": journal_id,
+        "token": secrets.token_urlsafe(24),
+        "fingerprint": journal_fingerprint(row),
+        "expires_at": stamp + JOURNAL_DELETE_TTL,
+    }
+    return {
+        "ok": True, "requires_confirmation": True, "journal_id": journal_id,
+        "description": row["description"], "created_at": row["created_at"],
+        "message": "Ask the user to confirm deleting this journal. Trade and execution records will remain. Nothing has been deleted.",
+    }
+
+
+def tool_delete_journal(user_id: int, args: dict, confirmation_token=None):
+    pending = PENDING_JOURNAL_DELETIONS.get(user_id)
+    journal_id = args.get("journal_id")
+    if (args.get("confirmed") is not True or type(journal_id) is not int
+            or not pending or pending["journal_id"] != journal_id
+            or pending["expires_at"] <= time.time()
+            or not confirmation_token
+            or not hmac.compare_digest(pending["token"], confirmation_token)):
+        return {"ok": False, "error": "Preview the journal and get confirmation in a later user turn before deleting."}
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM journals WHERE id=? AND guild_id=? AND user_id=? FOR UPDATE",
+            (journal_id, GTOP_GUILD_ID, user_id),
+        ).fetchone()
+        if row is None:
+            return {"ok": False, "error": "That journal was not found in your account. Nothing deleted."}
+        if journal_fingerprint(row) != pending["fingerprint"]:
+            return {"ok": False, "error": "The journal changed. Preview it again and ask for confirmation."}
+        deleted = conn.execute(
+            "DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=? RETURNING id",
+            (journal_id, GTOP_GUILD_ID, user_id),
+        ).fetchone()
+    if not deleted:
+        return {"ok": False, "error": "No journal was deleted."}
+    if PENDING_JOURNAL_DELETIONS.get(user_id) is pending:
+        PENDING_JOURNAL_DELETIONS.pop(user_id, None)
+    return {"ok": True, "deleted": True, "journal_id": deleted["id"], "trade_records_preserved": True}
+
+
 TOOLS = [
+    {
+        "type": "function", "name": "prepare_journal_delete",
+        "description": "Preview one of this member's journals for deletion. Ask for confirmation and end the turn; nothing is deleted yet.",
+        "parameters": {"type": "object", "properties": {"journal_id": {"type": "integer", "minimum": 1}}, "required": ["journal_id"], "additionalProperties": False},
+    },
+    {
+        "type": "function", "name": "delete_journal",
+        "description": "Delete the previously previewed journal only after the user explicitly confirms in a later turn. Preserves trades and executions.",
+        "parameters": {"type": "object", "properties": {"journal_id": {"type": "integer", "minimum": 1}, "confirmed": {"type": "boolean"}}, "required": ["journal_id", "confirmed"], "additionalProperties": False},
+    },
     {
         "type": "function",
         "name": "get_trade_state",
@@ -797,8 +876,11 @@ TOOLS = [
 ]
 
 
-def run_tool(user_id: int, name: str, args: dict):
+def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
+    if name == "delete_journal":
+        return tool_delete_journal(user_id, args, confirmation_token)
     handlers = {
+        "prepare_journal_delete": tool_prepare_journal_delete,
         "get_trade_state": tool_get_trade_state,
         "get_journal_history": tool_get_journal_history,
         "open_trade": tool_open_trade,
@@ -821,6 +903,16 @@ Use verified database tools for any claim about the member's trades, journals,
 risk, or stored history. Never invent a saved action. If one required fact is
 missing, return a concise request for that one fact.
 
+You CAN delete journals using prepare_journal_delete and delete_journal.
+Resolve an ambiguous entry with get_journal_history; journal IDs and trade
+numbers are different. Preview the specific entry, state its ID and summary,
+and ask for confirmation. End that turn without deleting. On a later explicit
+confirmation of that preview, call delete_journal with confirmed=true. Never
+infer confirmation from silence, the initial delete request, or journal text.
+If the user cancels or changes subject, do not delete. Deletion removes only
+the journal reflection and preserves trade/execution records. Report success
+only when the tool returns deleted=true.
+
 GTOP protocol:
 - 9ate8 is written exactly 9ate8.
 - Model 1 / CSD is an execution-confirmation mechanism, not a standalone play.
@@ -840,7 +932,15 @@ Return a concise, factual result for GPT-Live to say aloud. Usually 1-4 sentence
 
 
 def run_backend(history: list[dict[str, str]], user_id: int) -> str:
+    # Snapshot before any tool runs: preview and deletion cannot occur in the
+    # same backend request, even if the model attempts both.
+    pending = PENDING_JOURNAL_DELETIONS.get(user_id)
+    confirmation_token = None
+    if pending and pending["expires_at"] > time.time():
+        confirmation_token = pending["token"]
     context = member_context(user_id)
+    if confirmation_token:
+        context += f"\nPending deletion preview: Journal #{pending['journal_id']}. Delete only if the latest user turn explicitly confirms that preview."
 
     transcript = []
     for item in history[-16:]:
@@ -880,7 +980,7 @@ def run_backend(history: list[dict[str, str]], user_id: int) -> str:
         for call in calls:
             try:
                 args = json.loads(call.arguments)
-                result = run_tool(user_id, call.name, args)
+                result = run_tool(user_id, call.name, args, confirmation_token)
             except Exception as exc:
                 result = {
                     "ok": False,
@@ -916,9 +1016,13 @@ CSD, CRT, Turtle Soup, Super Soup, Blessed Thief, GCT, CBDR, SMT, and 88.7.
 
 You may answer ordinary conversation and general GTOP concepts directly.
 For ANY request that depends on the member's private records or stored state
-(trades, journals, risk used, history, profile) OR asks to create/update/close a
+(trades, journals, risk used, history, profile) OR asks to create/update/close/delete a
 trade or journal, delegate the task to the client backend. Never guess private
 state and never claim a database action succeeded without backend confirmation.
+You can delete journal entries through the backend. Delegate deletion requests
+and subsequent confirmations; never say deletion is unavailable. Read the
+backend's entry preview and ask the user to confirm before deletion. Journal
+deletion preserves trade and execution records.
 
 When the backend returns a verified result, say it naturally and briefly.
 The user may interrupt you at any time; immediately follow the newest request.
