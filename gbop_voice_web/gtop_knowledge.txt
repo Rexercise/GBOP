@@ -55,13 +55,14 @@ V5: two or more inside bars before manipulation.
 V6: a Soup level later gets souped again before distribution; remains valid if closure returns inside the range.
 
 ENTRY / EXECUTION MODELS
+Model 1, Super Soup, Turtle Soup, Breaker/OTE, KOD and Blessed Thief are execution models, not standalone plays. Plays include 9ate8, Young Lefty, Monday's Range, GCT and CBDR.
 Turtle Soup = extreme purge.
 Turtle Wick Soup = purge without a body through the level on the assigned timeframe.
-Turtle Body Soup = real/thick body pierces the level on the assigned timeframe.
+Turtle Body Soup / Model 1 is the Tier 2 entry classification. A body close through liquidity first identifies the Model 1 candidate; it is not itself CSD confirmation.
 Model 1 / CSD = after purge, confirmation is a close back through the body / change in state of delivery.
-Blessed Thief = entry at the OPENING PRICE of the selected candle. It is NOT anchored to the opening TIME of that candle and does not need to be executed when the candle first opens. The setup remains price- and phase-dependent: once the Blessed Thief level is identified, execution can occur later when price revisits that candle's opening price during the manipulation phase, while the underlying CRT thesis remains valid. It may apply to subsequent candles until the objective is achieved.
+Blessed Thief = entry at the OPENING PRICE of the selected candle. It is NOT anchored to the opening TIME of that candle and does not need to be executed when the candle first opens. The setup remains price- and phase-dependent: once the Blessed Thief level is identified, execution can occur later when price revisits that candle's opening price during the manipulation phase, while the underlying CRT thesis remains valid. Actual execution follows expressed manipulation, as detailed below. It may apply to subsequent candles until the objective is achieved.
 Super Soup = after Model 1 purge on correlated timeframe, seek Turtle Soup of that Model 1 candle on the same timeframe as a pre-confirmation entry.
-Super Soup is anticipatory/high-RR and therefore a risk entry, not fully confirmed Model 1.
+Super Soup of a Turtle Body Soup candidate is Tier 1, taken before CSD; anticipatory timing does not make it Tier 3.
 Turtle Wick Soup can perform the same functional role as CSD even without a body, but it carries different probability.
 Typical Turtle Wick Soup objective = 50% of the range.
 Turtle Body Soup is preferred for higher probability.
@@ -87,8 +88,7 @@ When GBOP explains CRT entries, it should distinguish:
 - Academic CRT sequence: Turtle Soup -> Model 1 -> Breaker / OTE -> KOD.
 - GTOP extension: Blessed Thief as the fifth entry.
 
-Do not invent a definition for KOD if one has not yet been added to the
-canonical GTOP knowledge base; preserve KOD as the fourth academic slot.
+Use the KOD Turtle Soup definition in the canonical addendum below.
 
 
 MONDAY'S RANGE
@@ -99,7 +99,7 @@ Target opposing liquidity.
 GCT — GOLDEN CANDLE TIME
 Anchor CRT to the 9 AM–1 PM H4.
 Normal CRT rules apply.
-30-minute Model 1 may be used.
+Assigned H4 Model 1 timeframe is M15. The 30-minute Model 1 belongs to CBDR, not GCT.
 
 CBDR
 2 PM–8 PM six-hour range.
@@ -111,26 +111,27 @@ SMT
 Relative divergence between correlated instruments may strengthen context.
 Example: silver purges 8 AM buy side while gold does not.
 
-88.7
-88.7 may be used as a retracement refinement inside a dealing range.
-Separately, 88.7% toward objective means most of the planned move has already delivered.
-Do not confuse 88.7 objective delivery with confirmation of the original thesis.
-At roughly 80–90% objective delivery, protect progress rather than allow a full reversal into loss.
-Preferred protection concept: trail stop into profit, often protecting roughly 20–30% profit once most of the move has concluded.
-Do not automatically default to break-even management.
-
-GTOP RISK PROTOCOL
-Risk is measured at the thesis level, not as unrelated entries.
-One directional thesis has a total 1R risk budget across executions.
-Tier 1: confirmed / highest-quality entry, up to 1.00R.
-Tier 2: early-confirmation entry, up to 0.50R.
-Tier 3: anticipatory / risk entry, up to 0.33R.
-A stopped execution does not reset the thesis risk budget.
-Entry failure does not automatically equal thesis failure.
-Re-entry is valid only if the higher-level thesis remains valid and remaining risk budget supports it.
-Adding to winners depends on continued thesis validity and risk budget, not emotion.
-If a member violates the protocol: WARN + SAVE. Do not block the actual trade record.
-Journal how risk was deployed, protected, and reused, not only final P/L.
+GTOP RISK PROTOCOL — COMMUNITY EDITION, 27 SEPTEMBER 2026
+One directional thesis receives one total 1R budget across all executions.
+Fixed cumulative tier allocations: Tier 1 = 0.60R; Tier 2 = 0.30R; Tier 3 = 0.10R.
+Tier 1: Super Soup of a Turtle Body Soup / Model 1 candidate BEFORE CSD confirmation. Predominantly preferred.
+Tier 2: Turtle Body Soup / Model 1 (same entry classification), Turtle Wick Soup, KOD Turtle Soup.
+KOD is capped at Tier 2 because it occurs late, even if it is a body soup.
+Tier 3: Breaker / OTE and Blessed Thief. Valid active executions, never study-only.
+Tier numbers describe the GTOP hierarchy, not confirmation chronology. Pre-confirmation does not imply Tier 3.
+Tier 2 remains a valid fallback if Tier 1 does not appear. All valid tiers remain available.
+Unused tier slices stay unused; do not automatically transfer them. High reward-to-risk does not override a tier cap.
+A stopped execution never resets either the thesis budget or its tier allocation.
+Separate entry failure from thesis failure. End an invalidated thesis.
+Re-entry needs an intact thesis, return to a predefined point of interest, a new recognized execution, remaining tier allocation, and remaining thesis budget. A cheaper price alone does not qualify.
+Adds require a valid thesis, an existing position in profit protected at breakeven or better, a new recognized execution, remaining tier and thesis risk, and improved trade structure.
+At approximately 80% of the predetermined objective, activate Profit Protection Mode: advance the stop into protected profit, commonly +0.20R to +0.30R, respecting logical structure. Do not invent a stop price or claim it was moved.
+The protection trigger is 80%, not 88.7%. No automatic partial at 50% is required; no mechanical breakeven rule replaces protected-profit management. A runner needs a supporting thesis and risk plan.
+88.7 remains a retracement refinement; do not confuse it with objective protection.
+Never bring regular size into a binary event such as FOMC.
+Record tier, allocated and total risk, entry/thesis invalidation, objective, maximum objective completion before failure, protection activation, MAE/MFE when known, final R, adherence and study note. Do not fabricate missing metrics.
+WARN + SAVE actual executions even when protocol is broken. Never erase or refuse a real trade solely for a risk violation.
+This is the community protocol. Do not apply an individual member's personal compounding allocation or equity-risk percentage as the community default.
 
 INVALIDATION
 Distinguish entry invalidation from thesis invalidation.

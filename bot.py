@@ -11,6 +11,10 @@ import re
 import json
 import asyncio
 from db_compat import db
+from gbop_voice_web.gtop_protocol import (
+    CANONICAL_KNOWLEDGE, tier_max_r, infer_tier as ai_infer_tier,
+    classification_warning, tier_used_r,
+)
 from datetime import datetime, timezone
 
 import discord
@@ -641,15 +645,6 @@ def thesis_remaining_r(thesis_id: int):
     return max(0.0, 1.0 - thesis_used_r(thesis_id))
 
 
-def tier_max_r(tier: int):
-    limits = {
-        1: 1.00,
-        2: 0.50,
-        3: 0.33
-    }
-    return limits.get(tier)
-
-
 thesis = app_commands.Group(
     name="thesis",
     description="GTOP thesis and risk-budget controls."
@@ -677,11 +672,10 @@ thesis = app_commands.Group(
         app_commands.Choice(name="Bearish", value="Bearish"),
     ],
     play=[
+        app_commands.Choice(name="Young Lefty (7-8-9)", value="Young Lefty"),
         app_commands.Choice(name="9ate8", value="9ate8"),
         app_commands.Choice(name="Monday Range", value="Monday Range"),
         app_commands.Choice(name="Golden Candle Time (GCT)", value="GCT"),
-        app_commands.Choice(name="Super Soup", value="Super Soup"),
-        app_commands.Choice(name="Blessed Thief", value="Blessed Thief"),
         app_commands.Choice(name="CBDR", value="CBDR"),
     ]
 )
@@ -861,14 +855,16 @@ execution = app_commands.Group(
         app_commands.Choice(name="Turtle Wick Soup", value="Turtle Wick Soup"),
         app_commands.Choice(name="Turtle Body Soup", value="Turtle Body Soup"),
         app_commands.Choice(name="Super Soup", value="Super Soup"),
+        app_commands.Choice(name="KOD Turtle Soup", value="KOD Turtle Soup"),
+        app_commands.Choice(name="Breaker / OTE", value="Breaker / OTE"),
         app_commands.Choice(name="Blessed Thief", value="Blessed Thief"),
         app_commands.Choice(name="SMT Refinement", value="SMT"),
         app_commands.Choice(name="88.7 / OTE Refinement", value="88.7 OTE"),
     ],
     tier=[
-        app_commands.Choice(name="Tier 1 — Confirmed", value=1),
-        app_commands.Choice(name="Tier 2 — Early Confirmation", value=2),
-        app_commands.Choice(name="Tier 3 — Anticipatory / Risk Entry", value=3),
+        app_commands.Choice(name="Tier 1 — Super Soup of Body / 60%", value=1),
+        app_commands.Choice(name="Tier 2 — Model 1 / Wick / KOD / 30%", value=2),
+        app_commands.Choice(name="Tier 3 — Breaker / OTE / Blessed Thief / 10%", value=3),
     ]
 )
 async def execution_log(
@@ -907,10 +903,16 @@ async def execution_log(
         return
 
     used_before = thesis_used_r(thesis_id)
-    projected_total = used_before + risk_r
-    tier_limit = tier_max_r(tier.value)
+    projected_total = risk_r + used_before
+    tier_limit = tier_max_r(ai_infer_tier(entry_model.value, tier.value))
 
     warnings = []
+    mismatch = classification_warning(entry_model.value, tier.value)
+    if mismatch:
+        warnings.append(("TIER_CLASSIFICATION", mismatch))
+    tier_total = tier_used_r(db, thesis_id, ai_infer_tier(entry_model.value, tier.value)) + risk_r
+    if tier_total > tier_limit + 0.0001:
+        warnings.append(("TIER_BUDGET", f"Cumulative tier risk {tier_total:.2f}R exceeds its {tier_limit:.2f}R allocation."))
 
     if risk_r > tier_limit + 0.0001:
         warnings.append((
@@ -1409,8 +1411,11 @@ async def save_member_trade(
         execution_id = cur.lastrowid
     trade_number = trade_number_for_id(interaction.user.id, trade_id)
     warnings = []
+    mismatch = classification_warning(entry_model, tier)
+    if mismatch:
+        warnings.append(("TIER_CLASSIFICATION", mismatch))
 
-    tier_limit = tier_max_r(tier)
+    tier_limit = tier_max_r(ai_infer_tier(entry_model, tier))
 
     if risk_r > tier_limit + 0.0001:
         warnings.append((
@@ -1557,6 +1562,7 @@ class TradeOtherDetailsModal(
         ),
     ],
     play=[
+        app_commands.Choice(name="Young Lefty (7-8-9)", value="Young Lefty"),
         app_commands.Choice(
             name="9ate8",
             value="9ate8"
@@ -1568,14 +1574,6 @@ class TradeOtherDetailsModal(
         app_commands.Choice(
             name="Golden Candle Time (GCT)",
             value="GCT"
-        ),
-        app_commands.Choice(
-            name="Super Soup",
-            value="Super Soup"
-        ),
-        app_commands.Choice(
-            name="Blessed Thief",
-            value="Blessed Thief"
         ),
         app_commands.Choice(
             name="CBDR",
@@ -1603,6 +1601,8 @@ class TradeOtherDetailsModal(
             name="Super Soup",
             value="Super Soup"
         ),
+        app_commands.Choice(name="KOD Turtle Soup", value="KOD Turtle Soup"),
+        app_commands.Choice(name="Breaker / OTE", value="Breaker / OTE"),
         app_commands.Choice(
             name="Blessed Thief",
             value="Blessed Thief"
@@ -1622,15 +1622,15 @@ class TradeOtherDetailsModal(
     ],
     tier=[
         app_commands.Choice(
-            name="Tier 1 — Confirmed",
+            name="Tier 1 — Super Soup of Body / 60%",
             value=1
         ),
         app_commands.Choice(
-            name="Tier 2 — Early Confirmation",
+            name="Tier 2 — Model 1 / Wick / KOD / 30%",
             value=2
         ),
         app_commands.Choice(
-            name="Tier 3 — Anticipatory / Risk Entry",
+            name="Tier 3 — Breaker / OTE / Blessed Thief / 10%",
             value=3
         ),
     ]
@@ -1705,10 +1705,16 @@ async def save_additional_entry(
         return
 
     used_before = thesis_used_r(trade_id)
-    projected_total = used_before + risk_r
-    tier_limit = tier_max_r(tier)
+    projected_total = risk_r + used_before
+    tier_limit = tier_max_r(ai_infer_tier(entry_model, tier))
 
     warnings = []
+    mismatch = classification_warning(entry_model, tier)
+    if mismatch:
+        warnings.append(("TIER_CLASSIFICATION", mismatch))
+    tier_total = tier_used_r(db, trade_id, ai_infer_tier(entry_model, tier)) + risk_r
+    if tier_total > tier_limit + 0.0001:
+        warnings.append(("TIER_BUDGET", f"Cumulative tier risk {tier_total:.2f}R exceeds its {tier_limit:.2f}R allocation."))
 
     if risk_r > tier_limit + 0.0001:
         warnings.append((
@@ -1857,6 +1863,8 @@ class OtherAdditionalEntryModal(
             name="Super Soup",
             value="Super Soup"
         ),
+        app_commands.Choice(name="KOD Turtle Soup", value="KOD Turtle Soup"),
+        app_commands.Choice(name="Breaker / OTE", value="Breaker / OTE"),
         app_commands.Choice(
             name="Blessed Thief",
             value="Blessed Thief"
@@ -1876,15 +1884,15 @@ class OtherAdditionalEntryModal(
     ],
     tier=[
         app_commands.Choice(
-            name="Tier 1 — Confirmed",
+            name="Tier 1 — Super Soup of Body / 60%",
             value=1
         ),
         app_commands.Choice(
-            name="Tier 2 — Early Confirmation",
+            name="Tier 2 — Model 1 / Wick / KOD / 30%",
             value=2
         ),
         app_commands.Choice(
-            name="Tier 3 — Anticipatory / Risk Entry",
+            name="Tier 3 — Breaker / OTE / Blessed Thief / 10%",
             value=3
         ),
     ]
@@ -3344,7 +3352,7 @@ if not OPENAI_API_KEY:
 
 ai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-GTOP_AI_PROMPT = """
+GTOP_AI_PROMPT = f"""
 # ROLE AND OBJECTIVE
 
 You are GBOP — Greatest Bot on the Planet — the conversational AI for
@@ -3376,179 +3384,7 @@ Examples:
 
 # GTOP CANON
 
-## CRT VARIANTS
-
-V1 — Textbook CRT:
-- Candle 1 establishes the range.
-- Candle 2 manipulates one side of that range.
-- Candle 3 distributes toward the objective.
-
-V2 — Kryptonite:
-- Two-candle CRT.
-- Candle 2 both manipulates and distributes.
-
-V3 — Extended Distribution:
-- Distribution requires more than three candles to complete.
-
-V4 — One Inside Bar:
-- Exactly one inside bar forms before the manipulation candle.
-
-V5 — Multiple Inside Bars:
-- Two or more inside bars form before the manipulation candle.
-
-V6 — Re-Soup:
-- A soup level is later souped again before distribution.
-- The CRT can remain valid when price closes back inside the controlling range.
-
-Inside-bar classification rule:
-- Count inside bars that occur BEFORE manipulation.
-- Exactly 1 -> V4.
-- 2 or more -> V5.
-- Do not classify an ordinary three-candle CRT as V4 or V5 unless the inside-bar condition exists.
-
-## 9ate8
-
-Write the name exactly as "9ate8". It is pronounced "nine ate eight."
-
-Day Shift:
-- Operates inside the 9:00 AM to 12:00 PM New York window.
-- Begin with the 8:00 AM one-hour range.
-- Ideally the 9:00 AM candle purges one side of the 8:00 AM range.
-- The primary draw is the opposing side of the selected range.
-- If the 9:00 AM candle closes outside the 8:00 AM range, that selected
-  8:00 AM 9ate8 range is invalidated.
-- Continue chronologically through later hourly relationships when appropriate
-  instead of pretending the invalidated range is still valid.
-
-Night Shift:
-- Same logic using the 8:00 PM range and the 9:00 PM to 12:00 AM window.
-
-Acceptable objectives include:
-- the opposing side of the selected 8 o'clock range;
-- 50% of the selected 8 o'clock range when the specific setup calls for it;
-- 50% of GCT when it is the relevant draw.
-
-## CANDLE SCIENCE
-
-Always interpret these relative to the prior candle:
-- Wick above = lower pricing.
-- Wick below = higher pricing.
-- Close above = higher pricing.
-- Close below = lower pricing.
-
-A closure outside the selected controlling range is structural information.
-Mere stalling or hesitation is not structural invalidation.
-
-## MODEL 1 / CSD TIMEFRAME MAPPING
-
-For the selected higher-timeframe candle:
-- Monthly -> Daily Model 1.
-- Weekly -> H4 Model 1.
-- Daily -> H1 Model 1.
-- H4 -> M15 Model 1.
-- H1 -> M5 Model 1.
-
-Model 1 / CSD is an execution-confirmation mechanism, not a standalone play.
-After a purge, confirmation is the close back through the relevant body/state
-of delivery defined by the setup.
-
-## CRT ENTRY FRAMEWORK
-
-Romeo's academic four CRT entry slots are:
-1. Turtle Soup.
-2. Model 1 / CSD.
-3. Breaker / OTE — one combined third slot.
-4. KOD.
-
-GTOP adds an exclusive fifth CRT entry:
-5. Blessed Thief.
-
-Do not incorrectly place Blessed Thief inside Romeo's academic four-entry rubric.
-
-Turtle Soup:
-- Turtle Wick Soup: the assigned timeframe shows the purge primarily as wick,
-  without the stronger body acceptance associated with a body soup.
-- Turtle Body Soup: a thicker body pierces the level on the assigned timeframe.
-- GTOP generally treats the body soup as stronger confirmation.
-- Turtle Wick Soup is commonly managed toward approximately 50% of the
-  controlling range when that is the planned objective.
-
-Blessed Thief:
-- Anchored to the OPENING PRICE of the selected candle, not the candle's
-  opening time.
-- A stop entry can execute later if price revisits that opening price during
-  manipulation while the underlying CRT thesis remains valid.
-- Do not say Blessed Thief must execute at the instant the candle opens.
-
-Super Soup:
-- A GTOP pre-confirmation / risk-entry technique.
-- After a Model 1 purge on the correlated timeframe, look for a Turtle Soup of
-  that Model 1 candle on the same timeframe to pre-confirm the entry.
-- It is not a replacement for the academic four-entry ordering above.
-
-88.7 / OTE:
-- May be used as a refined entry or add within the valid dealing range.
-- Do not confuse an 88.7 retracement refinement with the 88.7 profit-protection
-  concept near the objective.
-
-SMT:
-- Use correlated-market divergence only when the member actually identifies
-  the relevant correlated instruments and purge relationship.
-- Do not invent SMT.
-
-## H4 GTOP LABELS
-
-New York time:
-- 1 AM-5 AM: Asia Expansion.
-- 5 AM-9 AM: London Lunch.
-- 9 AM-1 PM: New York AM / GCT.
-- 1 PM-5 PM: New York PM.
-- 5 PM-9 PM: CBDR + Early Asia.
-- 9 PM-1 AM: Asia Open.
-
-## GCT — GOLDEN CANDLE TIME
-
-- GCT is the 9:00 AM-1:00 PM H4 candle.
-- Apply normal CRT logic to that H4 structure.
-- Do NOT assign the CBDR 30-minute Model 1 rule to GCT.
-- For an H4 candle, the standard assigned Model 1 timeframe is M15 unless the
-  member explicitly defines another valid context.
-
-## CBDR
-
-- CBDR is the 2:00 PM-8:00 PM six-hour range.
-- The 30-minute Model 1 belongs to CBDR.
-- The range is generally expected not to exceed roughly 40 pips in the user's
-  framework.
-- Standard deviations may be used for HOD/LOD objectives when relevant.
-
-## MONDAY'S RANGE
-
-- Treat Monday as the weekly CRT range anchor.
-- Tuesday or Wednesday may purge one side at a key time to form the week's
-  high or low.
-- The opposing liquidity can become the draw when the structure confirms.
-- Do not guarantee that this sequence must occur.
-
-# GTOP RISK PROTOCOL
-
-- One directional thesis has one 1.00R protocol budget across its executions.
-- Tier 1: confirmed execution, up to 1.00R.
-- Tier 2: early confirmation, up to 0.50R.
-- Tier 3: anticipatory / risk entry, up to 0.33R.
-- A stopped execution does not automatically reset the thesis budget.
-- Separate entry failure from thesis failure.
-- Re-entry is eligible only while the thesis remains valid and the member's
-  available protocol risk permits it.
-- Adding should be treated as adding within the same thesis, not as a magical
-  reset of risk.
-- If total recorded risk exceeds 1R, WARN + SAVE the real trade; do not erase it.
-- Never bring regular size into a binary event such as FOMC.
-- When price has delivered roughly 80%-90% of the predetermined objective,
-  recognize GTOP Profit Protection Mode and prioritize protection according to
-  the member's plan rather than allowing a nearly completed move to reverse
-  into a full loss.
-- Do not invent exact stop placement or realized R if the member has not stated it.
+{CANONICAL_KNOWLEDGE}
 
 # CONVERSATIONAL BEHAVIOR
 
@@ -3563,7 +3399,7 @@ For ordinary trade conversation:
 - Understand natural language such as:
   "I'm buying NAS off a 5 minute Turtle Wick Soup risking .25R."
   "Added another .25 on Model 1."
-  "I'm out +2.8R. Followed plan but should have protected near 88.7."
+  "I'm out +2.8R. Followed plan but should have protected at 80% of the objective."
 - Ask only for information genuinely missing before taking an action.
 - Never invent an asset, direction, play, entry model, risk, result, objective,
   invalidation, purge, closure, timeframe, or confirmation.
@@ -3783,26 +3619,6 @@ def ai_member_context(user_id: int):
     return "\n".join(lines)
 
 
-def ai_infer_tier(entry_model: str, supplied_tier):
-    if supplied_tier in (1, 2, 3):
-        return supplied_tier
-
-    name = (entry_model or "").strip().lower()
-
-    if "model 1" in name or "csd" in name:
-        return 1
-    if "turtle wick" in name or "wick soup" in name:
-        return 2
-    if "super soup" in name:
-        return 3
-    if "blessed thief" in name:
-        return 3
-    if "88.7" in name or "ote" in name:
-        return 3
-
-    return None
-
-
 def ai_flag_risk(thesis_id, execution_id, user_id, rule_code, message):
     with db() as conn:
         conn.execute("""
@@ -3893,7 +3709,7 @@ def ai_open_trade(user_id: int, args: dict):
         execution_id = cur.lastrowid
 
     warnings = []
-    tier_limit = tier_max_r(tier)
+    tier_limit = tier_max_r(ai_infer_tier(entry_model, tier))
 
     if risk_r > tier_limit + 0.0001:
         msg = (
@@ -4020,7 +3836,7 @@ def ai_add_entry(user_id: int, args: dict):
         execution_id = cur.lastrowid
 
     warnings = []
-    tier_limit = tier_max_r(tier)
+    tier_limit = tier_max_r(ai_infer_tier(entry_model, tier))
 
     if risk_r > tier_limit + 0.0001:
         msg = (
@@ -4031,6 +3847,12 @@ def ai_add_entry(user_id: int, args: dict):
         ai_flag_risk(
             row["id"], execution_id, user_id, "TIER_ALLOCATION", msg
         )
+
+    tier_total = tier_used_r(db, row["id"], tier)
+    if tier_total > tier_limit + 0.0001:
+        msg = f"Cumulative Tier {tier} risk {tier_total:.2f}R exceeds its {tier_limit:.2f}R allocation."
+        warnings.append(msg)
+        ai_flag_risk(row["id"], execution_id, user_id, "TIER_BUDGET", msg)
 
     if projected > 1.0 + 0.0001:
         msg = (

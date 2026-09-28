@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db_compat import db
+from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE, tier_max_r, infer_tier, tier_used_r
 from typing import Any
 from urllib.parse import urlencode
 
@@ -310,25 +311,6 @@ def member_context(user_id: int) -> str:
     return "\n".join(lines)
 
 
-def tier_max_r(tier: int) -> float:
-    return {1: 1.0, 2: 0.5, 3: 0.33}.get(int(tier), 0.33)
-
-
-def infer_tier(entry_model: str, supplied):
-    if supplied in (1, 2, 3):
-        return int(supplied)
-
-    name = (entry_model or "").lower()
-
-    if "model 1" in name or "csd" in name:
-        return 1
-    if "turtle wick" in name or "wick soup" in name:
-        return 2
-    if "super soup" in name or "blessed thief" in name or "88.7" in name or "ote" in name:
-        return 3
-    return None
-
-
 def choose_open_trade(user_id: int, trade_id=None):
     with db() as conn:
         if trade_id is not None:
@@ -566,6 +548,9 @@ def tool_add_entry(user_id: int, args: dict):
         warnings.append(
             f"Tier {tier} guideline is {tier_max_r(tier):.2f}R; {risk_r:.2f}R was recorded."
         )
+    tier_total = tier_used_r(db, row["id"], tier)
+    if tier_total > tier_max_r(tier) + 1e-6:
+        warnings.append(f"Cumulative Tier {tier} risk {tier_total:.2f}R exceeds its {tier_max_r(tier):.2f}R allocation.")
     if total > 1.0 + 1e-6:
         warnings.append(
             f"Recorded thesis risk is now {total:.2f}R, above the 1.00R protocol budget."
@@ -840,14 +825,12 @@ GTOP protocol:
 - 9ate8 is written exactly 9ate8.
 - Model 1 / CSD is an execution-confirmation mechanism, not a standalone play.
 - One directional thesis has a 1R risk budget across executions.
-- Tier 1 confirmed: up to 1.00R.
-- Tier 2 early confirmation: up to 0.50R.
-- Tier 3 anticipatory/risk entry: up to 0.33R.
+- Tier classifications and 60/30/10 allocations follow the canonical knowledge below.
 - A stopped execution does not reset the thesis budget.
 - Risk violations are WARN + SAVE. Do not refuse to record a real trade merely
   because protocol was broken.
 - Turtle Wick Soup is commonly managed toward roughly 50% of the range.
-- 80%-88.7% objective delivery triggers GTOP profit-protection awareness.
+- Approximately 80% objective delivery triggers GTOP profit-protection awareness.
 - For 9ate8, a closure outside the selected range is the key invalidation;
   mere stalling is not.
 - Custom plays and entry models are allowed.
@@ -945,7 +928,7 @@ The user may interrupt you at any time; immediately follow the newest request.
 
 # CANONICAL GTOP KNOWLEDGE LOADER V1
 GTOP_KNOWLEDGE_PATH = APP_DIR / "gtop_knowledge.txt"
-GTOP_CANONICAL_KNOWLEDGE = GTOP_KNOWLEDGE_PATH.read_text().strip()
+GTOP_CANONICAL_KNOWLEDGE = CANONICAL_KNOWLEDGE
 
 BACKEND_PROMPT = (
     BACKEND_PROMPT
