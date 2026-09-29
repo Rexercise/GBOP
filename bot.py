@@ -12,8 +12,13 @@ import json
 import asyncio
 from db_compat import db
 from gbop_voice_web.gtop_protocol import (
-    CANONICAL_KNOWLEDGE, tier_max_r, infer_tier as ai_infer_tier,
+    CANONICAL_KNOWLEDGE, infer_tier as ai_infer_tier,
     classification_warning, tier_used_r,
+)
+from gbop_voice_web.risk_profiles import (
+    get_profile,
+    tier_limit as member_tier_limit,
+    profile_context,
 )
 from datetime import datetime, timezone
 
@@ -862,9 +867,9 @@ execution = app_commands.Group(
         app_commands.Choice(name="88.7 / OTE Refinement", value="88.7 OTE"),
     ],
     tier=[
-        app_commands.Choice(name="Tier 1 — Super Soup of Body / 60%", value=1),
-        app_commands.Choice(name="Tier 2 — Model 1 / Wick / KOD / 30%", value=2),
-        app_commands.Choice(name="Tier 3 — Breaker / OTE / Blessed Thief / 10%", value=3),
+        app_commands.Choice(name="Tier 1 — Super Soup of Body", value=1),
+        app_commands.Choice(name="Tier 2 — Model 1 / Wick / KOD", value=2),
+        app_commands.Choice(name="Tier 3 — Breaker / OTE / Blessed Thief", value=3),
     ]
 )
 async def execution_log(
@@ -904,13 +909,15 @@ async def execution_log(
 
     used_before = thesis_used_r(thesis_id)
     projected_total = risk_r + used_before
-    tier_limit = tier_max_r(ai_infer_tier(entry_model.value, tier.value))
+    profile = get_profile(db, GTOP_GUILD_ID, interaction.user.id)
+    effective_tier = ai_infer_tier(entry_model.value, tier.value)
+    tier_limit = member_tier_limit(profile, effective_tier)
 
     warnings = []
     mismatch = classification_warning(entry_model.value, tier.value)
     if mismatch:
         warnings.append(("TIER_CLASSIFICATION", mismatch))
-    tier_total = tier_used_r(db, thesis_id, ai_infer_tier(entry_model.value, tier.value)) + risk_r
+    tier_total = tier_used_r(db, thesis_id, effective_tier) + risk_r
     if tier_total > tier_limit + 0.0001:
         warnings.append(("TIER_BUDGET", f"Cumulative tier risk {tier_total:.2f}R exceeds its {tier_limit:.2f}R allocation."))
 
@@ -1415,7 +1422,9 @@ async def save_member_trade(
     if mismatch:
         warnings.append(("TIER_CLASSIFICATION", mismatch))
 
-    tier_limit = tier_max_r(ai_infer_tier(entry_model, tier))
+    profile = get_profile(db, GTOP_GUILD_ID, interaction.user.id)
+    effective_tier = ai_infer_tier(entry_model, tier)
+    tier_limit = member_tier_limit(profile, effective_tier)
 
     if risk_r > tier_limit + 0.0001:
         warnings.append((
@@ -1622,15 +1631,15 @@ class TradeOtherDetailsModal(
     ],
     tier=[
         app_commands.Choice(
-            name="Tier 1 — Super Soup of Body / 60%",
+            name="Tier 1 — Super Soup of Body",
             value=1
         ),
         app_commands.Choice(
-            name="Tier 2 — Model 1 / Wick / KOD / 30%",
+            name="Tier 2 — Model 1 / Wick / KOD",
             value=2
         ),
         app_commands.Choice(
-            name="Tier 3 — Breaker / OTE / Blessed Thief / 10%",
+            name="Tier 3 — Breaker / OTE / Blessed Thief",
             value=3
         ),
     ]
@@ -1706,13 +1715,15 @@ async def save_additional_entry(
 
     used_before = thesis_used_r(trade_id)
     projected_total = risk_r + used_before
-    tier_limit = tier_max_r(ai_infer_tier(entry_model, tier))
+    profile = get_profile(db, GTOP_GUILD_ID, interaction.user.id)
+    effective_tier = ai_infer_tier(entry_model, tier)
+    tier_limit = member_tier_limit(profile, effective_tier)
 
     warnings = []
     mismatch = classification_warning(entry_model, tier)
     if mismatch:
         warnings.append(("TIER_CLASSIFICATION", mismatch))
-    tier_total = tier_used_r(db, trade_id, ai_infer_tier(entry_model, tier)) + risk_r
+    tier_total = tier_used_r(db, trade_id, effective_tier) + risk_r
     if tier_total > tier_limit + 0.0001:
         warnings.append(("TIER_BUDGET", f"Cumulative tier risk {tier_total:.2f}R exceeds its {tier_limit:.2f}R allocation."))
 
@@ -1884,15 +1895,15 @@ class OtherAdditionalEntryModal(
     ],
     tier=[
         app_commands.Choice(
-            name="Tier 1 — Super Soup of Body / 60%",
+            name="Tier 1 — Super Soup of Body",
             value=1
         ),
         app_commands.Choice(
-            name="Tier 2 — Model 1 / Wick / KOD / 30%",
+            name="Tier 2 — Model 1 / Wick / KOD",
             value=2
         ),
         app_commands.Choice(
-            name="Tier 3 — Breaker / OTE / Blessed Thief / 10%",
+            name="Tier 3 — Breaker / OTE / Blessed Thief",
             value=3
         ),
     ]
@@ -3585,7 +3596,8 @@ def ai_member_context(user_id: int):
             user_id,
         )).fetchall()
 
-    lines = ["CURRENT MEMBER STATE"]
+    profile = get_profile(db, GTOP_GUILD_ID, user_id)
+    lines = ["CURRENT MEMBER STATE", profile_context(profile)]
 
     if open_trades:
         lines.append("Open trades:")
@@ -3709,7 +3721,9 @@ def ai_open_trade(user_id: int, args: dict):
         execution_id = cur.lastrowid
 
     warnings = []
-    tier_limit = tier_max_r(ai_infer_tier(entry_model, tier))
+    profile = get_profile(db, GTOP_GUILD_ID, user_id)
+    effective_tier = ai_infer_tier(entry_model, tier)
+    tier_limit = member_tier_limit(profile, effective_tier)
 
     if risk_r > tier_limit + 0.0001:
         msg = (
@@ -3836,7 +3850,9 @@ def ai_add_entry(user_id: int, args: dict):
         execution_id = cur.lastrowid
 
     warnings = []
-    tier_limit = tier_max_r(ai_infer_tier(entry_model, tier))
+    profile = get_profile(db, GTOP_GUILD_ID, user_id)
+    effective_tier = ai_infer_tier(entry_model, tier)
+    tier_limit = member_tier_limit(profile, effective_tier)
 
     if risk_r > tier_limit + 0.0001:
         msg = (
@@ -3848,7 +3864,7 @@ def ai_add_entry(user_id: int, args: dict):
             row["id"], execution_id, user_id, "TIER_ALLOCATION", msg
         )
 
-    tier_total = tier_used_r(db, row["id"], tier)
+    tier_total = tier_used_r(db, row["id"], effective_tier)
     if tier_total > tier_limit + 0.0001:
         msg = f"Cumulative Tier {tier} risk {tier_total:.2f}R exceeds its {tier_limit:.2f}R allocation."
         warnings.append(msg)
