@@ -5164,8 +5164,22 @@ class GBOPRealtimeSession:
                 pass
 
     async def sender_loop(self):
+        # Discord stops delivering packets when a member stops speaking. Realtime
+        # VAD needs actual silent PCM to end the turn; an empty queue is not audio.
+        # Supply up to 12 seconds (beyond semantic VAD's longest timeout), then
+        # wait without sending indefinitely. New audio always takes priority.
+        silence_frames_left = 0
         while not self.closed:
-            pcm = await self.audio_queue.get()
+            if silence_frames_left:
+                try:
+                    pcm = await asyncio.wait_for(self.audio_queue.get(), timeout=0.1)
+                    silence_frames_left = 120
+                except asyncio.TimeoutError:
+                    pcm = bytes(4800)  # 100 ms, 24 kHz, mono, signed 16-bit PCM
+                    silence_frames_left -= 1
+            else:
+                pcm = await self.audio_queue.get()
+                silence_frames_left = 120
             ok = await self.send_event(
                 {
                     "type": "input_audio_buffer.append",
