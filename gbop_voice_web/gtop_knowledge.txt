@@ -11,6 +11,7 @@ Not The Job: 12 PM–9 PM New York time.
 Night Shift: 9 PM–12 AM New York time.
 The 9 AM setup is the A+ Day Shift opportunity.
 The 8 o'clock range acts as pre-manipulation liquidity for the 9 o'clock move.
+For 9ate8, the structural extremes are the buy-side and sell-side of the 8 o'clock range: 8 AM for Day Shift and 8 PM for Night Shift.
 The same framework applies at night using 8 PM, 9 PM, and 10 PM.
 
 H4 LABELS
@@ -113,7 +114,7 @@ Example: silver purges 8 AM buy side while gold does not.
 
 GTOP RISK PROTOCOL — COMMUNITY EDITION, 27 SEPTEMBER 2026
 One directional thesis receives one total 1R budget across all executions.
-Fixed cumulative tier allocations: Tier 1 = 0.60R; Tier 2 = 0.30R; Tier 3 = 0.10R.
+Community default tier allocations: Tier 1 = 0.60R; Tier 2 = 0.30R; Tier 3 = 0.10R. These are defaults, not mandatory member settings. A member's saved risk profile overrides the allocation sizes while GTOP entry-model tier classifications stay fixed.
 Tier 1: Super Soup of a Turtle Body Soup / Model 1 candidate BEFORE CSD confirmation. Predominantly preferred.
 Tier 2: Turtle Body Soup / Model 1 (same entry classification), Turtle Wick Soup, KOD Turtle Soup.
 KOD is capped at Tier 2 because it occurs late, even if it is a body soup.
