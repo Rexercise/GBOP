@@ -36,7 +36,8 @@ class ProtocolTests(unittest.TestCase):
                     and any(isinstance(t, ast.Name) and t.id == 'GTOP_AI_PROMPT' for t in n.targets))
         prompt = eval(compile(ast.Expression(node.value), 'prompt', 'eval'), {'CANONICAL_KNOWLEDGE': CANONICAL_KNOWLEDGE})
         self.assertIn('Young Lefty', prompt)
-        self.assertIn('Fixed cumulative tier allocations', prompt)
+        self.assertIn('Community default tier allocations', prompt)
+        self.assertIn('saved risk profile overrides', prompt)
         self.assertIn('BEFORE CSD', prompt)
         self.assertNotIn('Tier 1: confirmed', prompt)
         for name in ('bot.py', 'gbop_voice_web/server.py'):

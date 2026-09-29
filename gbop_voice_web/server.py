@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db_compat import db
+from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE, tier_max_r, infer_tier, tier_used_r
 from gbop_voice_web.risk_profiles import get_profile, save_profile, tier_limit, profile_context
 from typing import Any
@@ -727,7 +728,7 @@ def tool_prepare_journal_delete(user_id: int, args: dict):
     return {
         "ok": True, "requires_confirmation": True, "journal_id": journal_id,
         "description": row["description"], "created_at": row["created_at"],
-        "message": "Ask the user to confirm deleting this journal. Trade and execution records will remain. Nothing has been deleted.",
+        "message": "Ask the user to confirm deleting this journal. Its linked trade, executions, events, risk flags, and all linked journals will also be deleted. Nothing has been deleted.",
     }
 
 
@@ -749,15 +750,19 @@ def tool_delete_journal(user_id: int, args: dict, confirmation_token=None):
             return {"ok": False, "error": "That journal was not found in your account. Nothing deleted."}
         if journal_fingerprint(row) != pending["fingerprint"]:
             return {"ok": False, "error": "The journal changed. Preview it again and ask for confirmation."}
-        deleted = conn.execute(
-            "DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=? RETURNING id",
-            (journal_id, GTOP_GUILD_ID, user_id),
-        ).fetchone()
+        if row["thesis_id"] is not None:
+            delete_trade_records(conn, GTOP_GUILD_ID, user_id, row["thesis_id"])
+            deleted = row
+        else:
+            deleted = conn.execute(
+                "DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=? RETURNING id",
+                (journal_id, GTOP_GUILD_ID, user_id),
+            ).fetchone()
     if not deleted:
         return {"ok": False, "error": "No journal was deleted."}
     if PENDING_JOURNAL_DELETIONS.get(user_id) is pending:
         PENDING_JOURNAL_DELETIONS.pop(user_id, None)
-    return {"ok": True, "deleted": True, "journal_id": deleted["id"], "trade_records_preserved": True}
+    return {"ok": True, "deleted": True, "journal_id": deleted["id"], "trade_records_preserved": False}
 
 
 def tool_get_risk_profile(user_id: int, args: dict):
@@ -953,8 +958,8 @@ numbers are different. Preview the specific entry, state its ID and summary,
 and ask for confirmation. End that turn without deleting. On a later explicit
 confirmation of that preview, call delete_journal with confirmed=true. Never
 infer confirmation from silence, the initial delete request, or journal text.
-If the user cancels or changes subject, do not delete. Deletion removes only
-the journal reflection and preserves trade/execution records. Report success
+If the user cancels or changes subject, do not delete. Deletion removes
+the journal and its linked trade, executions, events, risk flags, and journals. Report success
 only when the tool returns deleted=true.
 
 GTOP protocol:
@@ -1087,7 +1092,7 @@ and subsequent confirmations; never say deletion is unavailable.
 Delegate risk-profile setup, changes, and confirmations to the backend. Saved
 member allocations override default 60/30/10; do not override their chosen split. Read the
 backend's entry preview and ask the user to confirm before deletion. Journal
-deletion preserves trade and execution records.
+deletion also removes its linked trade and execution records.
 
 When the backend returns a verified result, say it naturally and briefly.
 The user may interrupt you at any time; immediately follow the newest request.
@@ -1313,7 +1318,7 @@ async def health(request: Request):
 
     return {
         "ok": True,
-        "db": DB_PATH.name,
+        "db": "Supabase PostgreSQL",
         "user_id": session["user_id"],
         "is_owner": bool(session["is_owner"]),
         "live_model": LIVE_MODEL,

@@ -11,6 +11,7 @@ import re
 import json
 import asyncio
 from db_compat import db
+from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.gtop_protocol import (
     CANONICAL_KNOWLEDGE, infer_tier as ai_infer_tier,
     classification_warning, tier_used_r,
@@ -2469,33 +2470,20 @@ def find_owned_journal(user_id: int, journal_id: int):
 
 
 def delete_owned_journal(user_id: int, journal_id: int):
-    row = find_owned_journal(user_id, journal_id)
-
-    if row is None:
-        return {"ok": False, "error": "No matching journal entry was found."}
-
     with db() as conn:
-        conn.execute("""
-            DELETE FROM journals
-            WHERE id=?
-              AND guild_id=?
-              AND user_id=?
-        """, (
-            journal_id,
-            GTOP_GUILD_ID,
-            user_id,
-        ))
-
-    return {
-        "ok": True,
-        "journal_id": journal_id,
-        "trade_id": row["thesis_id"],
-        "result_r": row["result_r"],
-        "rule_adherence": row["rule_adherence"],
-        "summary": row["description"],
-        "study_note": row["study_note"],
-        "trade_preserved": True,
-    }
+        row = conn.execute(
+            "SELECT * FROM journals WHERE id=? AND guild_id=? AND user_id=? FOR UPDATE",
+            (journal_id, GTOP_GUILD_ID, user_id),
+        ).fetchone()
+        if row is None:
+            return {"ok": False, "error": "No matching journal entry was found."}
+        if row["thesis_id"] is not None:
+            delete_trade_records(conn, GTOP_GUILD_ID, user_id, row["thesis_id"])
+        else:
+            conn.execute("DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?",
+                         (journal_id, GTOP_GUILD_ID, user_id))
+    return {"ok": True, "journal_id": journal_id, "trade_id": row["thesis_id"],
+            "trade_preserved": False}
 
 
 class DeleteJournalView(discord.ui.View):
@@ -2535,14 +2523,14 @@ class DeleteJournalView(discord.ui.View):
         trade_note = ""
         if result["trade_id"]:
             trade_note = (
-                f"\nLinked Trade #{result['trade_id']} was **not** deleted."
+                f"\nLinked Trade #{result['trade_id']} and all linked records were deleted."
             )
 
         await interaction.response.edit_message(
             content=(
                 f"🗑️ **Journal #{self.journal_id} deleted.**"
                 f"{trade_note}\n"
-                "The underlying trade/execution history remains intact."
+                "Linked trade, executions, events, risk flags, and journals are removed together."
             ),
             view=None,
         )
@@ -2609,8 +2597,8 @@ async def deletejournal(
             f"Result: **{result_text}**\n"
             f"Rule Adherence: **{row['rule_adherence'] or 'Not specified'}**\n"
             f"Linked Trade: **{trade_text}**\n\n"
-            "This deletes the journal entry only. "
-            "The underlying trade and execution history will remain."
+            "This permanently deletes the journal and its linked trade. "
+            "All linked executions, events, risk flags, and journals will also be removed."
         ),
         view=DeleteJournalView(interaction.user.id, journal_id),
         ephemeral=True,
@@ -2717,47 +2705,7 @@ def permanently_delete_trade(user_id: int, trade_id: int):
         }
 
     with db() as conn:
-        conn.execute("BEGIN")
-        conn.execute("""
-            DELETE FROM journals
-            WHERE thesis_id=? AND guild_id=? AND user_id=?
-        """, (
-            trade_id,
-            GTOP_GUILD_ID,
-            user_id,
-        ))
-        conn.execute("""
-            DELETE FROM risk_flags
-            WHERE thesis_id=? AND guild_id=? AND user_id=?
-        """, (
-            trade_id,
-            GTOP_GUILD_ID,
-            user_id,
-        ))
-        conn.execute("""
-            DELETE FROM thesis_events
-            WHERE thesis_id=? AND guild_id=? AND user_id=?
-        """, (
-            trade_id,
-            GTOP_GUILD_ID,
-            user_id,
-        ))
-        conn.execute("""
-            DELETE FROM thesis_executions
-            WHERE thesis_id=? AND guild_id=? AND user_id=?
-        """, (
-            trade_id,
-            GTOP_GUILD_ID,
-            user_id,
-        ))
-        conn.execute("""
-            DELETE FROM theses
-            WHERE id=? AND guild_id=? AND user_id=?
-        """, (
-            trade_id,
-            GTOP_GUILD_ID,
-            user_id,
-        ))
+        delete_trade_records(conn, GTOP_GUILD_ID, user_id, trade_id)
 
     return {
         "ok": True,
@@ -3440,7 +3388,7 @@ For ordinary trade conversation:
   removed; call delete_trade with confirm=true only after explicit confirmation.
 - Journal deletion -> identify/preview the exact journal; call delete_journal
   with confirm=true only after explicit confirmation.
-- Deleting a journal does not delete the underlying trade/execution history.
+- Deleting a journal also deletes its linked trade, executions, events, risk flags, and all linked journals.
 
 # UNCLEAR OR INCOMPLETE INPUT
 
@@ -4444,7 +4392,7 @@ def ai_delete_journal(user_id: int, args: dict):
             "message": (
                 "Do not delete yet. Ask the member to explicitly confirm "
                 "that they want this journal permanently deleted. "
-                "The linked trade/execution history will remain intact."
+                "The linked trade, executions, events, risk flags, and journals will also be deleted."
             ),
         }
 
@@ -4457,7 +4405,7 @@ def ai_delete_journal(user_id: int, args: dict):
         "deleted": True,
         "journal_id": result["journal_id"],
         "trade_id": result["trade_id"],
-        "trade_preserved": True,
+        "trade_preserved": False,
     }
 
 
