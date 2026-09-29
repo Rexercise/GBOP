@@ -17,6 +17,7 @@ from gbop_voice_web.gtop_protocol import (
 )
 from gbop_voice_web.risk_profiles import (
     get_profile,
+    save_profile,
     tier_limit as member_tier_limit,
     profile_context,
 )
@@ -3448,6 +3449,19 @@ For ordinary trade conversation:
 - If the user corrects a GTOP definition, use the corrected definition for the
   remainder of the conversation and do not argue from generic trading material.
 
+# MEMBER RISK PROFILE
+
+- The community 60/30/10 split is a default suggestion, not a mandatory setting.
+- A member's saved risk profile overrides allocation sizes but never changes the
+  canonical tier classification of an entry model.
+- If the member has no configured profile, invite setup at a natural opportunity:
+  ask what percentage of their account 1R should represent, then how they want
+  1R split across Tier 1, Tier 2, and Tier 3. They may skip.
+- Accept custom splits that total 100%, including zero-allocation tiers.
+- Repeat the proposed profile and obtain explicit confirmation before saving it.
+- Never apply one member's account-risk percentage or allocation to another member.
+- Risk violations remain WARN + SAVE; do not refuse to journal a real execution.
+
 This is decision-support and education. Do not present uncertain market
 interpretations as facts.
 """.strip()
@@ -4317,8 +4331,89 @@ GBOP_AI_TOOLS = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "get_risk_profile",
+        "description": (
+            "Read the member's saved risk profile or the unconfirmed GTOP "
+            "default suggestion when they have not configured one yet."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "save_risk_profile",
+        "description": (
+            "Save this member's chosen risk profile only after the member has "
+            "explicitly confirmed the full proposed settings. Tier percentages "
+            "must total 100% of the 1R thesis budget."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "account_risk_pct": {
+                    "type": ["number", "null"],
+                    "description": (
+                        "Percent of account represented by the member's full 1R "
+                        "thesis budget; null if they leave it unspecified."
+                    ),
+                },
+                "tier1_pct": {"type": "number", "minimum": 0, "maximum": 100},
+                "tier2_pct": {"type": "number", "minimum": 0, "maximum": 100},
+                "tier3_pct": {"type": "number", "minimum": 0, "maximum": 100},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": [
+                "account_risk_pct",
+                "tier1_pct",
+                "tier2_pct",
+                "tier3_pct",
+                "confirmed",
+            ],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
+
+
+def ai_get_risk_profile(user_id: int, args: dict):
+    return {
+        "ok": True,
+        "profile": get_profile(db, GTOP_GUILD_ID, user_id),
+    }
+
+
+def ai_save_risk_profile(user_id: int, args: dict):
+    if args.get("confirmed") is not True:
+        return {
+            "ok": False,
+            "error": (
+                "Summarize the complete proposed risk profile and get the "
+                "member's explicit confirmation before saving it."
+            ),
+        }
+
+    try:
+        profile = save_profile(db, GTOP_GUILD_ID, user_id, args)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    return {
+        "ok": True,
+        "profile": profile,
+        "message": (
+            "Risk profile saved. Future tier-budget checks use these member "
+            "allocations; existing executions are unchanged."
+        ),
+    }
 
 
 def ai_delete_journal(user_id: int, args: dict):
@@ -4487,6 +4582,10 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
         return ai_get_journal_history(user_id, args)
     if name == "edit_journal":
         return ai_edit_journal(user_id, args)
+    if name == "get_risk_profile":
+        return ai_get_risk_profile(user_id, args)
+    if name == "save_risk_profile":
+        return ai_save_risk_profile(user_id, args)
 
     if name == "delete_journal":
         return ai_delete_journal(user_id, args)
