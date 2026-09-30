@@ -11,6 +11,7 @@ import re
 import json
 import asyncio
 from db_compat import db
+from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool
 from gbop_voice_web.trade_photos import (PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES,
     MAX_IMAGE_BYTES, save_upload, photo_tool)
 from gbop_voice_web.deletion import delete_trade_records
@@ -3345,6 +3346,11 @@ def init_checkin_db():
             )
         """)
 
+        # These contain private member check-ins; only the trusted bot backend reads them.
+        for table in ('post_shift_checkins', 'gbop_shift_alerts'):
+            conn.execute(f'ALTER TABLE {table} ENABLE ROW LEVEL SECURITY')
+            conn.execute(f'REVOKE ALL ON {table} FROM anon, authenticated')
+
 
 def _gbop_role_members():
     guild = client.get_guild(GTOP_GUILD_ID)
@@ -4763,10 +4769,13 @@ GBOP_AI_TOOLS.append(
 
 
 GBOP_AI_TOOLS.extend(PHOTO_TOOLS)
-GTOP_AI_PROMPT += "\n\n" + PHOTO_PROMPT
+GBOP_AI_TOOLS.extend(COACH_TOOLS)
+GTOP_AI_PROMPT += "\n\n" + PHOTO_PROMPT + "\n\n" + COACH_PROMPT
 
 
 def ai_execute_tool(user_id: int, name: str, args: dict):
+    if name in COACH_NAMES:
+        return coach_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in PHOTO_NAMES:
         return photo_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name == "open_trade":
