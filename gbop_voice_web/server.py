@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db_compat import db
+from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool
 from gbop_voice_web.trade_photos import PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES, photo_tool
 from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.journal_numbers import journal_number
@@ -930,9 +931,12 @@ TOOLS = [
 
 
 TOOLS.extend(PHOTO_TOOLS)
+TOOLS.extend(COACH_TOOLS)
 
 
 def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
+    if name in COACH_NAMES:
+        return coach_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in PHOTO_NAMES:
         return photo_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name == "delete_journal":
@@ -1012,7 +1016,7 @@ Return a concise, factual result for GPT-Live to say aloud. Usually 1-4 sentence
 """.strip()
 
 
-BACKEND_PROMPT += "\n\n" + PHOTO_PROMPT
+BACKEND_PROMPT += "\n\n" + PHOTO_PROMPT + "\n\n" + COACH_PROMPT
 
 
 def run_backend(history: list[dict[str, str]], user_id: int) -> str:

@@ -17,39 +17,43 @@ class VoiceSenderTests(unittest.IsolatedAsyncioTestCase):
         waits = 0
         session = SimpleNamespace(closed=False)
 
+        queue = asyncio.Queue()
+        queue.put_nowait(b'first speech')
+        real_get = queue.get
         async def get():
             nonlocal calls
             calls += 1
-            if calls == 1:
-                return b'first speech'
-            session.closed = True
-            raise asyncio.CancelledError
+            return await real_get()
 
-        async def wait_for(coro, timeout):
+        async def wait(tasks, timeout):
             nonlocal waits
-            coro.close()
             self.assertEqual(timeout, 0.1)
             waits += 1
             if resume and waits == 2:
-                return b'resumed speech'
-            raise asyncio.TimeoutError
+                queue.put_nowait(b'resumed speech')
+                await asyncio.sleep(0)
+                return set(tasks), set()
+            return set(), set(tasks)
 
         async def send_event(event, quiet=False):
             self.assertEqual(event['type'], 'input_audio_buffer.append')
             sent.append(base64.b64decode(event['audio']))
+            if len(sent) == (123 if resume else 121):
+                session.closed = True
+            await asyncio.sleep(0)
             return not fail
 
         session.audio_queue = SimpleNamespace(get=get)
         session.send_event = send_event
         ns = dict(base64=base64, asyncio=SimpleNamespace(
-            wait_for=wait_for, TimeoutError=asyncio.TimeoutError))
+            create_task=asyncio.create_task, wait=wait, gather=asyncio.gather))
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), ns)
         if fail:
             with self.assertRaisesRegex(RuntimeError, 'audio send failed'):
                 await ns['sender_loop'](session)
         else:
-            with self.assertRaises(asyncio.CancelledError):
-                await ns['sender_loop'](session)
+            await ns['sender_loop'](session)
+            self.assertFalse(queue._getters, 'pending queue task must be cancelled on exit')
         return sent, calls
 
     async def test_silence_finishes_turn_and_is_bounded(self):

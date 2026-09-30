@@ -107,7 +107,8 @@ def annotate(db, guild_id, user_id, args):
 
 
 def search(db,guild_id,user_id,args,include_bytes=False):
-    init_photos(db)
+    from gbop_voice_web.journal_coach import init_coach
+    init_coach(db)
     with db() as conn:
         trades = owned_trades(conn,guild_id,user_id)
         numbers = {t['id']:i+1 for i,t in enumerate(trades)}
@@ -118,11 +119,33 @@ def search(db,guild_id,user_id,args,include_bytes=False):
             if not 1 <= number <= len(trades):
                 return {'ok':False,'error':'Trade number not found in your account.'}
             clauses.append('p.thesis_id=?'); params.append(trades[number-1]['id'])
+        if args.get('journal_number') is not None:
+            from gbop_voice_web.journal_numbers import journal_record_id
+            jid = journal_record_id(db,guild_id,user_id,args['journal_number'])
+            if jid is None:
+                return {'ok':False,'error':'Journal number not found in your account.'}
+            clauses.append('p.id IN (SELECT photo_id FROM journal_details WHERE journal_id=? AND guild_id=? AND user_id=?)')
+            params.extend([jid,guild_id,user_id])
+        tag_clauses, tag_params = [], []
         if args.get('tier') is not None:
-            clauses.append('p.tier=?'); params.append(args['tier'])
+            tag_clauses.append('p.tier=?'); tag_params.append(args['tier'])
         for field in ('entry_model','play','asset'):
             if args.get(field):
-                clauses.append(f'LOWER(p.{field})=LOWER(?)'); params.append(args[field].strip())
+                tag_clauses.append(f'LOWER(p.{field})=LOWER(?)'); tag_params.append(args[field].strip())
+        if tag_clauses:
+            tagged = conn.execute('SELECT photo_id,metadata FROM journal_details WHERE guild_id=? AND user_id=? AND photo_id IS NOT NULL',
+                                  (guild_id,user_id)).fetchall()
+            ids = set()
+            for row in tagged:
+                meta = json.loads(row['metadata'])
+                if all(str(meta.get(k) or '').casefold()==str(args[k]).strip().casefold()
+                       for k in ('tier','entry_model','play','asset') if args.get(k) is not None):
+                    ids.add(row['photo_id'])
+            tag_sql = '('+' AND '.join(tag_clauses)+')'
+            if ids:
+                tag_sql += ' OR p.id IN ('+','.join('?' for _ in ids)+')'
+                tag_params.extend(sorted(ids))
+            clauses.append('('+tag_sql+')'); params.extend(tag_params)
         if args.get('unlinked_only'):
             clauses.append('p.thesis_id IS NULL')
         offset = max(0,int(args.get('offset') or 0))
@@ -136,10 +159,15 @@ def search(db,guild_id,user_id,args,include_bytes=False):
             p['trade_details'] = {}
             if thesis_id is not None:
                 trade = dict(next(t for t in trades if t['id'] == thesis_id))
-                p['trade_details'] = {k:trade.get(k) for k in ('asset','direction','play','status','objective','invalidation')}
+                p['trade_details'] = {k:trade.get(k) for k in ('asset','direction','play','status','objective','thesis_invalidation')}
                 journals = conn.execute('SELECT description,rule_adherence,result_r,study_note FROM journals WHERE thesis_id=? AND guild_id=? AND user_id=? ORDER BY id DESC LIMIT 1',
                     (thesis_id,guild_id,user_id)).fetchall()
                 p['journal'] = dict(journals[0]) if journals else None
+            linked = conn.execute('''SELECT j.description,j.rule_adherence,j.result_r,j.study_note,d.metadata
+                FROM journal_details d JOIN journals j ON j.id=d.journal_id
+                WHERE d.photo_id=? AND d.guild_id=? AND d.user_id=? AND j.guild_id=? AND j.user_id=?
+                ORDER BY d.entry_index''',(p['id'],guild_id,user_id,guild_id,user_id)).fetchall()
+            p['handwritten_journals'] = [dict(j) for j in linked]
             photos.append(p)
         details = [{'trade_number':i+1,'asset':t['asset'],'play':t['play'],'status':t['status']} for i,t in enumerate(trades)]
     return {'ok':True,'photos':photos,'has_more':len(rows)>5,'next_offset':offset+5,'trades':details}
@@ -164,6 +192,8 @@ def send_photos(db,guild_id,user_id,args):
             caption += f" | {p['asset']} | {p['play']} | {p['entry_model']} | Tier {p['tier'] or 'unknown'}\n{p['analysis'][:1000]}"
             if p.get('trade_details'):
                 caption += "\nTrade: " + json.dumps(p['trade_details'],ensure_ascii=False)
+            if p.get('handwritten_journals'):
+                caption += '\nJournal entries: ' + json.dumps(p['handwritten_journals'],ensure_ascii=False)
             if p.get('journal'):
                 caption += "\nJournal: " + json.dumps(p['journal'],ensure_ascii=False)
             response = client.post(f"/channels/{channel.json()['id']}/messages",
@@ -197,7 +227,7 @@ def schema(name,description,properties):
 
 STR = {'type':['string','null']}
 NUM = {'type':['integer','null']}
-FILTERS = {'trade_number':NUM,'tier':NUM,'entry_model':STR,'play':STR,'asset':STR,
+FILTERS = {'journal_number':NUM,'trade_number':NUM,'tier':NUM,'entry_model':STR,'play':STR,'asset':STR,
            'unlinked_only':{'type':['boolean','null']},'offset':NUM}
 PHOTO_TOOLS = [
     schema('annotate_trade_photo','Save image analysis and tags; link to a member-visible trade number. Null tags mean unknown.',
