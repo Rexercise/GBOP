@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db_compat import db
 from gbop_voice_web.deletion import delete_trade_records
+from gbop_voice_web.journal_numbers import journal_number
 from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE, tier_max_r, infer_tier, tier_used_r
 from gbop_voice_web.risk_profiles import get_profile, save_profile, tier_limit, profile_context
 from typing import Any
@@ -304,7 +305,7 @@ def member_context(user_id: int) -> str:
         lines.append("Recent journals:")
         for row in journals:
             lines.append(
-                f"- Journal #{row['id']}: {format_r(row['result_r'])}; "
+                f"- Journal #{journal_number(db, GTOP_GUILD_ID, user_id, row['id'])} (internal journal_id={row['id']}): {format_r(row['result_r'])}; "
                 f"adherence {row['rule_adherence'] or 'not specified'}; "
                 f"study note {row['study_note'] or 'not specified'}"
             )
@@ -417,6 +418,7 @@ def tool_get_journal_history(user_id: int, args: dict):
         "journals": [
             {
                 "journal_id": r["id"],
+                "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, r["id"]),
                 "trade_id": r["thesis_id"] if "thesis_id" in r.keys() else None,
                 "result_r": r["result_r"],
                 "rule_adherence": r["rule_adherence"],
@@ -687,6 +689,7 @@ def tool_close_trade(user_id: int, args: dict):
         "ok": True,
         "trade_id": row["id"],
         "journal_id": journal_id,
+        "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, journal_id),
         "final_result_r": result_r,
         "rule_adherence": adherence,
     }
@@ -723,10 +726,12 @@ def tool_prepare_journal_delete(user_id: int, args: dict):
         "journal_id": journal_id,
         "token": secrets.token_urlsafe(24),
         "fingerprint": journal_fingerprint(row),
+        "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, journal_id),
         "expires_at": stamp + JOURNAL_DELETE_TTL,
     }
     return {
         "ok": True, "requires_confirmation": True, "journal_id": journal_id,
+        "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, journal_id),
         "description": row["description"], "created_at": row["created_at"],
         "message": "Ask the user to confirm deleting this journal. Its linked trade, executions, events, risk flags, and all linked journals will also be deleted. Nothing has been deleted.",
     }
@@ -762,7 +767,7 @@ def tool_delete_journal(user_id: int, args: dict, confirmation_token=None):
         return {"ok": False, "error": "No journal was deleted."}
     if PENDING_JOURNAL_DELETIONS.get(user_id) is pending:
         PENDING_JOURNAL_DELETIONS.pop(user_id, None)
-    return {"ok": True, "deleted": True, "journal_id": deleted["id"], "trade_records_preserved": False}
+    return {"ok": True, "deleted": True, "journal_id": deleted["id"], "journal_number": pending["journal_number"], "trade_records_preserved": False}
 
 
 def tool_get_risk_profile(user_id: int, args: dict):
@@ -962,6 +967,8 @@ If the user cancels or changes subject, do not delete. Deletion removes
 the journal and its linked trade, executions, events, risk flags, and journals. Report success
 only when the tool returns deleted=true.
 
+Journal numbering: speak/display journal_number, never internal journal_id. Resolve displayed numbers using current journal history and pass the matching internal journal_id to tools.
+
 GTOP protocol:
 - 9ate8 is written exactly 9ate8.
 - Model 1 / CSD is an execution-confirmation mechanism, not a standalone play.
@@ -1008,7 +1015,7 @@ def run_backend(history: list[dict[str, str]], user_id: int) -> str:
         confirmation_token = pending["token"]
     context = member_context(user_id)
     if confirmation_token:
-        context += f"\nPending deletion preview: Journal #{pending['journal_id']}. Delete only if the latest user turn explicitly confirms that preview."
+        context += f"\nPending deletion preview: Journal #{pending['journal_number']} (internal journal_id={pending['journal_id']}). Delete only if the latest user turn explicitly confirms that preview."
 
     transcript = []
     for item in history[-16:]:
@@ -1093,6 +1100,8 @@ Delegate risk-profile setup, changes, and confirmations to the backend. Saved
 member allocations override default 60/30/10; do not override their chosen split. Read the
 backend's entry preview and ask the user to confirm before deletion. Journal
 deletion also removes its linked trade and execution records.
+
+Use the backend journal_number when speaking to the member; never read the internal journal_id as a journal number.
 
 When the backend returns a verified result, say it naturally and briefly.
 The user may interrupt you at any time; immediately follow the newest request.
@@ -1408,3 +1417,4 @@ async def delegate(request: Request, body: DelegateRequest):
         "delegation_id": body.delegation_id,
         "result": result,
     }
+
