@@ -1,0 +1,46 @@
+name: GBOP Shift Keepalive
+
+on:
+  schedule:
+    # GitHub cron is UTC. These hours cover both EDT and EST GTOP windows;
+    # the step below uses America/New_York to decide whether a wake ping is needed.
+    - cron: "3,13,23,33,43,53 0-5,12-18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keep-awake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Keep GBOP awake during GTOP shifts
+        shell: bash
+        run: |
+          raw="$(TZ=America/New_York date +%H%M)"
+          local_time=$((10#$raw))
+
+          in_day=false
+          in_night=false
+
+          # Day coverage: wake before the 8:55 AM alert and stay up through
+          # the 1:00 PM post-shift formation.
+          if (( local_time >= 840 && local_time <= 1310 )); then
+            in_day=true
+          fi
+
+          # Night coverage: wake before the 8:55 PM alert and stay up through
+          # the midnight post-shift formation.
+          if (( local_time >= 2040 || local_time <= 10 )); then
+            in_night=true
+          fi
+
+          if [[ "$in_day" == "true" || "$in_night" == "true" ]]; then
+            curl --fail --silent --show-error \
+              --retry 3 --retry-delay 5 --max-time 45 \
+              https://gbop.onrender.com/ >/dev/null
+            echo "GBOP wake request sent at ${raw} Eastern."
+          else
+            echo "Outside GBOP shift window (${raw} Eastern); no wake request needed."
+          fi

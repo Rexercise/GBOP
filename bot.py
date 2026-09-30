@@ -11,7 +11,7 @@ import re
 import json
 import asyncio
 from db_compat import db
-from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool
+from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
 from gbop_voice_web.trade_photos import (PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES,
     MAX_IMAGE_BYTES, save_upload, photo_tool)
 from gbop_voice_web.deletion import delete_trade_records
@@ -3481,6 +3481,7 @@ async def setup_hook():
         init_member_trade_flow_db,
         ensure_journal_edit_schema,
         init_checkin_db,
+        init_coach,
     ):
         print(f"[GBOP-STARTUP] Starting {initializer.__name__}")
         try:
