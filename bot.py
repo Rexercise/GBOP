@@ -12,6 +12,7 @@ import json
 import asyncio
 from db_compat import db
 from gbop_voice_web.deletion import delete_trade_records
+from gbop_voice_web.journal_numbers import journal_number, journal_record_id
 from gbop_voice_web.gtop_protocol import (
     CANONICAL_KNOWLEDGE, infer_tier as ai_infer_tier,
     classification_warning, tier_used_r,
@@ -441,7 +442,7 @@ class JournalModal(discord.ui.Modal, title="GBOP Trade Journal"):
             journal_id = cur.lastrowid
 
         await interaction.response.send_message(
-            f"📓 **Private journal #{journal_id} saved.**\n"
+            f"📓 **Private journal #{journal_number(db, GTOP_GUILD_ID, interaction.user.id, journal_id)} saved.**\n"
             f"Result: **{format_r(result_value)}**\n"
             f"Rule Adherence: **{self.rule_adherence}**\n"
             f"Study Note: {self.study_note}",
@@ -496,7 +497,7 @@ async def journals(
 
     for row in rows:
         parts.append(
-            f"\n**Journal #{row['id']}**"
+            f"\n**Journal #{journal_number(db, GTOP_GUILD_ID, row['user_id'], row['id'])}**"
             f"\nResult: {format_r(row['result_r'])}"
             f"\nAdherence: {row['rule_adherence'] or 'Not specified'}"
             f"\nEntry: {row['description'][:450]}"
@@ -2151,7 +2152,7 @@ class CloseMemberTradeModal(
             f"Play: **{row['play']}**\n"
             f"Final Result: **{format_r(result_value)}**\n"
             f"Risk Flags: **{flags}**\n"
-            f"Journal: **#{journal_id}**",
+            f"Journal: **#{journal_number(db, GTOP_GUILD_ID, interaction.user.id, journal_id)}**",
             ephemeral=True
         )
 
@@ -2295,6 +2296,7 @@ class EditJournalModal(discord.ui.Modal, title="Edit GBOP Journal"):
     def __init__(self, journal_row):
         super().__init__()
         self.journal_id = journal_row["id"]
+        self.journal_number = journal_number(db, GTOP_GUILD_ID, journal_row["user_id"], self.journal_id)
 
         result_default = ""
         if journal_row["result_r"] is not None:
@@ -2410,7 +2412,7 @@ class EditJournalModal(discord.ui.Modal, title="Edit GBOP Journal"):
                 )
 
         await interaction.response.send_message(
-            f"✏️ **Journal #{self.journal_id} updated.**\n"
+            f"✏️ **Journal #{self.journal_number} updated.**\n"
             f"Result: **{format_r(result_value)}**\n"
             f"Rule Adherence: **{self.rule_adherence}**",
             ephemeral=True,
@@ -2423,7 +2425,7 @@ class EditJournalModal(discord.ui.Modal, title="Edit GBOP Journal"):
     guild=GUILD,
 )
 @app_commands.describe(
-    journal_id="Leave blank to edit your most recent journal."
+    journal_id="Your displayed journal number; leave blank for the most recent."
 )
 async def editjournal(
     interaction: discord.Interaction,
@@ -2432,10 +2434,8 @@ async def editjournal(
     if not await require_member(interaction):
         return
 
-    row = get_member_journal(
-        interaction.user.id,
-        journal_id,
-    )
+    record_id = journal_record_id(db, GTOP_GUILD_ID, interaction.user.id, journal_id) if journal_id else 0
+    row = get_member_journal(interaction.user.id, record_id) if record_id is not None else None
 
     if row is None:
         await interaction.response.send_message(
@@ -2491,6 +2491,7 @@ class DeleteJournalView(discord.ui.View):
         super().__init__(timeout=60)
         self.owner_id = owner_id
         self.journal_id = journal_id
+        self.journal_number = journal_number(db, GTOP_GUILD_ID, owner_id, journal_id)
 
     async def interaction_check(self, interaction: discord.Interaction):
         if interaction.user.id != self.owner_id:
@@ -2528,7 +2529,7 @@ class DeleteJournalView(discord.ui.View):
 
         await interaction.response.edit_message(
             content=(
-                f"🗑️ **Journal #{self.journal_id} deleted.**"
+                f"🗑️ **Journal #{self.journal_number} deleted.**"
                 f"{trade_note}\n"
                 "Linked trade, executions, events, risk flags, and journals are removed together."
             ),
@@ -2547,7 +2548,7 @@ class DeleteJournalView(discord.ui.View):
     ):
         await interaction.response.edit_message(
             content=(
-                f"Deletion cancelled. Journal #{self.journal_id} "
+                f"Deletion cancelled. Journal #{self.journal_number} "
                 "was not changed."
             ),
             view=None,
@@ -2561,7 +2562,7 @@ class DeleteJournalView(discord.ui.View):
     guild=GUILD,
 )
 @app_commands.describe(
-    journal_id="Journal ID to delete"
+    journal_id="Your displayed journal number to delete"
 )
 async def deletejournal(
     interaction: discord.Interaction,
@@ -2570,7 +2571,8 @@ async def deletejournal(
     if not await require_member(interaction):
         return
 
-    row = find_owned_journal(interaction.user.id, journal_id)
+    record_id = journal_record_id(db, GTOP_GUILD_ID, interaction.user.id, journal_id)
+    row = find_owned_journal(interaction.user.id, record_id) if record_id is not None else None
 
     if row is None:
         await interaction.response.send_message(
@@ -2600,7 +2602,7 @@ async def deletejournal(
             "This permanently deletes the journal and its linked trade. "
             "All linked executions, events, risk flags, and journals will also be removed."
         ),
-        view=DeleteJournalView(interaction.user.id, journal_id),
+        view=DeleteJournalView(interaction.user.id, record_id),
         ephemeral=True,
     )
 
@@ -3182,7 +3184,7 @@ async def admin_journal(
 
     for row in rows:
         parts.append(
-            f"\n**Journal #{row['id']}**"
+            f"\n**Journal #{journal_number(db, GTOP_GUILD_ID, row['user_id'], row['id'])}**"
             f"\nResult: {format_r(row['result_r'])}"
             f"\nAdherence: {row['rule_adherence'] or 'Not specified'}"
             f"\nEntry: {row['description'][:450]}"
@@ -3390,6 +3392,9 @@ For ordinary trade conversation:
   with confirm=true only after explicit confirmation.
 - Deleting a journal also deletes its linked trade, executions, events, risk flags, and all linked journals.
 
+# JOURNAL NUMBER DISPLAY
+Use journal_number for all journal numbers spoken or shown to members. journal_id is an internal database key: never speak it as a journal number. Resolve a member's displayed journal number using the current journal history before calling tools; pass its internal journal_id to tools.
+
 # UNCLEAR OR INCOMPLETE INPUT
 
 - If audio or wording is genuinely unclear, ask one short clarification.
@@ -3583,7 +3588,7 @@ def ai_member_context(user_id: int):
                 else f"{float(row['result_r']):+.2f}R"
             )
             lines.append(
-                f"- Journal #{row['id']}: result {result}; "
+                f"- Journal #{journal_number(db, GTOP_GUILD_ID, user_id, row['id'])} (internal journal_id={row['id']}): result {result}; "
                 f"adherence {row['rule_adherence'] or 'not specified'}; "
                 f"note {row['study_note'] or 'not specified'}"
             )
@@ -3954,6 +3959,7 @@ def ai_close_trade(user_id: int, args: dict):
         "ok": True,
         "trade_id": row["id"],
         "journal_id": journal_id,
+        "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, journal_id),
         "asset": row["asset"],
         "play": row["play"],
         "final_result_r": final_result,
@@ -4028,6 +4034,7 @@ def ai_get_journal_history(user_id: int, args: dict):
         "journals": [
             {
                 "journal_id": row["id"],
+                "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, row["id"]),
                 "trade_id": row["thesis_id"],
                 "result_r": row["result_r"],
                 "rule_adherence": row["rule_adherence"],
@@ -4111,6 +4118,7 @@ def ai_edit_journal(user_id: int, args: dict):
     return {
         "ok": True,
         "journal_id": row["id"],
+                "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, row["id"]),
         "trade_id": row["thesis_id"],
         "result_r": new_result,
         "rule_adherence": new_adherence,
@@ -4377,6 +4385,7 @@ def ai_delete_journal(user_id: int, args: dict):
 
     preview = {
         "journal_id": row["id"],
+                "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, row["id"]),
         "trade_id": row["thesis_id"],
         "result_r": row["result_r"],
         "rule_adherence": row["rule_adherence"],
@@ -4404,6 +4413,7 @@ def ai_delete_journal(user_id: int, args: dict):
         "ok": True,
         "deleted": True,
         "journal_id": result["journal_id"],
+        "journal_number": preview["journal_number"],
         "trade_id": result["trade_id"],
         "trade_preserved": False,
     }
@@ -5861,3 +5871,4 @@ async def gbop_tree_error(
 if __name__ == "__main__":
     print("[GBOP-STARTUP] bot.py launched; connecting to Discord.")
     client.run(DISCORD_TOKEN)
+
