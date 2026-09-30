@@ -3472,14 +3472,14 @@ async def _consume_checkin_reply(message):
             LIMIT 1
         """, (GTOP_GUILD_ID, message.author.id)).fetchone()
 
-        if pending is None:
+        if existing is None:
             return False
 
         conn.execute("""
             UPDATE post_shift_checkins
             SET response=?, responded_at=?
             WHERE id=?
-        """, (message.content.strip(), now(), pending["id"]))
+        """, (message.content.strip(), now(), existing["id"]))
 
     await message.reply(
         "Saved. GBOP recorded your rule adherence, pattern to watch, and next adjustment."
