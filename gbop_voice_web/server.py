@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db_compat import db
+from gbop_voice_web.trade_photos import PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES, photo_tool
 from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.journal_numbers import journal_number
 from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE, tier_max_r, infer_tier, tier_used_r
@@ -928,7 +929,12 @@ TOOLS = [
 ]
 
 
+TOOLS.extend(PHOTO_TOOLS)
+
+
 def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
+    if name in PHOTO_NAMES:
+        return photo_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name == "delete_journal":
         return tool_delete_journal(user_id, args, confirmation_token)
     handlers = {
@@ -1004,6 +1010,9 @@ Personal risk onboarding:
 
 Return a concise, factual result for GPT-Live to say aloud. Usually 1-4 sentences.
 """.strip()
+
+
+BACKEND_PROMPT += "\n\n" + PHOTO_PROMPT
 
 
 def run_backend(history: list[dict[str, str]], user_id: int) -> str:
@@ -1089,7 +1098,7 @@ and calm. Usually answer in 1-3 short sentences. Do not read markdown, headings,
 tables, or long lists aloud. Preserve GTOP terminology such as 9ate8, Model 1,
 CSD, CRT, Turtle Soup, Super Soup, Blessed Thief, GCT, CBDR, SMT, and 88.7.
 
-You may answer ordinary conversation and general GTOP concepts directly.
+For photo searches or requests to send trade pictures by DM, delegate to the backend.\nYou may answer ordinary conversation and general GTOP concepts directly.
 For ANY request that depends on the member's private records or stored state
 (trades, journals, risk used, history, profile) OR asks to create/update/close/delete a
 trade or journal, delegate the task to the client backend. Never guess private

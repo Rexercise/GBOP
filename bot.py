@@ -11,6 +11,8 @@ import re
 import json
 import asyncio
 from db_compat import db
+from gbop_voice_web.trade_photos import (PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES,
+    MAX_IMAGE_BYTES, save_upload, photo_tool)
 from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.journal_numbers import journal_number, journal_record_id
 from gbop_voice_web.gtop_protocol import (
@@ -3617,7 +3619,7 @@ For ordinary trade conversation:
 - Additional entry -> add_entry.
 - Mid-trade development -> record_trade_event.
 - Closing/reflection -> close_trade after gathering the final result when
-  known, rule adherence, concise summary, and study note.
+  known. Derive the summary from the conversation; leave unprovided optional\n  rule adherence and study notes empty. Do not interrogate the member for them.
 - History/review -> use current member context and get_journal_history or
   get_trade_state when useful.
 - Journal correction -> edit_journal.
@@ -4760,7 +4762,13 @@ GBOP_AI_TOOLS.append(
 )
 
 
+GBOP_AI_TOOLS.extend(PHOTO_TOOLS)
+GTOP_AI_PROMPT += "\n\n" + PHOTO_PROMPT
+
+
 def ai_execute_tool(user_id: int, name: str, args: dict):
+    if name in PHOTO_NAMES:
+        return photo_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name == "open_trade":
         return ai_open_trade(user_id, args)
     if name == "add_entry":
@@ -4789,7 +4797,7 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
     return {"ok": False, "error": f"Unknown tool: {name}"}
 
 
-def ai_run_turn(user_id: int, user_text: str):
+def ai_run_turn(user_id: int, user_text: str, photos=None):
     init_ai_db()
 
     history = ai_recent_messages(user_id, limit=10)
@@ -4799,7 +4807,11 @@ def ai_run_turn(user_id: int, user_text: str):
         {"role": item["role"], "content": item["content"]}
         for item in history
     ]
-    input_items.append({"role": "user", "content": user_text})
+    content_items = [{"type": "input_text", "text": user_text}]
+    for photo in photos or []:
+        content_items.append({"type": "input_text", "text": "Saved photo_id: " + photo["photo_id"]})
+        content_items.append({"type": "input_image", "image_url": photo["image_url"]})
+    input_items.append({"role": "user", "content": content_items})
 
     instructions = GTOP_AI_PROMPT + "\n\n" + member_state
 
@@ -4873,6 +4885,9 @@ async def ai_send_chunks(destination, text: str):
         text = text[split_at:].lstrip()
 
 
+AI_TEXT_LOCKS = {}
+
+
 @client.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -4886,7 +4901,7 @@ async def on_message(message: discord.Message):
         and client.user in message.mentions
     )
 
-    if is_dm and await _consume_checkin_reply(message):
+    if is_dm and not message.attachments and await _consume_checkin_reply(message):
         return
 
     if not is_dm and not is_mentioned:
@@ -4930,32 +4945,47 @@ async def on_message(message: discord.Message):
 
     content = content.strip()
 
-    if not content:
+    if not content and not message.attachments:
         await message.reply(
             "I'm here. Talk to me normally about your GTOP trade, "
             "journal, risk, or playbook."
         )
         return
 
-    init_ai_db()
-    ai_save_message(member.id, "user", content)
+    # Serialize a member's text turns so rapid follow-ups see completed prior actions.
+    lock = AI_TEXT_LOCKS.setdefault(member.id, asyncio.Lock())
+    async with lock:
+        photos = []
+        if len(message.attachments) > 4:
+            await message.reply("Please send up to four pictures per message.")
+            return
+        for attachment in message.attachments:
+            try:
+                if attachment.size > MAX_IMAGE_BYTES:
+                    raise ValueError("Each picture must be at most 8 MB.")
+                data = await attachment.read()
+                photos.append(await asyncio.to_thread(save_upload, db, GTOP_GUILD_ID,
+                    member.id, str(attachment.id), data))
+            except ValueError as exc:
+                await message.reply(str(exc))
+            except Exception:
+                await message.reply("I couldn't save that picture. Please resend it.")
+        content = content or "Analyze and journal the attached trade pictures."
+        if message.attachments and not photos and not message.content.strip():
+            return
+        try:
+            async with message.channel.typing():
+                answer = await asyncio.to_thread(ai_run_turn, member.id, content, photos)
+        except Exception as exc:
+            saved = " Your pictures are saved, but analysis is still pending." if photos else ""
+            await message.reply("I hit an AI connection error." + saved +
+                " Please check your trade history before retrying a trade action.")
+            return
+        # Save after the turn: the current user message must not appear twice.
+        ai_save_message(member.id, "user", content + (
+            "\nSaved photo IDs: " + ", ".join(p["photo_id"] for p in photos) if photos else ""))
+        ai_save_message(member.id, "assistant", answer)
 
-    try:
-        async with message.channel.typing():
-            answer = await asyncio.to_thread(
-                ai_run_turn,
-                member.id,
-                content,
-            )
-    except Exception as exc:
-        await message.reply(
-            "I hit an AI connection error. Your existing GBOP trade and "
-            "journal records were not changed. "
-            f"`{type(exc).__name__}`"
-        )
-        return
-
-    ai_save_message(member.id, "assistant", answer)
 
     if len(answer) <= 1900:
         await message.reply(answer)
