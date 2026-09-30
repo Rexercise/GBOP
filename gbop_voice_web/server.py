@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db_compat import db
-from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool
+from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
 from gbop_voice_web.trade_photos import PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES, photo_tool
 from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.journal_numbers import journal_number
@@ -81,6 +81,12 @@ if not GTOP_MEMBER_ROLE_ID:
 client = OpenAI(api_key=OPENAI_API_KEY)
 app = FastAPI(title="GBOP Voice")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+@app.on_event("startup")
+async def initialize_persistent_journal_features():
+    # Initialize durable photo + handwritten-journal tables before serving requests.
+    await asyncio.to_thread(init_coach, db)
+
 
 
 def now_iso() -> str:
