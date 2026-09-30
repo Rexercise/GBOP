@@ -3469,6 +3469,10 @@ async def _consume_checkin_reply(message):
 # STARTUP
 # -----------------------------
 
+def _init_coach_db():
+    init_coach(db)
+
+
 @client.event
 async def setup_hook():
     print("[GBOP-STARTUP] Discord login succeeded; initializing database.")
@@ -3481,7 +3485,7 @@ async def setup_hook():
         init_member_trade_flow_db,
         ensure_journal_edit_schema,
         init_checkin_db,
-        init_coach,
+        _init_coach_db,
     ):
         print(f"[GBOP-STARTUP] Starting {initializer.__name__}")
         try:

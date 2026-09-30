@@ -86,6 +86,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 async def initialize_persistent_journal_features():
     # Initialize durable photo + handwritten-journal tables before serving requests.
     await asyncio.to_thread(init_coach, db)
+    print("[GBOP-WEB] durable photo/journal storage initialized.")
 
 
 
