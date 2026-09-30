@@ -24,6 +24,7 @@ from gbop_voice_web.risk_profiles import (
     profile_context,
 )
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import voice_recv
@@ -175,6 +176,14 @@ if not DISCORD_TOKEN:
 
 GUILD = discord.Object(id=GTOP_GUILD_ID)
 DB_PATH = "Supabase PostgreSQL"
+GBOP_LOCAL_TZ = ZoneInfo("America/Bogota")
+GBOP_EASTERN_TZ = ZoneInfo("America/New_York")
+GBOP_CHECKIN_TASK = None
+GBOP_CHECKIN_PROMPT = (
+    "Reply in one message with: (1) whether you followed the 8 AM plan, "
+    "(2) whether you treated 9 AM as your A+ trade, (3) whether you avoided "
+    "boredom/FOMO, plus one pattern to watch and one adjustment for next time."
+)
 
 intents = discord.Intents.default()
 intents.members = True
@@ -455,16 +464,8 @@ class JournalModal(discord.ui.Modal, title="GBOP Trade Journal"):
     description="View your recent private GTOP journal entries.",
     guild=GUILD,
 )
-async def journal(interaction: discord.Interaction):
-    await journals.callback(interaction, limit=5)
-
-@tree.command(
-    name="journals",
-    description="View your recent private GTOP journal entries.",
-    guild=GUILD,
-)
 @app_commands.describe(limit="Number of recent entries to show, 1-10")
-async def journals(
+async def journal(
     interaction: discord.Interaction,
     limit: int = 5
 ):
@@ -509,6 +510,64 @@ async def journals(
         ephemeral=True
     )
 
+
+@tree.command(
+    name="checkin",
+    description="Start a concise post-shift GTOP check-in by private DM.",
+    guild=GUILD,
+)
+async def checkin(interaction: discord.Interaction):
+    if not await require_member(interaction):
+        return
+
+    try:
+        await interaction.user.send(
+            "**GBOP Post-Shift Check-In**\n\n" + GBOP_CHECKIN_PROMPT
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "I couldn't DM you. Please enable server-member DMs, then run `/checkin` again.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        "Check-in sent to your Discord DMs.",
+        ephemeral=True,
+    )
+
+
+@tree.command(
+    name="gbopmessage",
+    description="Owner-only broadcast message to GBOP role members.",
+    guild=GUILD,
+)
+@app_commands.describe(text="The message GBOP should send to its members.")
+async def gbopmessage(interaction: discord.Interaction, text: str):
+    if not is_owner(interaction.user):
+        await interaction.response.send_message(
+            "⛔ Only the GBOP owner can broadcast a GBOP message.",
+            ephemeral=True,
+        )
+        return
+
+    text = text.strip()
+    if not text:
+        await interaction.response.send_message(
+            "Please provide a message to broadcast.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    sent, failed = await _broadcast_gbop_dm(
+        "📣 **GBOP Message from the Owner**\n\n" + text[:1800]
+    )
+    await interaction.followup.send(
+        f"GBOP message sent to **{sent}** role member(s). "
+        f"{failed} DM(s) could not be delivered.",
+        ephemeral=True,
+    )
 
 
 # -----------------------------
@@ -3259,6 +3318,176 @@ tree.add_command(admin, guild=GUILD)
 
 
 # -----------------------------
+# POST-SHIFT CHECK-INS
+# -----------------------------
+
+def init_checkin_db():
+    with db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS post_shift_checkins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                shift_date TEXT NOT NULL,
+                shift TEXT NOT NULL,
+                prompt_sent_at TEXT NOT NULL,
+                response TEXT,
+                responded_at TEXT,
+                UNIQUE(guild_id, user_id, shift_date, shift)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gbop_shift_alerts (
+                event_key TEXT PRIMARY KEY,
+                sent_at TEXT NOT NULL
+            )
+        """)
+
+
+def _gbop_role_members():
+    guild = client.get_guild(GTOP_GUILD_ID)
+    if guild is None:
+        return []
+
+    return [
+        member
+        for member in guild.members
+        if not member.bot and has_member_role(member)
+    ]
+
+
+async def _broadcast_gbop_dm(text, *, event_key=None, checkin_shift=None, shift_date=None):
+    if event_key:
+        with db() as conn:
+            already_sent = conn.execute(
+                "SELECT event_key FROM gbop_shift_alerts WHERE event_key=?",
+                (event_key,),
+            ).fetchone()
+        if already_sent:
+            return 0, 0
+
+    sent = 0
+    failed = 0
+    for member in _gbop_role_members():
+        try:
+            await member.send(text)
+            sent += 1
+
+            if checkin_shift and shift_date:
+                with db() as conn:
+                    existing = conn.execute("""
+                        SELECT id
+                        FROM post_shift_checkins
+                        WHERE guild_id=? AND user_id=? AND shift_date=? AND shift=?
+                    """, (
+                        GTOP_GUILD_ID,
+                        member.id,
+                        shift_date,
+                        checkin_shift,
+                    )).fetchone()
+                    if existing is None:
+                        conn.execute("""
+                            INSERT INTO post_shift_checkins (
+                                guild_id, user_id, shift_date, shift, prompt_sent_at
+                            ) VALUES (?, ?, ?, ?, ?)
+                        """, (
+                            GTOP_GUILD_ID,
+                            member.id,
+                            shift_date,
+                            checkin_shift,
+                            now(),
+                        ))
+        except (discord.Forbidden, discord.HTTPException):
+            failed += 1
+
+    if event_key:
+        with db() as conn:
+            conn.execute(
+                "INSERT INTO gbop_shift_alerts (event_key, sent_at) VALUES (?, ?)",
+                (event_key, now()),
+            )
+
+    return sent, failed
+
+
+def _scheduled_shift_event(now_eastern):
+    date_key = now_eastern.date().isoformat()
+    minute_key = (now_eastern.hour, now_eastern.minute)
+    events = {
+        (8, 55): (
+            "day_pre5",
+            "⏱️ **Day Shift begins in 5 minutes** (9:00 AM Eastern). Treat the 9 AM setup as your A+ opportunity.",
+            None,
+        ),
+        (20, 55): (
+            "night_pre5",
+            "⏱️ **Night Shift begins in 5 minutes** (9:00 PM Eastern). Treat the 9 PM setup as your A+ opportunity.",
+            None,
+        ),
+        (13, 0): (
+            "day_formation",
+            "📣 **Post-Day Shift formation — 1:00 PM Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
+            "day",
+        ),
+        (0, 0): (
+            "night_formation",
+            "📣 **Post-Night Shift formation — midnight Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
+            "night",
+        ),
+    }
+    event = events.get(minute_key)
+    if event is None:
+        return None
+    return f"{date_key}:{event[0]}", event[1], event[2], date_key
+
+
+async def _post_shift_checkin_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            event = _scheduled_shift_event(datetime.now(GBOP_EASTERN_TZ))
+            if event:
+                event_key, text, checkin_shift, shift_date = event
+                await _broadcast_gbop_dm(
+                    text,
+                    event_key=event_key,
+                    checkin_shift=checkin_shift,
+                    shift_date=shift_date,
+                )
+        except Exception:
+            logger.exception("GBOP shift alert failed")
+        await asyncio.sleep(20)
+
+
+async def _consume_checkin_reply(message):
+    if message.guild is not None:
+        return False
+
+    with db() as conn:
+        existing = conn.execute("""
+            SELECT id
+            FROM post_shift_checkins
+            WHERE guild_id=? AND user_id=? AND response IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+        """, (GTOP_GUILD_ID, message.author.id)).fetchone()
+
+        if pending is None:
+            return False
+
+        conn.execute("""
+            UPDATE post_shift_checkins
+            SET response=?, responded_at=?
+            WHERE id=?
+        """, (message.content.strip(), now(), pending["id"]))
+
+    await message.reply(
+        "Saved. GBOP recorded your rule adherence, pattern to watch, and next adjustment."
+    )
+    return True
+
+
+# -----------------------------
 # STARTUP
 # -----------------------------
 
@@ -3273,6 +3502,7 @@ async def setup_hook():
         init_risk_flags_db,
         init_member_trade_flow_db,
         ensure_journal_edit_schema,
+        init_checkin_db,
     ):
         print(f"[GBOP-STARTUP] Starting {initializer.__name__}")
         try:
@@ -3293,6 +3523,11 @@ async def setup_hook():
 
 @client.event
 async def on_ready():
+    global GBOP_CHECKIN_TASK
+
+    if GBOP_CHECKIN_TASK is None or GBOP_CHECKIN_TASK.done():
+        GBOP_CHECKIN_TASK = asyncio.create_task(_post_shift_checkin_loop())
+
     print("=" * 55)
     print("GBOP ONLINE ✅")
     print(f"Logged in as: {client.user}")
@@ -4650,6 +4885,9 @@ async def on_message(message: discord.Message):
         client.user is not None
         and client.user in message.mentions
     )
+
+    if is_dm and await _consume_checkin_reply(message):
+        return
 
     if not is_dm and not is_mentioned:
         return
