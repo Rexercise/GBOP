@@ -5417,29 +5417,52 @@ class GBOPRealtimeSession:
     async def sender_loop(self):
         # Discord stops delivering packets when a member stops speaking. Realtime
         # VAD needs actual silent PCM to end the turn; an empty queue is not audio.
-        # Supply up to 12 seconds (beyond semantic VAD's longest timeout), then
-        # wait without sending indefinitely. New audio always takes priority.
+        # Keep the queue waiter in a real Task so timeout/cancellation never
+        # attempts to await the same coroutine object twice.
         silence_frames_left = 0
-        while not self.closed:
-            if silence_frames_left:
-                try:
-                    pcm = await asyncio.wait_for(self.audio_queue.get(), timeout=0.1)
+        pending_audio_get = None
+
+        try:
+            while not self.closed:
+                if silence_frames_left:
+                    if pending_audio_get is None:
+                        pending_audio_get = asyncio.create_task(
+                            self.audio_queue.get()
+                        )
+
+                    done, _ = await asyncio.wait(
+                        {pending_audio_get},
+                        timeout=0.1,
+                    )
+
+                    if done:
+                        pending_audio_get = next(iter(done))
+                        pcm = pending_audio_get.result()
+                        pending_audio_get = None
+                        silence_frames_left = 120
+                    else:
+                        pcm = bytes(4800)  # 100 ms, 24 kHz, mono, signed 16-bit PCM
+                        silence_frames_left -= 1
+                else:
+                    pcm = await self.audio_queue.get()
                     silence_frames_left = 120
-                except asyncio.TimeoutError:
-                    pcm = bytes(4800)  # 100 ms, 24 kHz, mono, signed 16-bit PCM
-                    silence_frames_left -= 1
-            else:
-                pcm = await self.audio_queue.get()
-                silence_frames_left = 120
-            ok = await self.send_event(
-                {
-                    "type": "input_audio_buffer.append",
-                    "audio": base64.b64encode(pcm).decode("ascii"),
-                },
-                quiet=True,
-            )
-            if not ok:
-                raise RuntimeError("Realtime audio send failed.")
+
+                ok = await self.send_event(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(pcm).decode("ascii"),
+                    },
+                    quiet=True,
+                )
+                if not ok:
+                    raise RuntimeError("Realtime audio send failed.")
+        finally:
+            if pending_audio_get is not None and not pending_audio_get.done():
+                pending_audio_get.cancel()
+                await asyncio.gather(
+                    pending_audio_get,
+                    return_exceptions=True,
+                )
 
     async def refresh_context(self):
         await self.send_event(
