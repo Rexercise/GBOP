@@ -3445,10 +3445,10 @@ def _scheduled_shift_events(now_eastern):
         (20 * 60 + 55, 5, "night_pre5",
          "⏱️ **Night Shift begins in 5 minutes** (9:00 PM Eastern). Treat the 9 PM setup as your A+ opportunity.",
          None),
-        (13 * 60, 120, "day_formation",
+        (13 * 60, 180, "day_formation",
          "📣 **Post-Day Shift formation — 1:00 PM Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
          "day"),
-        (0, 120, "night_formation",
+        (0, 180, "night_formation",
          "📣 **Post-Night Shift formation — midnight Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
          "night"),
     )
