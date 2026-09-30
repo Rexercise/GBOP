@@ -3341,7 +3341,7 @@ def _gbop_role_members():
     return [
         member
         for member in guild.members
-        if not member.bot and has_member_role(member)
+        if not member.bot and (has_member_role(member) or is_owner(member))
     ]
 
 
