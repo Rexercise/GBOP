@@ -8,6 +8,7 @@ import sqlite3
 import time
 import unittest
 from gbop_voice_web.deletion import delete_trade_records
+from gbop_voice_web.journal_numbers import journal_number
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1] / 'gbop_voice_web/server.py'
@@ -43,7 +44,8 @@ class JournalDeleteTests(unittest.TestCase):
             with self.conn:
                 yield Conn()
         self.ns = dict(hashlib=hashlib, hmac=hmac, json=json, secrets=secrets, time=time,
-                       delete_trade_records=delete_trade_records, db=db, GTOP_GUILD_ID=10, JOURNAL_DELETE_TTL=300, PENDING_JOURNAL_DELETIONS={})
+                       delete_trade_records=delete_trade_records, journal_number=journal_number,
+                       db=db, GTOP_GUILD_ID=10, JOURNAL_DELETE_TTL=300, PENDING_JOURNAL_DELETIONS={})
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), self.ns)
     def tearDown(self):
         self.conn.close()
@@ -117,3 +119,4 @@ class JournalDeleteTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
