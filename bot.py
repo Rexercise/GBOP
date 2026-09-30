@@ -4958,7 +4958,7 @@ class GBOPOutputManager:
         self.voice_client = None
         self.item_id = None
 
-    async def interrupt(self):
+    async def interrupt(self, cancel_response=True):
         async with self.lock:
             source = self.source
             session = self.session
@@ -4979,7 +4979,7 @@ class GBOPOutputManager:
                 except Exception as exc:
                     print("[GBOP-RT] playback stop error:", type(exc).__name__, exc)
 
-            if session is not None:
+            if session is not None and cancel_response:
                 await session.send_event({"type": "response.cancel"}, quiet=True)
 
                 if item_id and played_ms > 0:
@@ -4999,7 +4999,10 @@ class GBOPOutputManager:
             self.item_id = None
 
     async def begin(self, session, voice_client, item_id):
-        await self.interrupt()
+        # Replacing playback for the same session is not a user interruption.
+        # An unscoped response.cancel here cancels the NEW response whose first
+        # audio chunk triggered begin(), including post-tool confirmations.
+        await self.interrupt(cancel_response=self.session is not session)
 
         async with self.lock:
             source = GBOPRealtimeAudioSource()
@@ -5375,10 +5378,10 @@ class GBOPRealtimeSession:
                 )
                 if item_id in self._logged_audio_items:
                     self._logged_audio_items.discard(item_id)
-                if self.output_source is not None:
+                if self.output_source is not None and self.output_item_id == item_id:
                     self.output_source.finish()
-                self.output_source = None
-                self.output_item_id = None
+                    self.output_source = None
+                    self.output_item_id = None
                 continue
 
             if event_type == "response.output_audio_transcript.done":
