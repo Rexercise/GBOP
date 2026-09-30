@@ -61,6 +61,7 @@ GTOP_GUILD_ID = int(os.getenv("GTOP_GUILD_ID", "0") or "0")
 BACKEND_MODEL = os.getenv("GBOP_VOICE_BACKEND_MODEL", "gpt-5.6-luna")
 LIVE_MODEL = os.getenv("GBOP_LIVE_MODEL", "gpt-live-1")
 LIVE_VOICE = os.getenv("GBOP_LIVE_VOICE", "marin")
+SHIFT_DM_DELIVERY_VERSION = "per-member-retry-v2"
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing from ../.env")

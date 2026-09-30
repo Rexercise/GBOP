@@ -3315,9 +3315,20 @@ def init_checkin_db():
                 sent_at TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gbop_shift_deliveries (
+                event_key TEXT NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                discord_message_id TEXT,
+                delivered_at TEXT NOT NULL,
+                PRIMARY KEY (event_key, guild_id, user_id)
+            )
+        """)
 
-        # These contain private member check-ins; only the trusted bot backend reads them.
-        for table in ('post_shift_checkins', 'gbop_shift_alerts'):
+        # These contain private member check-ins and DM delivery metadata;
+        # only the trusted bot backend reads them.
+        for table in ('post_shift_checkins', 'gbop_shift_alerts', 'gbop_shift_deliveries'):
             conn.execute(f'ALTER TABLE {table} ENABLE ROW LEVEL SECURITY')
             conn.execute(f'REVOKE ALL ON {table} FROM anon, authenticated')
 
@@ -3335,24 +3346,48 @@ def _gbop_role_members():
 
 
 async def _broadcast_gbop_dm(text, *, event_key=None, checkin_shift=None, shift_date=None):
-    if event_key:
-        with db() as conn:
-            already_sent = conn.execute(
-                "SELECT event_key FROM gbop_shift_alerts WHERE event_key=?",
-                (event_key,),
-            ).fetchone()
-        if already_sent:
-            return 0, 0
-
     sent = 0
     failed = 0
+
     for member in _gbop_role_members():
+        if event_key:
+            with db() as conn:
+                delivered = conn.execute("""
+                    SELECT discord_message_id
+                    FROM gbop_shift_deliveries
+                    WHERE event_key=? AND guild_id=? AND user_id=?
+                """, (
+                    event_key,
+                    GTOP_GUILD_ID,
+                    member.id,
+                )).fetchone()
+            if delivered is not None:
+                continue
+
         try:
-            await member.send(text)
+            dm_message = await member.send(text)
             sent += 1
 
-            if checkin_shift and shift_date:
-                with db() as conn:
+            with db() as conn:
+                if event_key:
+                    conn.execute("""
+                        INSERT INTO gbop_shift_deliveries (
+                            event_key, guild_id, user_id,
+                            discord_message_id, delivered_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT (event_key, guild_id, user_id)
+                        DO UPDATE SET
+                            discord_message_id=EXCLUDED.discord_message_id,
+                            delivered_at=EXCLUDED.delivered_at
+                    """, (
+                        event_key,
+                        GTOP_GUILD_ID,
+                        member.id,
+                        str(getattr(dm_message, "id", "") or ""),
+                        now(),
+                    ))
+
+                if checkin_shift and shift_date:
                     existing = conn.execute("""
                         SELECT id
                         FROM post_shift_checkins
@@ -3375,63 +3410,81 @@ async def _broadcast_gbop_dm(text, *, event_key=None, checkin_shift=None, shift_
                             checkin_shift,
                             now(),
                         ))
-        except (discord.Forbidden, discord.HTTPException):
+        except (discord.Forbidden, discord.HTTPException) as exc:
             failed += 1
+            logger.warning(
+                "GBOP shift DM failed event=%s user=%s error=%s",
+                event_key,
+                member.id,
+                type(exc).__name__,
+            )
 
     if event_key:
         with db() as conn:
-            conn.execute(
-                "INSERT INTO gbop_shift_alerts (event_key, sent_at) VALUES (?, ?)",
-                (event_key, now()),
-            )
+            conn.execute("""
+                INSERT INTO gbop_shift_alerts (event_key, sent_at)
+                VALUES (?, ?)
+                ON CONFLICT (event_key)
+                DO UPDATE SET sent_at=EXCLUDED.sent_at
+            """, (
+                event_key,
+                now(),
+            ))
 
     return sent, failed
 
 
-def _scheduled_shift_event(now_eastern):
+def _scheduled_shift_events(now_eastern):
     date_key = now_eastern.date().isoformat()
-    minute_key = (now_eastern.hour, now_eastern.minute)
-    events = {
-        (8, 55): (
-            "day_pre5",
-            "⏱️ **Day Shift begins in 5 minutes** (9:00 AM Eastern). Treat the 9 AM setup as your A+ opportunity.",
-            None,
-        ),
-        (20, 55): (
-            "night_pre5",
-            "⏱️ **Night Shift begins in 5 minutes** (9:00 PM Eastern). Treat the 9 PM setup as your A+ opportunity.",
-            None,
-        ),
-        (13, 0): (
-            "day_formation",
-            "📣 **Post-Day Shift formation — 1:00 PM Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
-            "day",
-        ),
-        (0, 0): (
-            "night_formation",
-            "📣 **Post-Night Shift formation — midnight Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
-            "night",
-        ),
-    }
-    event = events.get(minute_key)
-    if event is None:
-        return None
-    return f"{date_key}:{event[0]}", event[1], event[2], date_key
+    current_minute = now_eastern.hour * 60 + now_eastern.minute
+
+    events = (
+        (8 * 60 + 55, 5, "day_pre5",
+         "⏱️ **Day Shift begins in 5 minutes** (9:00 AM Eastern). Treat the 9 AM setup as your A+ opportunity.",
+         None),
+        (20 * 60 + 55, 5, "night_pre5",
+         "⏱️ **Night Shift begins in 5 minutes** (9:00 PM Eastern). Treat the 9 PM setup as your A+ opportunity.",
+         None),
+        (13 * 60, 180, "day_formation",
+         "📣 **Post-Day Shift formation — 1:00 PM Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
+         "day"),
+        (0, 180, "night_formation",
+         "📣 **Post-Night Shift formation — midnight Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
+         "night"),
+    )
+
+    active = []
+    for start_minute, retry_window, name, text, checkin_shift in events:
+        if start_minute <= current_minute < start_minute + retry_window:
+            active.append((
+                f"{date_key}:{name}",
+                text,
+                checkin_shift,
+                date_key,
+            ))
+    return active
 
 
 async def _post_shift_checkin_loop():
     await client.wait_until_ready()
     while not client.is_closed():
         try:
-            event = _scheduled_shift_event(datetime.now(GBOP_EASTERN_TZ))
-            if event:
-                event_key, text, checkin_shift, shift_date = event
-                await _broadcast_gbop_dm(
+            for event_key, text, checkin_shift, shift_date in _scheduled_shift_events(
+                datetime.now(GBOP_EASTERN_TZ)
+            ):
+                sent, failed = await _broadcast_gbop_dm(
                     text,
                     event_key=event_key,
                     checkin_shift=checkin_shift,
                     shift_date=shift_date,
                 )
+                if sent or failed:
+                    logger.info(
+                        "GBOP shift DM event=%s sent=%s failed=%s",
+                        event_key,
+                        sent,
+                        failed,
+                    )
         except Exception:
             logger.exception("GBOP shift alert failed")
         await asyncio.sleep(20)
