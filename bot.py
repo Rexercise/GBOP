@@ -184,9 +184,11 @@ GBOP_LOCAL_TZ = ZoneInfo("America/Bogota")
 GBOP_EASTERN_TZ = ZoneInfo("America/New_York")
 GBOP_CHECKIN_TASK = None
 GBOP_CHECKIN_PROMPT = (
-    "Reply in one message with: (1) whether you followed the 8 AM plan, "
-    "(2) whether you treated 9 AM as your A+ trade, (3) whether you avoided "
-    "boredom/FOMO, plus one pattern to watch and one adjustment for next time."
+    "Quick check-in — reply in one message with: "
+    "(1) whether you followed your trading plan and personal risk protocol, "
+    "(2) whether your trades met your own A+ setup criteria, "
+    "(3) whether you avoided boredom, FOMO, revenge trading, or unnecessary entries, "
+    "plus one pattern you noticed and one adjustment for your next shift."
 )
 
 intents = discord.Intents.default()
@@ -3440,10 +3442,10 @@ def _scheduled_shift_events(now_eastern):
 
     events = (
         (8 * 60 + 55, 5, "day_pre5",
-         "⏱️ **Day Shift begins in 5 minutes** (9:00 AM Eastern). Treat the 9 AM setup as your A+ opportunity.",
+         "⏱️ **Day Shift begins in 5 minutes** (9:00 AM Eastern). Protect your A+ criteria, follow your trading plan, and respect your personal risk protocol.",
          None),
         (20 * 60 + 55, 5, "night_pre5",
-         "⏱️ **Night Shift begins in 5 minutes** (9:00 PM Eastern). Treat the 9 PM setup as your A+ opportunity.",
+         "⏱️ **Night Shift begins in 5 minutes** (9:00 PM Eastern). Protect your A+ criteria, follow your trading plan, and respect your personal risk protocol.",
          None),
         (13 * 60, 180, "day_formation",
          "📣 **Post-Day Shift formation — 1:00 PM Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
