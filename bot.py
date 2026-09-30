@@ -16,6 +16,7 @@ from gbop_voice_web.trade_photos import (PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES,
     MAX_IMAGE_BYTES, save_upload, photo_tool)
 from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.journal_numbers import journal_number, journal_record_id
+from gbop_voice_web.trade_numbers import trade_number, trade_record_id, TRADE_NUMBERING_PROMPT
 from gbop_voice_web.gtop_protocol import (
     CANONICAL_KNOWLEDGE, infer_tier as ai_infer_tier,
     classification_warning, tier_used_r,
@@ -646,43 +647,11 @@ def get_thesis(thesis_id: int, user_id: int):
         )).fetchone()
 
 def trade_number_for_id(user_id: int, thesis_id: int):
-    with db() as conn:
-        rows = conn.execute("""
-            SELECT id
-            FROM theses
-            WHERE guild_id=? AND user_id=?
-            ORDER BY id ASC
-        """, (
-            GTOP_GUILD_ID,
-            user_id
-        )).fetchall()
-
-    for number, row in enumerate(rows, start=1):
-        if row["id"] == thesis_id:
-            return number
-
-    return None
+    return trade_number(db, GTOP_GUILD_ID, user_id, thesis_id)
 
 
-def trade_id_from_number(user_id: int, trade_number: int):
-    if trade_number <= 0:
-        return None
-
-    with db() as conn:
-        rows = conn.execute("""
-            SELECT id
-            FROM theses
-            WHERE guild_id=? AND user_id=?
-            ORDER BY id ASC
-        """, (
-            GTOP_GUILD_ID,
-            user_id
-        )).fetchall()
-
-    if trade_number > len(rows):
-        return None
-
-    return rows[trade_number - 1]["id"]
+def trade_id_from_number(user_id: int, number: int):
+    return trade_record_id(db, GTOP_GUILD_ID, user_id, number)
 
 
 def next_trade_number(user_id: int):
@@ -2209,7 +2178,7 @@ class CloseMemberTradeModal(
             )).fetchone()[0]
 
         await interaction.response.send_message(
-            f"✅ **Trade #{self.trade_id} closed and journaled.**\n"
+            f"✅ **Trade #{trade_number_for_id(interaction.user.id, self.trade_id)} closed and journaled.**\n"
             f"Asset: **{row['asset']}**\n"
             f"Play: **{row['play']}**\n"
             f"Final Result: **{format_r(result_value)}**\n"
@@ -2539,12 +2508,13 @@ def delete_owned_journal(user_id: int, journal_id: int):
         ).fetchone()
         if row is None:
             return {"ok": False, "error": "No matching journal entry was found."}
+        visible_trade_number = trade_number_for_id(user_id, row["thesis_id"])
         if row["thesis_id"] is not None:
             delete_trade_records(conn, GTOP_GUILD_ID, user_id, row["thesis_id"])
         else:
             conn.execute("DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?",
                          (journal_id, GTOP_GUILD_ID, user_id))
-    return {"ok": True, "journal_id": journal_id, "trade_id": row["thesis_id"],
+    return {"ok": True, "journal_id": journal_id, "trade_id": visible_trade_number,
             "trade_preserved": False}
 
 
@@ -2652,7 +2622,7 @@ async def deletejournal(
     trade_text = (
         "None"
         if not row["thesis_id"]
-        else f"Trade #{row['thesis_id']}"
+        else f"Trade #{trade_number_for_id(interaction.user.id, row['thesis_id'])}"
     )
 
     await interaction.response.send_message(
@@ -2735,7 +2705,7 @@ def get_trade_delete_preview(user_id: int, trade_id: int):
         )).fetchone()[0]
 
     return {
-        "trade_id": trade_id,
+        "trade_id": trade_number_for_id(user_id, trade_id),
         "asset": row["asset"],
         "direction": row["direction"],
         "play": row["play"],
@@ -3814,7 +3784,7 @@ def ai_member_context(user_id: int):
         for row in open_trades:
             used = thesis_used_r(row["id"])
             lines.append(
-                f"- Trade #{row['id']}: {row['asset']} | "
+                f"- Trade #{trade_number_for_id(user_id, row['id'])}: {row['asset']} | "
                 f"{row['direction']} | Play: {row['play']} | "
                 f"Recorded risk: {used:.2f}R | "
                 f"Objective: {row['objective']}"
@@ -3957,7 +3927,7 @@ def ai_open_trade(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": thesis_id,
+        "trade_id": trade_number_for_id(user_id, thesis_id),
         "execution_id": execution_id,
         "asset": asset,
         "direction": direction,
@@ -3977,7 +3947,7 @@ def ai_choose_open_trade(user_id: int, trade_id):
                 FROM theses
                 WHERE id=? AND guild_id=? AND user_id=? AND status='OPEN'
             """, (
-                int(trade_id),
+                trade_id_from_number(user_id, trade_id),
                 GTOP_GUILD_ID,
                 user_id,
             )).fetchone()
@@ -4004,7 +3974,7 @@ def ai_choose_open_trade(user_id: int, trade_id):
             "needs_trade_selection": True,
             "open_trades": [
                 {
-                    "trade_id": row["id"],
+                    "trade_id": trade_number_for_id(user_id, row["id"]),
                     "asset": row["asset"],
                     "direction": row["direction"],
                     "play": row["play"],
@@ -4092,7 +4062,7 @@ def ai_add_entry(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": row["id"],
+        "trade_id": trade_number_for_id(user_id, row["id"]),
         "execution_id": execution_id,
         "entry_model": entry_model,
         "tier": tier,
@@ -4132,7 +4102,7 @@ def ai_record_trade_event(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": row["id"],
+        "trade_id": trade_number_for_id(user_id, row["id"]),
         "event": event,
         "details": details,
         "result_r": result_r,
@@ -4200,7 +4170,7 @@ def ai_close_trade(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": row["id"],
+        "trade_id": trade_number_for_id(user_id, row["id"]),
         "journal_id": journal_id,
         "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, journal_id),
         "asset": row["asset"],
@@ -4222,7 +4192,7 @@ def ai_get_trade_state(user_id: int, args: dict):
                 FROM theses
                 WHERE id=? AND guild_id=? AND user_id=?
             """, (
-                int(trade_id),
+                trade_id_from_number(user_id, trade_id),
                 GTOP_GUILD_ID,
                 user_id,
             )).fetchall()
@@ -4242,7 +4212,7 @@ def ai_get_trade_state(user_id: int, args: dict):
         "ok": True,
         "trades": [
             {
-                "trade_id": row["id"],
+                "trade_id": trade_number_for_id(user_id, row["id"]),
                 "asset": row["asset"],
                 "direction": row["direction"],
                 "play": row["play"],
@@ -4278,7 +4248,7 @@ def ai_get_journal_history(user_id: int, args: dict):
             {
                 "journal_id": row["id"],
                 "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, row["id"]),
-                "trade_id": row["thesis_id"],
+                "trade_id": trade_number_for_id(user_id, row["thesis_id"]),
                 "result_r": row["result_r"],
                 "rule_adherence": row["rule_adherence"],
                 "summary": row["description"],
@@ -4362,7 +4332,7 @@ def ai_edit_journal(user_id: int, args: dict):
         "ok": True,
         "journal_id": row["id"],
                 "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, row["id"]),
-        "trade_id": row["thesis_id"],
+        "trade_id": trade_number_for_id(user_id, row["thesis_id"]),
         "result_r": new_result,
         "rule_adherence": new_adherence,
         "summary": new_summary,
@@ -4414,7 +4384,7 @@ GBOP_AI_TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "trade_id": {"type": ["integer", "null"]},
+                "trade_id": {"type": ["integer", "null"], "description": "Member-local displayed Trade #; not a database ID."},
                 "entry_model": {"type": "string"},
                 "tier": {
                     "type": ["integer", "null"],
@@ -4437,7 +4407,7 @@ GBOP_AI_TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "trade_id": {"type": ["integer", "null"]},
+                "trade_id": {"type": ["integer", "null"], "description": "Member-local displayed Trade #; not a database ID."},
                 "event": {"type": "string"},
                 "details": {"type": ["string", "null"]},
                 "result_r": {"type": ["number", "null"]},
@@ -4454,7 +4424,7 @@ GBOP_AI_TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "trade_id": {"type": ["integer", "null"]},
+                "trade_id": {"type": ["integer", "null"], "description": "Member-local displayed Trade #; not a database ID."},
                 "final_result_r": {"type": ["number", "null"]},
                 "rule_adherence": {"type": "string"},
                 "summary": {"type": "string"},
@@ -4478,7 +4448,7 @@ GBOP_AI_TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "trade_id": {"type": ["integer", "null"]},
+                "trade_id": {"type": ["integer", "null"], "description": "Member-local displayed Trade #; not a database ID."},
             },
             "required": ["trade_id"],
             "additionalProperties": False,
@@ -4629,7 +4599,7 @@ def ai_delete_journal(user_id: int, args: dict):
     preview = {
         "journal_id": row["id"],
                 "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, row["id"]),
-        "trade_id": row["thesis_id"],
+        "trade_id": trade_number_for_id(user_id, row["thesis_id"]),
         "result_r": row["result_r"],
         "rule_adherence": row["rule_adherence"],
         "summary": row["description"],
@@ -4770,7 +4740,7 @@ GBOP_AI_TOOLS.append(
 
 GBOP_AI_TOOLS.extend(PHOTO_TOOLS)
 GBOP_AI_TOOLS.extend(COACH_TOOLS)
-GTOP_AI_PROMPT += "\n\n" + PHOTO_PROMPT + "\n\n" + COACH_PROMPT
+GTOP_AI_PROMPT += "\n\n" + TRADE_NUMBERING_PROMPT + "\n\n" + PHOTO_PROMPT + "\n\n" + COACH_PROMPT
 
 
 def ai_execute_tool(user_id: int, name: str, args: dict):

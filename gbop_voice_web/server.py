@@ -17,6 +17,7 @@ from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES,
 from gbop_voice_web.trade_photos import PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES, photo_tool
 from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.journal_numbers import journal_number
+from gbop_voice_web.trade_numbers import trade_number, trade_record_id, TRADE_NUMBERING_PROMPT
 from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE, tier_max_r, infer_tier, tier_used_r
 from gbop_voice_web.risk_profiles import get_profile, save_profile, tier_limit, profile_context
 from typing import Any
@@ -296,7 +297,7 @@ def member_context(user_id: int) -> str:
         lines.append("Open trades:")
         for row in trades:
             lines.append(
-                f"- Trade #{row['id']}: {row['asset']} | {row['direction']} | "
+                f"- Trade #{trade_number(db, GTOP_GUILD_ID, user_id, row['id'])}: {row['asset']} | {row['direction']} | "
                 f"Play {row['play']} | recorded risk {thesis_used_r(row['id']):.2f}R | "
                 f"objective {row['objective']}"
             )
@@ -326,7 +327,7 @@ def choose_open_trade(user_id: int, trade_id=None):
                 FROM theses
                 WHERE id=? AND guild_id=? AND user_id=? AND status='OPEN'
                 """,
-                (int(trade_id), GTOP_GUILD_ID, user_id),
+                (trade_record_id(db, GTOP_GUILD_ID, user_id, trade_id), GTOP_GUILD_ID, user_id),
             ).fetchone()
             if row is None:
                 return None, "That open trade could not be found."
@@ -349,7 +350,7 @@ def choose_open_trade(user_id: int, trade_id=None):
             "needs_trade_selection": True,
             "open_trades": [
                 {
-                    "trade_id": r["id"],
+                    "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, r["id"]),
                     "asset": r["asset"],
                     "direction": r["direction"],
                     "play": r["play"],
@@ -380,14 +381,14 @@ def tool_get_trade_state(user_id: int, args: dict):
                 FROM theses
                 WHERE id=? AND guild_id=? AND user_id=?
                 """,
-                (int(trade_id), GTOP_GUILD_ID, user_id),
+                (trade_record_id(db, GTOP_GUILD_ID, user_id, trade_id), GTOP_GUILD_ID, user_id),
             ).fetchall()
 
     return {
         "ok": True,
         "trades": [
             {
-                "trade_id": r["id"],
+                "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, r["id"]),
                 "asset": r["asset"],
                 "direction": r["direction"],
                 "play": r["play"],
@@ -421,7 +422,7 @@ def tool_get_journal_history(user_id: int, args: dict):
             {
                 "journal_id": r["id"],
                 "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, r["id"]),
-                "trade_id": r["thesis_id"] if "thesis_id" in r.keys() else None,
+                "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, r["thesis_id"]) if "thesis_id" in r.keys() else None,
                 "result_r": r["result_r"],
                 "rule_adherence": r["rule_adherence"],
                 "summary": r["description"],
@@ -505,7 +506,7 @@ def tool_open_trade(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": trade_id,
+        "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, trade_id),
         "execution_id": execution_id,
         "tier": tier,
         "risk_r": risk_r,
@@ -569,7 +570,7 @@ def tool_add_entry(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": row["id"],
+        "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, row["id"]),
         "execution_id": execution_id,
         "risk_r": risk_r,
         "tier": tier,
@@ -608,7 +609,7 @@ def tool_record_trade_event(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": row["id"],
+        "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, row["id"]),
         "event": args["event"],
         "result_r": result_r,
     }
@@ -689,7 +690,7 @@ def tool_close_trade(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": row["id"],
+        "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, row["id"]),
         "journal_id": journal_id,
         "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, journal_id),
         "final_result_r": result_r,
@@ -825,7 +826,7 @@ TOOLS = [
         "description": "Read this member's current/open or specific GTOP trade records.",
         "parameters": {
             "type": "object",
-            "properties": {"trade_id": {"type": ["integer", "null"]}},
+            "properties": {"trade_id": {"type": ["integer", "null"], "description": "Member-local displayed Trade #; not a database ID."}},
             "required": ["trade_id"],
             "additionalProperties": False,
         },
@@ -879,7 +880,7 @@ TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "trade_id": {"type": ["integer", "null"]},
+                "trade_id": {"type": ["integer", "null"], "description": "Member-local displayed Trade #; not a database ID."},
                 "entry_model": {"type": "string"},
                 "tier": {"type": ["integer", "null"], "enum": [1, 2, 3, None]},
                 "risk_r": {"type": "number"},
@@ -895,7 +896,7 @@ TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "trade_id": {"type": ["integer", "null"]},
+                "trade_id": {"type": ["integer", "null"], "description": "Member-local displayed Trade #; not a database ID."},
                 "event": {"type": "string"},
                 "details": {"type": ["string", "null"]},
                 "result_r": {"type": ["number", "null"]},
@@ -911,7 +912,7 @@ TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "trade_id": {"type": ["integer", "null"]},
+                "trade_id": {"type": ["integer", "null"], "description": "Member-local displayed Trade #; not a database ID."},
                 "final_result_r": {"type": ["number", "null"]},
                 "rule_adherence": {"type": "string"},
                 "summary": {"type": "string"},
@@ -1016,7 +1017,7 @@ Return a concise, factual result for GPT-Live to say aloud. Usually 1-4 sentence
 """.strip()
 
 
-BACKEND_PROMPT += "\n\n" + PHOTO_PROMPT + "\n\n" + COACH_PROMPT
+BACKEND_PROMPT += "\n\n" + TRADE_NUMBERING_PROMPT + "\n\n" + PHOTO_PROMPT + "\n\n" + COACH_PROMPT
 
 
 def run_backend(history: list[dict[str, str]], user_id: int) -> str:
