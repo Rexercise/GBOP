@@ -6107,25 +6107,79 @@ async def voiceoff(interaction: discord.Interaction):
         )
         return
 
+    shutdown_notes = []
+
+    # Stop receive immediately and mark the sink closed so no new audio can
+    # enqueue while shutdown is in progress.
     try:
         if isinstance(vc, voice_recv.VoiceRecvClient) and vc.is_listening():
             vc.stop_listening()
-
-        await GBOP_REALTIME_MANAGER.close_guild(guild.id)
-        await vc.disconnect(force=True)
-
     except Exception as exc:
+        shutdown_notes.append(f"listener stop: {type(exc).__name__}")
+
+    sink = GBOP_RT_SINKS.pop(guild.id, None)
+    if sink is not None:
+        try:
+            sink.cleanup()
+        except Exception as exc:
+            shutdown_notes.append(f"sink cleanup: {type(exc).__name__}")
+
+    # Leaving Discord is the priority. Do not let Realtime/WebSocket cleanup
+    # keep GBOP stuck in the voice channel.
+    try:
+        await asyncio.wait_for(vc.disconnect(force=True), timeout=5.0)
+        print("[GBOP-VOICEOFF] Discord voice disconnected.")
+    except asyncio.TimeoutError:
+        shutdown_notes.append("Discord disconnect timed out")
+        print("[GBOP-VOICEOFF] Discord disconnect timed out.")
+    except Exception as exc:
+        shutdown_notes.append(f"Discord disconnect: {type(exc).__name__}")
+        print(
+            "[GBOP-VOICEOFF] Discord disconnect error:",
+            type(exc).__name__,
+            exc,
+        )
+
+    # Realtime cleanup is secondary and bounded. A stuck websocket/output
+    # manager must never prevent the Discord disconnect above.
+    try:
+        await asyncio.wait_for(
+            GBOP_REALTIME_MANAGER.close_guild(guild.id),
+            timeout=4.0,
+        )
+        print("[GBOP-VOICEOFF] Realtime sessions closed.")
+    except asyncio.TimeoutError:
+        shutdown_notes.append("Realtime cleanup timed out")
+        print("[GBOP-VOICEOFF] Realtime cleanup timed out; disconnect already sent.")
+    except Exception as exc:
+        shutdown_notes.append(f"Realtime cleanup: {type(exc).__name__}")
+        print(
+            "[GBOP-VOICEOFF] Realtime cleanup error:",
+            type(exc).__name__,
+            exc,
+        )
+
+    # Discord.py should clear guild.voice_client after disconnect. If it did
+    # not, report that explicitly instead of pretending shutdown succeeded.
+    still_connected = bool(
+        guild.voice_client
+        and guild.voice_client.is_connected()
+    )
+
+    if still_connected:
+        details = "; ".join(shutdown_notes) or "voice client still reports connected"
         await interaction.followup.send(
-            (
-                "Voice shutdown hit an error:\n"
-                f"`{type(exc).__name__}: {exc}`"
-            ),
+            f"⚠️ GBOP voice shutdown was requested, but Discord still reports her connected. ({details})",
             ephemeral=True,
         )
         return
 
+    note = ""
+    if shutdown_notes:
+        note = "\nCleanup notes: " + "; ".join(shutdown_notes)
+
     await interaction.followup.send(
-        "🔇 GBOP Realtime voice stopped.",
+        "🔇 GBOP Realtime voice stopped and left the channel." + note,
         ephemeral=True,
     )
 
