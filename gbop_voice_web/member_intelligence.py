@@ -262,14 +262,30 @@ def parse_behavior_text(text):
     elif _contains(t, r"\bovertrad", r"\btoo many trades\b", r"\bexceed(?:ed)?\b.{0,25}\btrade", r"\bwent over\b.{0,20}\btrade"):
         add("trade_limit", -1, 1.1)
 
+    # A common check-in answer groups boredom + FOMO under one negation:
+    # "I did not take any boredom or FOMO trades." Preserve that shared
+    # negation so the later bare "FOMO" token is not misread as an issue.
+    joint_boredom_fomo_avoided = _contains(
+        t,
+        r"\b(no|none|did not|didn't|didnt|avoided|without)\b"
+        r".{0,90}\b(bored(?:om)?|fomo)\b"
+        r".{0,50}\b(bored(?:om)?|fomo)\b",
+    )
+
     # Boredom.
-    if _contains(t, r"\b(no|none|did not|didn't|didnt|avoided|without)\b.{0,35}\b(bored|boredom)"):
+    if joint_boredom_fomo_avoided or _contains(
+        t,
+        r"\b(no|none|did not|didn't|didnt|avoided|without)\b.{0,35}\b(bored|boredom)",
+    ):
         add("boredom", +1)
     elif _contains(t, r"\bboredom trade", r"\btraded? (?:because|out of) boredom\b", r"\bbored and (?:took|entered|traded)"):
         add("boredom", -1, 1.1)
 
     # FOMO / chasing.
-    if _contains(t, r"\b(no|none|did not|didn't|didnt|avoided|without)\b.{0,35}\b(fomo|chas(?:e|ed|ing))"):
+    if joint_boredom_fomo_avoided or _contains(
+        t,
+        r"\b(no|none|did not|didn't|didnt|avoided|without)\b.{0,35}\b(fomo|chas(?:e|ed|ing))",
+    ):
         add("fomo", +1)
     elif _contains(t, r"\bfomo\b", r"\bchas(?:e|ed|ing)\b"):
         add("fomo", -1, 1.0)
@@ -451,8 +467,16 @@ def _sync_ss_observations(db, guild, user, row):
             )
 
 
+def _json_value(value):
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
 def _rowdict(row):
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    return {key: _json_value(value) for key, value in dict(row).items()}
 
 
 def save_ss_review(db, guild, user, args):
@@ -519,7 +543,7 @@ def save_ss_review(db, guild, user, args):
             "closed_too_early", "exited_too_late", "prediction_correct",
         ]
         execution_complete = all(row[k] is not None for k in execution_fields)
-        if execution_complete and row["prediction_correct"] is False:
+        if execution_complete and not bool(row["prediction_correct"]):
             execution_complete = bool((row["prediction_miss_reason"] or "").strip())
 
         conn.execute(
@@ -569,7 +593,7 @@ def _next_ss_step(row):
     for field, question in sequence:
         if row.get(field) is None or (isinstance(row.get(field), str) and not row.get(field).strip()):
             return question
-    if row.get("prediction_correct") is False and not (row.get("prediction_miss_reason") or "").strip():
+    if row.get("prediction_correct") is not None and not bool(row.get("prediction_correct")) and not (row.get("prediction_miss_reason") or "").strip():
         return "Why was the prior weekly prediction not correct?"
     return "SS review is complete."
 
