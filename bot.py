@@ -12,7 +12,7 @@ import json
 import asyncio
 from typing import Literal
 from gbop_voice_web.discord_controls import (
-    VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild,
+    VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild, voice_readiness,
 )
 from db_compat import db
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
@@ -7085,6 +7085,18 @@ async def gbop_tree_error(
         pass
 
 
+async def gbop_voice_readiness_monitor():
+    # A configured token alone does not prove the helper joined this server.
+    # Inspect cached state only; never make API calls or print credentials/audio.
+    previous = None
+    while True:
+        snapshot = voice_readiness(GBOP_VOICE_CLIENTS, GTOP_GUILD_ID)
+        if snapshot != previous:
+            print("[GBOP-VOICE-READINESS] " + json.dumps(snapshot, sort_keys=True), flush=True)
+            previous = snapshot
+        await asyncio.sleep(10)
+
+
 async def gbop_run_clients():
     async def run_helper():
         helper = GBOP_VOICE_CLIENTS[1]
@@ -7097,6 +7109,7 @@ async def gbop_run_clients():
             await helper.close()
 
     helper_task = asyncio.create_task(run_helper()) if len(GBOP_VOICE_CLIENTS) > 1 else None
+    readiness_task = asyncio.create_task(gbop_voice_readiness_monitor())
     try:
         await client.start(DISCORD_TOKEN)
     finally:
@@ -7104,6 +7117,8 @@ async def gbop_run_clients():
         if helper_task:
             helper_task.cancel()
             await asyncio.gather(helper_task, return_exceptions=True)
+        readiness_task.cancel()
+        await asyncio.gather(readiness_task, return_exceptions=True)
 
 
 if __name__ == "__main__":
