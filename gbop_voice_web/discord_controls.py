@@ -6,6 +6,10 @@ VOICE_HELP = (
     "**GBOP during your shift**\n"
     "Join a voice channel, then use `/gbop` (or `/voice`). Speak naturally; "
     "interrupt by speaking. No wake word is required.\n\n"
+    "For simultaneous individual browser conversations use `/gbop action:private`. "
+    "Each member signs in with their own Discord account.\n\n"
+    "For a private room inside Discord use `/gbop action:room`, join it, then `/gbop`. "
+    "Both routes use your same saved member records.\n\n"
     "• ‘What's the NAS100 price?’\n"
     "• ‘Review today's gold 9ate8. When was the range purged?’\n"
     "• ‘Log a NAS100 short, Blessed Thief, half an R.’\n"
@@ -36,3 +40,30 @@ def in_voice_channel(member, voice_client):
     channel = getattr(getattr(member, 'voice', None), 'channel', None)
     current = getattr(voice_client, 'channel', None)
     return bool(channel and current and channel.id == current.id)
+
+
+def private_room_owner(channel):
+    """Identify our private rooms by their prefix and exclusive member ACL."""
+    if not getattr(channel, 'name', '').startswith('gbop-private-'):
+        return None
+    owners = [target.id for target, permissions in channel.overwrites.items()
+              if hasattr(target, 'bot') and not target.bot
+              and permissions.view_channel is True and permissions.connect is True]
+    return owners[0] if len(owners) == 1 else None
+
+
+def pick_voice_guild(clients, guild_id, channel_id):
+    """Reuse the requested room, otherwise select an idle bot identity."""
+    available = []
+    for bot in clients:
+        if not bot.is_ready():
+            continue
+        guild = bot.get_guild(guild_id)
+        if guild is None:
+            continue
+        vc = guild.voice_client
+        if vc is not None and vc.channel.id == channel_id:
+            return guild
+        if vc is None:
+            available.append(guild)
+    return available[0] if available else None

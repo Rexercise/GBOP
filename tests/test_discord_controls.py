@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
-from gbop_voice_web.discord_controls import in_voice_channel, summon_requested
+from gbop_voice_web.discord_controls import in_voice_channel, summon_requested, private_room_owner, pick_voice_guild
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'bot.py'
@@ -17,8 +17,8 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         self.channel = SimpleNamespace(id=20)
         self.member = SimpleNamespace(id=10, guild=SimpleNamespace(id=1),
                                       voice=SimpleNamespace(channel=self.channel))
-        self.vc = SimpleNamespace(channel=self.channel)
-        self.output = SimpleNamespace(session=None, interrupt=AsyncMock())
+        self.vc = SimpleNamespace(channel=self.channel, guild=self.member.guild)
+        self.output = SimpleNamespace(session=None, interrupt=AsyncMock(), voice_client=self.vc)
         self.created = []
 
         def make_session(member, vc, loop):
@@ -30,13 +30,14 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         node = next(n for n in ast.parse(SOURCE.read_text()).body
                     if isinstance(n, ast.ClassDef) and n.name == 'GBOPRealtimeManager')
         self.ns = dict(asyncio=asyncio, GBOP_RT_LOCKS={}, in_voice_channel=in_voice_channel,
+                       private_room_owner=private_room_owner, GBOP_RT_SINKS={},
                        gbop_voice_member_allowed=lambda m: (True, None),
-                       GBOP_RT_OUTPUT_MANAGERS={1: self.output}, GBOPRealtimeSession=make_session)
+                       GBOP_RT_OUTPUT_MANAGERS={20: self.output}, GBOPRealtimeSession=make_session)
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), self.ns)
         self.manager = self.ns['GBOPRealtimeManager']()
 
     async def test_pause_closes_only_requesting_member_and_blocks_new_audio(self):
-        session = SimpleNamespace(close=AsyncMock())
+        session = SimpleNamespace(close=AsyncMock(), voice_client=self.vc)
         other = SimpleNamespace(close=AsyncMock())
         self.manager.sessions = {(1, 10): session, (1, 11): other}
         self.output.session = session
@@ -49,7 +50,7 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((1, 11), self.manager.sessions)
 
     async def test_pause_does_not_interrupt_other_members_reply(self):
-        self.manager.sessions[(1, 10)] = SimpleNamespace(close=AsyncMock())
+        self.manager.sessions[(1, 10)] = SimpleNamespace(close=AsyncMock(), voice_client=self.vc)
         self.output.session = SimpleNamespace()
         await self.manager.pause_member(self.member)
         self.output.interrupt.assert_not_awaited()
@@ -78,7 +79,8 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.created)
 
     async def test_close_guild_keeps_other_guilds_sessions_and_pause(self):
-        first, second = SimpleNamespace(close=AsyncMock()), SimpleNamespace(close=AsyncMock())
+        first = SimpleNamespace(close=AsyncMock(), voice_client=self.vc)
+        second = SimpleNamespace(close=AsyncMock(), voice_client=SimpleNamespace(channel=SimpleNamespace(id=99)))
         self.manager.sessions = {(1, 10): first, (2, 20): second}
         self.manager.paused = {(1, 10), (2, 20)}
         await self.manager.close_guild(1)
@@ -101,12 +103,18 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
             def is_listening(self):
                 return True
         vc = Client()
+        guild = SimpleNamespace(id=1, voice_client=vc, me=object(),
+                                get_channel=lambda _: self.channel,
+                                get_member=lambda _: self.member)
+        bot = SimpleNamespace(is_ready=lambda: True, get_guild=lambda _: guild)
         ready = asyncio.Event()
         ready.set()
         manager = SimpleNamespace(paused={(1, 10)}, get_session=AsyncMock(
             return_value=SimpleNamespace(ready=ready)))
         listener = Mock()
         ns = dict(discord=SimpleNamespace(Interaction=object), asyncio=asyncio,
+                  private_room_owner=private_room_owner, pick_voice_guild=pick_voice_guild,
+                  GBOP_VOICE_CLIENTS=[bot], gbop_private_voice_view=lambda: None,
                   require_member=AsyncMock(return_value=allowed),
                   gbop_voice_control_lock=lambda _: asyncio.Lock(),
                   voice_recv=SimpleNamespace(VoiceRecvClient=Client),
@@ -114,7 +122,7 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), ns)
         self.channel.permissions_for = lambda _: SimpleNamespace(view_channel=True, connect=True, speak=True)
         self.channel.mention = '#trading'
-        interaction = SimpleNamespace(user=self.member, guild=SimpleNamespace(id=1, voice_client=vc, me=object()),
+        interaction = SimpleNamespace(user=self.member, guild=guild,
                                       response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()))
         await ns['voice'](interaction)
         return manager, listener, interaction
@@ -122,7 +130,7 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
     async def test_join_does_not_move_bot_from_existing_channel(self):
         manager, _, interaction = await self.run_join(channel_id=99)
         manager.get_session.assert_not_awaited()
-        self.assertIn('already in', interaction.followup.send.await_args.args[0])
+        self.assertIn('slots are in use', interaction.followup.send.await_args.args[0])
 
     async def test_join_reuses_listener_and_resumes_member(self):
         manager, listener, interaction = await self.run_join()
