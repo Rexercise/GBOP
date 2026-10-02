@@ -6915,14 +6915,14 @@ def gbop_private_voice_view(room=None):
 async def gbop_private_room(interaction):
     guild, member = interaction.guild, interaction.user
     async with gbop_voice_control_lock(guild.id):
-        if not guild.me.guild_permissions.manage_channels:
+        room = next((channel for channel in guild.voice_channels
+                     if private_room_owner(channel) == member.id), None)
+        if room is None and not guild.me.guild_permissions.manage_channels:
             await interaction.followup.send(
-                "Private Discord rooms need the GBOP bot role to have **Manage Channels**. "
+                "Creating a private Discord room needs the GBOP bot role to have **Manage Channels**. "
                 "The server owner can enable that; browser voice is available now.",
                 view=gbop_private_voice_view(), ephemeral=True)
             return
-        room = next((channel for channel in guild.voice_channels
-                     if private_room_owner(channel) == member.id), None)
         if room:
             # Refuse to silently repurpose a room made visible to a wider audience.
             for target, overwrite in room.overwrites.items():
@@ -6945,12 +6945,38 @@ async def gbop_private_room(interaction):
             if bot.user and (bot_member := guild.get_member(bot.user.id)) is not None:
                 overwrites[bot_member] = discord.PermissionOverwrite(
                     view_channel=True, connect=True, speak=True, use_voice_activation=True)
-        if room is None:
-            name = "gbop-private-" + re.sub(r"\s+", "-", member.display_name.lower())[:65]
-            room = await guild.create_voice_channel(
-                name=name, overwrites=overwrites, reason="Member requested a private GBOP room")
-        else:
-            await room.edit(overwrites=overwrites, reason="Member refreshed their private GBOP room")
+        # Reopening an existing room is a read, not a permission update.
+        # Discord requires Manage Permissions (manage_roles) when ACLs change.
+        needs_update = bool(room and any(
+            getattr(room.overwrites_for(target), field, None) != getattr(expected, field, None)
+            for target, expected in overwrites.items()
+            for field in ('view_channel', 'connect', 'speak', 'use_voice_activation')
+        ))
+        if needs_update and not room.permissions_for(guild.me).manage_roles:
+            await interaction.followup.send(
+                f"Your room {room.mention} exists, but GBOP needs **Manage Permissions** in that room "
+                "to update bot access. The server owner can enable it in **Edit Channel → Permissions** "
+                "for GTOP Bot, then run `/gbop action:room` again. Your room stays private.",
+                view=gbop_private_voice_view(room), ephemeral=True)
+            return
+        try:
+            if room is None:
+                name = "gbop-private-" + re.sub(r"\s+", "-", member.display_name.lower())[:65]
+                room = await guild.create_voice_channel(
+                    name=name, overwrites=overwrites, reason="Member requested a private GBOP room")
+            elif needs_update:
+                room = await room.edit(overwrites=overwrites, reason="Member refreshed their private GBOP room")
+            else:
+                print("[GBOP-PRIVATE-ROOM] Reused existing private room without editing permissions.", flush=True)
+        except discord.Forbidden:
+            print("[GBOP-PRIVATE-ROOM] Discord denied private room creation or permission update.", flush=True)
+            await interaction.followup.send(
+                "Discord blocked GBOP from setting up the private room. The server owner should check "
+                "GTOP Bot's **Manage Channels**, **View Channel**, **Connect**, **Speak** and "
+                "**Use Voice Activity** permissions. Updating an existing room also needs "
+                "**Manage Permissions** on that room. Then run `/gbop action:room` again.",
+                view=gbop_private_voice_view(room), ephemeral=True)
+            return
     await interaction.followup.send(
         f"Your room is {room.mention}. **Open it below, join voice, then run `/gbop`** to start. "
         "The room stays available for your next session. Server administrators can still access it.\n"
