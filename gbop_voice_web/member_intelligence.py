@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -17,6 +18,9 @@ from gbop_voice_web.trade_photos import schema, STR
 EASTERN = ZoneInfo("America/New_York")
 HALF_LIFE_DAYS = 14.0
 SOURCE_LOOKBACK_DAYS = 45
+
+_INIT_LOCK = threading.Lock()
+_INITIALIZED = False
 
 TEXT_NULL = {"type": ["string", "null"]}
 BOOL_NULL = {"type": ["boolean", "null"]}
@@ -129,8 +133,8 @@ SCHEMA_SQL = [
         user_id BIGINT NOT NULL,
         source_key TEXT NOT NULL,
         theme TEXT NOT NULL,
-        polarity SMALLINT NOT NULL,
-        weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+        polarity SMALLINT NOT NULL CHECK (polarity IN (-1, 1)),
+        weight DOUBLE PRECISION NOT NULL DEFAULT 1.0 CHECK (weight > 0),
         note TEXT NOT NULL DEFAULT '',
         observed_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -153,17 +157,30 @@ SCHEMA_SQL = [
     "REVOKE ALL ON gbop_ss_weekly_reviews FROM anon, authenticated",
     "REVOKE ALL ON gbop_coaching_observations FROM anon, authenticated",
     "REVOKE ALL ON gbop_coaching_controls FROM anon, authenticated",
+    "GRANT ALL ON gbop_ss_weekly_reviews TO service_role",
+    "GRANT ALL ON gbop_coaching_observations TO service_role",
+    "GRANT ALL ON gbop_coaching_controls TO service_role",
 ]
 
 
 def init_intelligence(db):
-    with db() as conn:
-        try:
-            conn.execute("SELECT pg_advisory_xact_lock(739204713)")
-        except Exception:
-            pass
-        for sql in SCHEMA_SQL:
-            conn.execute(sql)
+    global _INITIALIZED
+    if _INITIALIZED:
+        return
+
+    with _INIT_LOCK:
+        if _INITIALIZED:
+            return
+
+        with db() as conn:
+            try:
+                conn.execute("SELECT pg_advisory_xact_lock(739204713)")
+            except Exception:
+                pass
+            for sql in SCHEMA_SQL:
+                conn.execute(sql)
+
+        _INITIALIZED = True
 
 
 def stamp():
