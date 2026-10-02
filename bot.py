@@ -3823,7 +3823,11 @@ def _member_binary_event_reminders(user_id, event):
             "do not assume or increase size because of the news event."
         )
 
-    return trading_plan, risk_plan
+    personal_rule = ""
+    if int(user_id) == int(GTOP_OWNER_USER_ID):
+        personal_rule = "Never bring regular size into a binary event."
+
+    return trading_plan, risk_plan, personal_rule
 
 
 async def _send_forex_news_alerts(now_eastern):
@@ -3861,7 +3865,7 @@ async def _send_forex_news_alerts(now_eastern):
             continue
 
         try:
-            trading_plan, risk_plan = await asyncio.to_thread(
+            trading_plan, risk_plan, personal_rule = await asyncio.to_thread(
                 _member_binary_event_reminders,
                 member.id,
                 pending[0],
@@ -3873,6 +3877,7 @@ async def _send_forex_news_alerts(now_eastern):
                     lead_minutes=FF_NEWS_LEAD_MINUTES,
                     trading_plan=trading_plan,
                     risk_plan=risk_plan,
+                    personal_rule=personal_rule,
                 )
             )
             message_id = getattr(message, "id", "")

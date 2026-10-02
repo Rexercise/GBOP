@@ -345,6 +345,7 @@ def format_red_folder_alert(
     lead_minutes: int = FF_NEWS_LEAD_MINUTES,
     trading_plan: str = "",
     risk_plan: str = "",
+    personal_rule: str = "",
 ) -> str:
     events = list(events)
     if now.tzinfo is None:
@@ -390,11 +391,14 @@ def format_red_folder_alert(
     if risk_plan:
         lines.append("**Your risk plan:** " + _text(risk_plan)[:420])
 
+    if personal_rule:
+        lines.extend(("", "**Your personal Never Again rule:** " + _text(personal_rule)[:380]))
+
     lines.extend(
         (
             "",
-            "⚠️ **Binary-event rule:** Never bring regular size into a binary event. "
-            "Do not let the release override your predefined setup criteria or risk.",
+            "⚠️ **News-risk reminder:** Treat the release as a binary event and stay "
+            "inside your own predefined setup criteria and saved risk plan.",
             "<https://www.forexfactory.com/calendar>",
         )
     )

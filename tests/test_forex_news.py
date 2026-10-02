@@ -133,6 +133,7 @@ class ForexNewsTests(unittest.TestCase):
             lead_minutes=5,
             trading_plan="Tier 1 only unless my saved fallback appears.",
             risk_plan="1R = 2% of account; Tier 1/2/3 = 60/30/10% of 1R.",
+            personal_rule="Never bring regular size into a binary event.",
         )
 
         self.assertIn("5 Minute Reminder", message)
@@ -140,7 +141,29 @@ class ForexNewsTests(unittest.TestCase):
         self.assertIn("Tier 1 only", message)
         self.assertIn("Your risk plan", message)
         self.assertIn("1R = 2%", message)
-        self.assertIn("Binary-event rule", message)
+        self.assertIn("Your personal Never Again rule", message)
+        self.assertIn("Never bring regular size into a binary event", message)
+        self.assertIn("News-risk reminder", message)
+
+    def test_never_again_rule_is_not_global(self):
+        now = datetime(2026, 10, 2, 8, 25, tzinfo=ET)
+        event = ForexNewsEvent(
+            "Non-Farm Employment Change",
+            "USD",
+            datetime(2026, 10, 2, 8, 30, tzinfo=ET),
+        )
+
+        message = format_red_folder_alert(
+            [event],
+            now,
+            lead_minutes=5,
+            trading_plan="Follow my saved A+ criteria.",
+            risk_plan="Follow my saved risk profile.",
+        )
+
+        self.assertNotIn("Never bring regular size into a binary event", message)
+        self.assertNotIn("Never Again rule", message)
+        self.assertIn("stay inside your own predefined setup criteria", message)
 
     def test_alert_contains_time_currency_and_risk_reminder(self):
         now = datetime(2026, 10, 2, 8, 20, tzinfo=ET)
