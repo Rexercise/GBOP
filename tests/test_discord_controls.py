@@ -114,11 +114,15 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         listener = Mock()
         ns = dict(discord=SimpleNamespace(Interaction=object), asyncio=asyncio,
                   private_room_owner=private_room_owner, pick_voice_guild=pick_voice_guild,
+                  in_voice_channel=in_voice_channel,
                   GBOP_VOICE_CLIENTS=[bot], gbop_private_voice_view=lambda: None,
                   require_member=AsyncMock(return_value=allowed),
                   gbop_voice_control_lock=lambda _: asyncio.Lock(),
                   voice_recv=SimpleNamespace(VoiceRecvClient=Client),
                   GBOP_REALTIME_MANAGER=manager, gbop_start_realtime_listener=listener)
+        helper = next(n for n in ast.parse(SOURCE.read_text()).body
+                      if getattr(n, 'name', '') == 'gbop_connect_member_voice')
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(SOURCE), 'exec'), ns)
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), ns)
         self.channel.permissions_for = lambda _: SimpleNamespace(view_channel=True, connect=True, speak=True)
         self.channel.mention = '#trading'

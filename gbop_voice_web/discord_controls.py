@@ -8,7 +8,7 @@ VOICE_HELP = (
     "interrupt by speaking. No wake word is required.\n\n"
     "For simultaneous individual browser conversations use `/gbop action:private`. "
     "Each member signs in with their own Discord account.\n\n"
-    "For a private room inside Discord use `/gbop action:room`, join it, then `/gbop`. "
+    "For a private room inside Discord use `/gbop action:room`, then join it; GBOP joins automatically. "
     "Both routes use your same saved member records.\n\n"
     "• ‘What's the NAS100 price?’\n"
     "• ‘Review today's gold 9ate8. When was the range purged?’\n"
@@ -50,6 +50,20 @@ def private_room_owner(channel):
               if hasattr(target, 'bot') and not target.bot
               and permissions.view_channel is True and permissions.connect is True]
     return owners[0] if len(owners) == 1 else None
+
+
+def private_room_autojoin_allowed(member, channel):
+    """Only the room owner entering a still-private room may start auto voice."""
+    if not channel or member.bot or private_room_owner(channel) != member.id:
+        return False
+    base = channel.overwrites_for(member.guild.default_role)
+    if base.view_channel is not False or base.connect is not False:
+        return False
+    return not any(
+        target != member and not getattr(target, 'bot', False)
+        and (permissions.view_channel is True or permissions.connect is True)
+        for target, permissions in channel.overwrites.items()
+    )
 
 
 def pick_voice_guild(clients, guild_id, channel_id):
