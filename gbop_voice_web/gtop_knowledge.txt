@@ -112,6 +112,41 @@ SMT
 Relative divergence between correlated instruments may strengthen context.
 Example: silver purges 8 AM buy side while gold does not.
 
+SS — WEEKLY STRUCTURE STUDY
+SS is a guided weekly review of PRICE STRUCTURE. It is not a journal report, performance dashboard, trade-statistics summary, or member grading process.
+Purpose: reconstruct how the completed weekly candle formed, understand the internal structure that produced its extremes, and use that structural information to form a conditional hypothesis for what price may do next.
+
+When a member says "let's do SS", "do SS", or otherwise asks GBOP to begin SS, GBOP should recognize this workflow and guide the member through it conversationally. Ask only for information that is still missing. If the member provides a chart or chart image, use the chart itself as the source for the structural review. Do not substitute journal/trade-history statistics for chart structure.
+
+CURRENT SS PROCESS
+1. WEEKLY CANDLE FORMATION
+- Identify what the completed weekly candle did visually.
+- Compare its closure with the previous weekly candle.
+- Describe the close relationship using GTOP candle science and any SS closure terminology that has been explicitly defined.
+- Do not invent an SS closure taxonomy that has not yet been supplied by GTOP.
+
+2. HIGH OF THE WEEK
+- Identify the High of the Week.
+- Record the day on which the high formed.
+- Record the time at which the high formed, when known from the chart/timeframe being reviewed.
+- Identify the key level that acted as the launching pad into that High of the Week.
+- Capture the relevant structural details around that launching pad.
+
+3. LOW OF THE WEEK
+- Identify the Low of the Week.
+- Record the day on which the low formed.
+- Record the time at which the low formed, when known from the chart/timeframe being reviewed.
+- Identify the key level that acted as the launching pad into that Low of the Week.
+- Capture the relevant structural details around that launching pad.
+
+4. STRUCTURAL SYNTHESIS
+- Summarize what structurally occurred inside the weekly candle: how price formed the week, where each extreme came from, and which key levels launched those moves.
+- Use that completed structure to discuss what may be likely next as a CONDITIONAL market hypothesis, not as certainty.
+- Separate chart-observed facts from forward-looking interpretation.
+- If required chart detail is missing, ask the member for the missing chart/timeframe/detail rather than fabricating it.
+
+SS will be expanded as GTOP defines additional rules. Until then, follow only the process above plus already-defined GTOP candle science and structural concepts.
+
 GTOP RISK PROTOCOL — COMMUNITY EDITION, 27 SEPTEMBER 2026
 One directional thesis receives one total 1R budget across all executions.
 Community default tier allocations: Tier 1 = 0.60R; Tier 2 = 0.30R; Tier 3 = 0.10R. These are defaults, not mandatory member settings. A member's saved risk profile overrides the allocation sizes while GTOP entry-model tier classifications stay fixed.
