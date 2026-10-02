@@ -27,7 +27,17 @@ from gbop_voice_web.risk_profiles import (
     tier_limit as member_tier_limit,
     profile_context,
 )
-from datetime import datetime, timezone
+from gbop_voice_web.snapshots import (
+    collect_snapshot,
+    daily_period,
+    weekly_period,
+    format_profit_factor as snapshot_profit_factor,
+    format_percent as snapshot_percent,
+    format_r as snapshot_r,
+    format_trade_breakdown,
+    format_execution_breakdown,
+)
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import discord
@@ -3436,6 +3446,272 @@ async def _broadcast_gbop_dm(text, *, event_key=None, checkin_shift=None, shift_
     return sent, failed
 
 
+def _snapshot_embed(stats):
+    performance = stats["performance"]
+    execution = stats["execution"]
+    process = stats["process"]
+    period = stats["period"]
+
+    title = (
+        "📊 GBOP Weekly Snapshot"
+        if period["kind"] == "weekly"
+        else "📊 GBOP Daily Snapshot"
+    )
+
+    embed = discord.Embed(
+        title=title,
+        description=(
+            f"**{period['label']}**\n"
+            f"Net: **{snapshot_r(performance['net_r'])}** • "
+            f"Win Rate: **{snapshot_percent(performance['win_rate'])}** • "
+            f"Closed: **{performance['closed_trades']}**"
+        ),
+        color=discord.Color.blurple(),
+    )
+
+    embed.add_field(
+        name="Performance",
+        value=(
+            f"Opened: **{performance['opened_trades']}**\n"
+            f"Closed: **{performance['closed_trades']}** "
+            f"(scored {performance['scored_trades']})\n"
+            f"W / L / BE: **{performance['wins']} / "
+            f"{performance['losses']} / {performance['breakeven']}**\n"
+            f"Net R: **{snapshot_r(performance['net_r'])}**\n"
+            f"Avg Trade: **{snapshot_r(performance['avg_r'])}**\n"
+            f"Avg Win: **{snapshot_r(performance['avg_win_r'])}**\n"
+            f"Avg Loss: **{snapshot_r(performance['avg_loss_r'])}**\n"
+            f"Profit Factor: **"
+            f"{snapshot_profit_factor(performance['profit_factor'])}**\n"
+            f"Best / Worst: **{snapshot_r(performance['best_r'])} / "
+            f"{snapshot_r(performance['worst_r'])}**\n"
+            f"Max W/L Streak: **{performance['max_win_streak']} / "
+            f"{performance['max_loss_streak']}**"
+        ),
+        inline=True,
+    )
+
+    tier_lines = (
+        "\n".join(
+            f"• Tier {item['name']}: {item['count']} execution(s), "
+            f"{item['risk_r']:.2f}R risk"
+            for item in execution["by_tier"][:3]
+        )
+        or "No tier activity"
+    )
+
+    embed.add_field(
+        name="Risk & Execution",
+        value=(
+            f"Executions: **{execution['count']}**\n"
+            f"Risk Logged: **{execution['risk_r']:.2f}R**\n"
+            f"Avg Risk / Entry: **{snapshot_r(execution['avg_risk_r'])}**\n"
+            f"Risk Flags: **{process['risk_flags']}**\n"
+            f"Open Trades Now: **{performance['open_now']}**\n\n"
+            f"{tier_lines}"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Process",
+        value=(
+            f"Journals: **{process['journals']}**\n"
+            f"Full Adherence: **"
+            f"{snapshot_percent(process['full_adherence_rate'])}**\n"
+            f"Followed / Partial / Violated: **"
+            f"{process['followed']} / {process['partial']} / "
+            f"{process['violated']}**\n"
+            f"Check-ins: **{process['checkins_completed']} / "
+            f"{process['checkins_expected']} completed**"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="By Session",
+        value=format_trade_breakdown(stats["by_session"], limit=4),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="By Play",
+        value=format_trade_breakdown(stats["by_play"], limit=4),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="By Asset",
+        value=format_trade_breakdown(stats["by_asset"], limit=4),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Entry Models",
+        value=format_execution_breakdown(
+            execution["by_model"],
+            limit=4,
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name=(
+            "Next Week Focus"
+            if period["kind"] == "weekly"
+            else "Next Shift Focus"
+        ),
+        value=stats["recommendation"],
+        inline=False,
+    )
+
+    embed.set_footer(
+        text=(
+            "GBOP stats use completed trades, logged executions, journals, "
+            "risk flags, and post-shift check-ins."
+        )
+    )
+    return embed
+
+
+def _snapshot_delivery_exists(event_key, user_id):
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT 1
+            FROM gbop_shift_deliveries
+            WHERE event_key=?
+              AND guild_id=?
+              AND user_id=?
+            """,
+            (
+                event_key,
+                GTOP_GUILD_ID,
+                user_id,
+            ),
+        ).fetchone() is not None
+
+
+def _record_snapshot_delivery(event_key, user_id, message_id):
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO gbop_shift_deliveries (
+                event_key,
+                guild_id,
+                user_id,
+                discord_message_id,
+                delivered_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (event_key, guild_id, user_id)
+            DO UPDATE SET
+                discord_message_id=EXCLUDED.discord_message_id,
+                delivered_at=EXCLUDED.delivered_at
+            """,
+            (
+                event_key,
+                GTOP_GUILD_ID,
+                user_id,
+                str(message_id or ""),
+                now(),
+            ),
+        )
+
+
+def _scheduled_snapshot_events(now_eastern):
+    current_minute = (
+        now_eastern.hour * 60
+        + now_eastern.minute
+    )
+    events = []
+
+    # Daily snapshot: 12:15 AM Eastern, after the midnight night-shift check-in.
+    if 15 <= current_minute < 195:
+        target_day = now_eastern.date() - timedelta(days=1)
+        events.append((
+            f"{target_day.isoformat()}:daily_snapshot",
+            daily_period(target_day, GBOP_EASTERN_TZ),
+        ))
+
+    # Weekly snapshot: Saturday 12:20 AM Eastern, covering Monday-Friday.
+    if (
+        now_eastern.weekday() == 5
+        and 20 <= current_minute < 200
+    ):
+        week_end_day = now_eastern.date() - timedelta(days=1)
+        events.append((
+            f"{week_end_day.isoformat()}:weekly_snapshot",
+            weekly_period(week_end_day, GBOP_EASTERN_TZ),
+        ))
+
+    return events
+
+
+async def _send_snapshot_event(event_key, period):
+    sent = 0
+    failed = 0
+
+    for member in _gbop_role_members():
+        if _snapshot_delivery_exists(event_key, member.id):
+            continue
+
+        try:
+            stats = await asyncio.to_thread(
+                collect_snapshot,
+                db,
+                GTOP_GUILD_ID,
+                member.id,
+                period,
+            )
+            message = await member.send(
+                embed=_snapshot_embed(stats)
+            )
+            _record_snapshot_delivery(
+                event_key,
+                member.id,
+                getattr(message, "id", ""),
+            )
+            sent += 1
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            failed += 1
+            logger.warning(
+                "GBOP snapshot DM failed event=%s user=%s error=%s",
+                event_key,
+                member.id,
+                type(exc).__name__,
+            )
+        except Exception:
+            failed += 1
+            logger.exception(
+                "GBOP snapshot generation failed event=%s user=%s",
+                event_key,
+                member.id,
+            )
+
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO gbop_shift_alerts (event_key, sent_at)
+            VALUES (?, ?)
+            ON CONFLICT (event_key)
+            DO UPDATE SET sent_at=EXCLUDED.sent_at
+            """,
+            (
+                event_key,
+                now(),
+            ),
+        )
+
+    if sent or failed:
+        logger.info(
+            "GBOP snapshot event=%s sent=%s failed=%s",
+            event_key,
+            sent,
+            failed,
+        )
+
+
 def _scheduled_shift_events(now_eastern):
     date_key = now_eastern.date().isoformat()
     current_minute = now_eastern.hour * 60 + now_eastern.minute
@@ -3458,11 +3734,17 @@ def _scheduled_shift_events(now_eastern):
     active = []
     for start_minute, retry_window, name, text, checkin_shift in events:
         if start_minute <= current_minute < start_minute + retry_window:
+            event_shift_date = date_key
+            if name == "night_formation":
+                event_shift_date = (
+                    now_eastern.date() - timedelta(days=1)
+                ).isoformat()
+
             active.append((
                 f"{date_key}:{name}",
                 text,
                 checkin_shift,
-                date_key,
+                event_shift_date,
             ))
     return active
 
@@ -3487,6 +3769,13 @@ async def _post_shift_checkin_loop():
                         sent,
                         failed,
                     )
+            for event_key, period in _scheduled_snapshot_events(
+                datetime.now(GBOP_EASTERN_TZ)
+            ):
+                await _send_snapshot_event(
+                    event_key,
+                    period,
+                )
         except Exception:
             logger.exception("GBOP shift alert failed")
         await asyncio.sleep(20)
