@@ -266,7 +266,12 @@ class IntelligenceTests(unittest.TestCase):
         self.assertNotIn("boredom", {item["theme"] for item in refreshed["issues"]})
 
     def test_pre_shift_message_combines_ss_and_personal_focus(self):
-        intel.save_ss_review(self.db, self.guild, self.user, self.complete_ss_args())
+        intel.save_ss_review(
+            self.db,
+            self.guild,
+            self.user,
+            self.complete_ss_args(week_start=intel.default_ss_week_start()),
+        )
         msg = intel.build_pre_shift_message(
             self.db,
             self.guild,
@@ -277,6 +282,14 @@ class IntelligenceTests(unittest.TestCase):
         self.assertIn("Day Shift begins in 5 minutes", msg)
         self.assertIn("Tuesday's launchpad", msg)
         self.assertIn("planned objective", msg)
+
+    def test_default_ss_week_uses_only_completed_week(self):
+        friday_morning = datetime(2026, 10, 2, 9, 0, tzinfo=intel.EASTERN)
+        friday_evening = datetime(2026, 10, 2, 18, 0, tzinfo=intel.EASTERN)
+        saturday = datetime(2026, 10, 3, 9, 0, tzinfo=intel.EASTERN)
+        self.assertEqual(intel.default_ss_week_start(friday_morning), "2026-09-21")
+        self.assertEqual(intel.default_ss_week_start(friday_evening), "2026-09-28")
+        self.assertEqual(intel.default_ss_week_start(saturday), "2026-09-28")
 
     def test_member_data_is_isolated(self):
         intel.save_ss_review(self.db, self.guild, self.user, self.complete_ss_args())
