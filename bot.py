@@ -52,6 +52,7 @@ from gbop_voice_web.forex_news import (
     FF_NEWS_LEAD_MINUTES,
     due_high_impact_events,
     event_delivery_key,
+    format_pre_shift_news,
     format_red_folder_alert,
     get_high_impact_events,
 )
@@ -3382,6 +3383,7 @@ async def _broadcast_gbop_dm(
     checkin_shift=None,
     shift_date=None,
     personalized_shift=None,
+    news_summary="",
 ):
     sent = 0
     failed = 0
@@ -3419,6 +3421,9 @@ async def _broadcast_gbop_dm(
                         member.id,
                         personalized_shift,
                     )
+
+            if news_summary:
+                member_text = (member_text + "\n\n" + news_summary)[:1900]
 
             dm_message = await member.send(member_text)
             sent += 1
@@ -3756,6 +3761,71 @@ async def _send_snapshot_event(event_key, period):
 
 
 
+def _compact_pct(value):
+    if value is None:
+        return None
+    value = float(value)
+    return str(int(value)) if value.is_integer() else f"{value:g}"
+
+
+def _binary_event_shift(event_time):
+    event_et = event_time.astimezone(GBOP_EASTERN_TZ)
+    if 8 <= event_et.hour < 12:
+        return "day"
+    if 20 <= event_et.hour < 24:
+        return "night"
+    return None
+
+
+def _member_binary_event_reminders(user_id, event):
+    event_et = event.scheduled_at.astimezone(GBOP_EASTERN_TZ)
+    shift = _binary_event_shift(event_et)
+    plan_state = get_member_plan(
+        db,
+        GTOP_GUILD_ID,
+        user_id,
+        {
+            "session_date": event_et.date().isoformat(),
+            "shift": shift,
+        },
+    )
+
+    saved_plan = plan_state.get("saved_shift_plan")
+    focus = plan_state.get("coaching_profile", {}).get("current_focus")
+    plan_parts = []
+    if saved_plan and saved_plan.get("plan"):
+        plan_parts.append(saved_plan["plan"])
+    if focus and focus.get("reminder"):
+        plan_parts.append("Execution focus: " + focus["reminder"])
+    if not plan_parts:
+        plan_parts.append(
+            "Follow your own written A+ criteria and predefined trading plan; "
+            "GBOP has no shift-specific plan saved for this event."
+        )
+    trading_plan = " | ".join(plan_parts)
+
+    profile = get_profile(db, GTOP_GUILD_ID, user_id)
+    if profile.get("configured"):
+        account_risk = _compact_pct(profile.get("account_risk_pct"))
+        if account_risk is None:
+            account_text = "1R account-risk % is not saved"
+        else:
+            account_text = f"1R = {account_risk}% of account"
+        risk_plan = (
+            f"{account_text}; Tier 1/2/3 allocations = "
+            f"{_compact_pct(profile['tier1_pct'])}/"
+            f"{_compact_pct(profile['tier2_pct'])}/"
+            f"{_compact_pct(profile['tier3_pct'])}% of 1R."
+        )
+    else:
+        risk_plan = (
+            "No custom GBOP risk profile is saved. Use only your predefined risk; "
+            "do not assume or increase size because of the news event."
+        )
+
+    return trading_plan, risk_plan
+
+
 async def _send_forex_news_alerts(now_eastern):
     """DM GBOP role members once when Forex Factory high-impact news is near."""
     try:
@@ -3791,11 +3861,18 @@ async def _send_forex_news_alerts(now_eastern):
             continue
 
         try:
+            trading_plan, risk_plan = await asyncio.to_thread(
+                _member_binary_event_reminders,
+                member.id,
+                pending[0],
+            )
             message = await member.send(
                 format_red_folder_alert(
                     pending,
                     now_eastern,
                     lead_minutes=FF_NEWS_LEAD_MINUTES,
+                    trading_plan=trading_plan,
+                    risk_plan=risk_plan,
                 )
             )
             message_id = getattr(message, "id", "")
@@ -3876,12 +3953,30 @@ async def _post_shift_checkin_loop():
                 elif event_key.endswith(":night_pre5"):
                     personalized_shift = "night"
 
+                news_summary = ""
+                if personalized_shift:
+                    try:
+                        news_events = await asyncio.to_thread(
+                            get_high_impact_events
+                        )
+                        news_summary = format_pre_shift_news(
+                            news_events,
+                            now_eastern,
+                            shift=personalized_shift,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "GBOP pre-shift Forex Factory summary failed shift=%s",
+                            personalized_shift,
+                        )
+
                 sent, failed = await _broadcast_gbop_dm(
                     text,
                     event_key=event_key,
                     checkin_shift=checkin_shift,
                     shift_date=shift_date,
                     personalized_shift=personalized_shift,
+                    news_summary=news_summary,
                 )
                 if sent or failed:
                     logger.info(

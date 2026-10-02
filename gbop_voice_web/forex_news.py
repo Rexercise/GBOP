@@ -25,7 +25,7 @@ FF_CACHE_URL = os.getenv(
 )
 FF_NEWS_LEAD_MINUTES = max(
     1,
-    int(os.getenv("GBOP_FF_NEWS_LEAD_MINUTES", "15")),
+    int(os.getenv("GBOP_FF_NEWS_LEAD_MINUTES", "5")),
 )
 FF_REFRESH_SECONDS = max(
     300,
@@ -225,6 +225,68 @@ def get_high_impact_events(*, force: bool = False) -> list[ForexNewsEvent]:
     return list(_CACHE_EVENTS)
 
 
+def format_pre_shift_news(
+    events: Iterable[ForexNewsEvent],
+    now: datetime,
+    *,
+    shift: str,
+) -> str:
+    """Summarize the current Eastern calendar day's red-folder schedule."""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=EASTERN_TZ)
+    now_et = now.astimezone(EASTERN_TZ)
+    today = sorted(
+        (
+            event
+            for event in events
+            if event.scheduled_at.astimezone(EASTERN_TZ).date() == now_et.date()
+        ),
+        key=lambda event: (
+            event.scheduled_at,
+            event.currency,
+            event.title.casefold(),
+        ),
+    )
+    if not today:
+        return ""
+
+    upcoming = [
+        event
+        for event in today
+        if event.scheduled_at.astimezone(EASTERN_TZ) > now_et
+    ]
+    label = "Day Shift" if (shift or "").lower() == "day" else "Night Shift"
+    shift_start = 9 if (shift or "").lower() == "day" else 21
+    shift_end = 12 if (shift or "").lower() == "day" else 24
+
+    lines = ["🔴 **Forex Factory red-folder news today:**"]
+    if upcoming:
+        for event in upcoming[:6]:
+            event_et = event.scheduled_at.astimezone(EASTERN_TZ)
+            in_shift = shift_start <= event_et.hour < shift_end
+            tag = f" — during {label}" if in_shift else ""
+            lines.append(
+                f"• **{event_et.strftime('%-I:%M %p')} ET — "
+                f"{event.currency} — {event.title}**{tag}"
+            )
+        if len(upcoming) > 6:
+            lines.append(f"• +{len(upcoming) - 6} more high-impact event(s) today")
+    else:
+        recent = today[-3:]
+        lines.append("No additional red-folder releases remain today. Earlier:")
+        for event in recent:
+            event_et = event.scheduled_at.astimezone(EASTERN_TZ)
+            lines.append(
+                f"• {event_et.strftime('%-I:%M %p')} ET — "
+                f"{event.currency} — {event.title}"
+            )
+
+    lines.append(
+        "Keep any upcoming binary event inside your personal trading and risk plan."
+    )
+    return "\n".join(lines)
+
+
 def due_high_impact_events(
     events: Iterable[ForexNewsEvent],
     now: datetime,
@@ -281,6 +343,8 @@ def format_red_folder_alert(
     now: datetime,
     *,
     lead_minutes: int = FF_NEWS_LEAD_MINUTES,
+    trading_plan: str = "",
+    risk_plan: str = "",
 ) -> str:
     events = list(events)
     if now.tzinfo is None:
@@ -288,9 +352,14 @@ def format_red_folder_alert(
     now_et = now.astimezone(EASTERN_TZ)
 
     lines = [
-        "🔴 **Forex Factory Red Folder Alert**",
+        "🔴 **Forex Factory Red Folder — 5 Minute Reminder**"
+        if int(lead_minutes) == 5
+        else "🔴 **Forex Factory Red Folder Alert**",
         "",
-        f"High-impact news is scheduled within the next {int(lead_minutes)} minutes:",
+        (
+            "**Binary event coming up.** "
+            f"High-impact news is scheduled within the next {int(lead_minutes)} minutes:"
+        ),
     ]
 
     for event in events[:8]:
@@ -316,10 +385,16 @@ def format_red_folder_alert(
     if len(events) > 8:
         lines.append(f"• +{len(events) - 8} more high-impact event(s)")
 
+    if trading_plan:
+        lines.extend(("", "**Your trading plan:** " + _text(trading_plan)[:500]))
+    if risk_plan:
+        lines.append("**Your risk plan:** " + _text(risk_plan)[:420])
+
     lines.extend(
         (
             "",
-            "⚠️ **GTOP risk reminder:** Never bring regular size into a binary event. Respect your personal risk protocol.",
+            "⚠️ **Binary-event rule:** Never bring regular size into a binary event. "
+            "Do not let the release override your predefined setup criteria or risk.",
             "<https://www.forexfactory.com/calendar>",
         )
     )

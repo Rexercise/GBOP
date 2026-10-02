@@ -6,6 +6,7 @@ from gbop_voice_web.forex_news import (
     ForexNewsEvent,
     due_high_impact_events,
     event_delivery_key,
+    format_pre_shift_news,
     format_red_folder_alert,
     parse_high_impact_events,
 )
@@ -83,6 +84,63 @@ class ForexNewsTests(unittest.TestCase):
         )
 
         self.assertEqual(event_delivery_key(first), event_delivery_key(revised))
+
+    def test_pre_shift_message_mentions_news_day_and_shift_event(self):
+        now = datetime(2026, 10, 2, 8, 55, tzinfo=ET)
+        events = [
+            ForexNewsEvent(
+                "Non-Farm Employment Change",
+                "USD",
+                datetime(2026, 10, 2, 10, 0, tzinfo=ET),
+            ),
+        ]
+
+        message = format_pre_shift_news(events, now, shift="day")
+
+        self.assertIn("red-folder news today", message)
+        self.assertIn("10:00 AM ET", message)
+        self.assertIn("Non-Farm Employment Change", message)
+        self.assertIn("during Day Shift", message)
+
+    def test_pre_shift_message_mentions_earlier_red_news(self):
+        now = datetime(2026, 10, 2, 8, 55, tzinfo=ET)
+        events = [
+            ForexNewsEvent(
+                "Non-Farm Employment Change",
+                "USD",
+                datetime(2026, 10, 2, 8, 30, tzinfo=ET),
+            ),
+        ]
+
+        message = format_pre_shift_news(events, now, shift="day")
+
+        self.assertIn("No additional red-folder releases remain today", message)
+        self.assertIn("8:30 AM ET", message)
+
+    def test_five_minute_alert_includes_member_plan_and_risk_plan(self):
+        now = datetime(2026, 10, 2, 8, 25, tzinfo=ET)
+        event = ForexNewsEvent(
+            "Non-Farm Employment Change",
+            "USD",
+            datetime(2026, 10, 2, 8, 30, tzinfo=ET),
+            forecast="89K",
+            previous="162K",
+        )
+
+        message = format_red_folder_alert(
+            [event],
+            now,
+            lead_minutes=5,
+            trading_plan="Tier 1 only unless my saved fallback appears.",
+            risk_plan="1R = 2% of account; Tier 1/2/3 = 60/30/10% of 1R.",
+        )
+
+        self.assertIn("5 Minute Reminder", message)
+        self.assertIn("Your trading plan", message)
+        self.assertIn("Tier 1 only", message)
+        self.assertIn("Your risk plan", message)
+        self.assertIn("1R = 2%", message)
+        self.assertIn("Binary-event rule", message)
 
     def test_alert_contains_time_currency_and_risk_reminder(self):
         now = datetime(2026, 10, 2, 8, 20, tzinfo=ET)
