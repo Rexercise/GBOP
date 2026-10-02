@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
-from urllib.request import Request, urlopen
+import httpx
 from zoneinfo import ZoneInfo
 
 
@@ -133,16 +133,23 @@ def parse_high_impact_events(
 
 
 def _download_calendar_payload() -> Any:
-    request = Request(
-        FF_CALENDAR_URL,
-        headers={
-            "User-Agent": "GBOP/1.0 (+https://gbop.onrender.com)",
-            "Accept": "application/json",
-        },
-        method="GET",
-    )
-    with urlopen(request, timeout=FF_HTTP_TIMEOUT_SECONDS) as response:
-        return json.loads(response.read().decode("utf-8"))
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/129.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": "https://www.forexfactory.com/",
+    }
+    with httpx.Client(
+        timeout=FF_HTTP_TIMEOUT_SECONDS,
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        response = client.get(FF_CALENDAR_URL)
+        response.raise_for_status()
+        return response.json()
 
 
 def get_high_impact_events(*, force: bool = False) -> list[ForexNewsEvent]:
@@ -171,9 +178,12 @@ def get_high_impact_events(*, force: bool = False) -> list[ForexNewsEvent]:
         payload = _download_calendar_payload()
         events = parse_high_impact_events(payload)
     except Exception as exc:
+        detail = type(exc).__name__
+        if isinstance(exc, httpx.HTTPStatusError):
+            detail += f" status={exc.response.status_code}"
         logger.warning(
             "Forex Factory calendar fetch failed; using cached events: %s",
-            type(exc).__name__,
+            detail,
         )
         return list(_CACHE_EVENTS)
 
