@@ -12,6 +12,17 @@ import json
 import asyncio
 from db_compat import db
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
+from gbop_voice_web.member_intelligence import (
+    INTELLIGENCE_PROMPT,
+    INTELLIGENCE_TOOLS,
+    INTELLIGENCE_NAMES,
+    intelligence_tool,
+    init_intelligence,
+    intelligence_context,
+    build_pre_shift_message,
+    ingest_checkin_by_id,
+    get_member_plan,
+)
 from gbop_voice_web.trade_photos import (PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES,
     MAX_IMAGE_BYTES, save_upload, photo_tool)
 from gbop_voice_web.deletion import delete_trade_records
@@ -3357,7 +3368,14 @@ def _gbop_role_members():
     ]
 
 
-async def _broadcast_gbop_dm(text, *, event_key=None, checkin_shift=None, shift_date=None):
+async def _broadcast_gbop_dm(
+    text,
+    *,
+    event_key=None,
+    checkin_shift=None,
+    shift_date=None,
+    personalized_shift=None,
+):
     sent = 0
     failed = 0
 
@@ -3377,7 +3395,25 @@ async def _broadcast_gbop_dm(text, *, event_key=None, checkin_shift=None, shift_
                 continue
 
         try:
-            dm_message = await member.send(text)
+            member_text = text
+            if personalized_shift:
+                try:
+                    member_text = await asyncio.to_thread(
+                        build_pre_shift_message,
+                        db,
+                        GTOP_GUILD_ID,
+                        member.id,
+                        personalized_shift,
+                        shift_date,
+                    )
+                except Exception:
+                    logger.exception(
+                        "GBOP personalized pre-shift build failed user=%s shift=%s",
+                        member.id,
+                        personalized_shift,
+                    )
+
+            dm_message = await member.send(member_text)
             sent += 1
 
             with db() as conn:
@@ -3756,11 +3792,18 @@ async def _post_shift_checkin_loop():
             for event_key, text, checkin_shift, shift_date in _scheduled_shift_events(
                 datetime.now(GBOP_EASTERN_TZ)
             ):
+                personalized_shift = None
+                if event_key.endswith(":day_pre5"):
+                    personalized_shift = "day"
+                elif event_key.endswith(":night_pre5"):
+                    personalized_shift = "night"
+
                 sent, failed = await _broadcast_gbop_dm(
                     text,
                     event_key=event_key,
                     checkin_shift=checkin_shift,
                     shift_date=shift_date,
+                    personalized_shift=personalized_shift,
                 )
                 if sent or failed:
                     logger.info(
@@ -3797,15 +3840,40 @@ async def _consume_checkin_reply(message):
         if existing is None:
             return False
 
+        checkin_id = existing["id"]
         conn.execute("""
             UPDATE post_shift_checkins
             SET response=?, responded_at=?
             WHERE id=?
-        """, (message.content.strip(), now(), existing["id"]))
+        """, (message.content.strip(), now(), checkin_id))
 
-    await message.reply(
-        "Saved. GBOP recorded your rule adherence, pattern to watch, and next adjustment."
-    )
+    reply = "Saved. GBOP folded this check-in into your member coaching profile."
+    try:
+        await asyncio.to_thread(
+            ingest_checkin_by_id,
+            db,
+            GTOP_GUILD_ID,
+            message.author.id,
+            checkin_id,
+        )
+        state = await asyncio.to_thread(
+            get_member_plan,
+            db,
+            GTOP_GUILD_ID,
+            message.author.id,
+            {},
+        )
+        focus = state.get("coaching_profile", {}).get("current_focus")
+        if focus:
+            reply += f" Current execution focus: {focus['reminder']}"
+    except Exception:
+        logger.exception(
+            "GBOP coaching-profile refresh failed after check-in user=%s checkin=%s",
+            message.author.id,
+            checkin_id,
+        )
+
+    await message.reply(reply[:1900])
     return True
 
 
@@ -3815,6 +3883,10 @@ async def _consume_checkin_reply(message):
 
 def _init_coach_db():
     init_coach(db)
+
+
+def _init_intelligence_db():
+    init_intelligence(db)
 
 
 @client.event
@@ -3830,6 +3902,7 @@ async def setup_hook():
         ensure_journal_edit_schema,
         init_checkin_db,
         _init_coach_db,
+        _init_intelligence_db,
     ):
         print(f"[GBOP-STARTUP] Starting {initializer.__name__}")
         try:
@@ -4157,6 +4230,7 @@ def ai_member_context(user_id: int):
     else:
         lines.append("Recent journals: none.")
 
+    lines.append(intelligence_context(db, GTOP_GUILD_ID, user_id))
     return "\n".join(lines)
 
 
@@ -5089,10 +5163,18 @@ GBOP_AI_TOOLS.append(
 
 GBOP_AI_TOOLS.extend(PHOTO_TOOLS)
 GBOP_AI_TOOLS.extend(COACH_TOOLS)
-GTOP_AI_PROMPT += "\n\n" + TRADE_NUMBERING_PROMPT + "\n\n" + PHOTO_PROMPT + "\n\n" + COACH_PROMPT
+GBOP_AI_TOOLS.extend(INTELLIGENCE_TOOLS)
+GTOP_AI_PROMPT += (
+    "\n\n" + TRADE_NUMBERING_PROMPT
+    + "\n\n" + PHOTO_PROMPT
+    + "\n\n" + COACH_PROMPT
+    + "\n\n" + INTELLIGENCE_PROMPT
+)
 
 
 def ai_execute_tool(user_id: int, name: str, args: dict):
+    if name in INTELLIGENCE_NAMES:
+        return intelligence_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in COACH_NAMES:
         return coach_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in PHOTO_NAMES:
