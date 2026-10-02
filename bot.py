@@ -11,6 +11,7 @@ import re
 import json
 import asyncio
 from typing import Literal
+from gbop_voice_web.voice_runtime import compact_voice_tool_result, VOICE_TRUNCATION
 from gbop_voice_web.discord_controls import (
     VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild, voice_readiness,
 )
@@ -5998,6 +5999,7 @@ class GBOPRealtimeSession:
             + "- Use the market tools for current/historical prices and CRT evidence. Use the member tools for their trades, journal, risk profile and recaps.\n"
             + "- You log member-reported executions; you cannot place broker orders or see their live positions.\n"
             + "- Discord and browser share this member's saved records. Before changing an existing trade or journal, fetch its current state; never duplicate it just because the member switched devices or voice interfaces.\n"
+            + "- CURRENT MEMBER STATE below is a startup snapshot. Newer tool results override it. Fetch current records before describing open trades or updating them. Older conversation turns may be trimmed; retrieve saved details rather than guessing.\n"
             + "- Everyone in this Discord channel can hear you. Do not volunteer private journal history or personal risk details; use the DM delivery tools when requested.\n"
             + "- For photo input, tell the member to DM the image to GBOP. For pausing listening, tell them to use /gbop action:pause; resume uses /gbop action:resume.\n"
             + "- If exactly one fact is missing for an action, ask only for that fact.\n"
@@ -6022,6 +6024,7 @@ class GBOPRealtimeSession:
                 "tool_choice": "auto",
                 "reasoning": {"effort": "low"},
                 "max_output_tokens": GBOP_REALTIME_MAX_OUTPUT_TOKENS,
+                "truncation": VOICE_TRUNCATION,
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm", "rate": 24000},
@@ -6149,12 +6152,13 @@ class GBOPRealtimeSession:
                 )
 
     async def refresh_context(self):
+        instructions = await asyncio.to_thread(self.instructions)
         await self.send_event(
             {
                 "type": "session.update",
                 "session": {
                     "type": "realtime",
-                    "instructions": self.instructions(),
+                    "instructions": instructions,
                 },
             },
             quiet=True,
@@ -6172,7 +6176,8 @@ class GBOPRealtimeSession:
         except Exception:
             args = {}
 
-        print("[GBOP-RT] tool call:", name, args)
+        started_at = time.monotonic()
+        print("[GBOP-RT] tool call:", name)
 
         try:
             result = await asyncio.to_thread(
@@ -6184,19 +6189,25 @@ class GBOPRealtimeSession:
         except Exception as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+        original_chars = len(json.dumps(result))
+        output = json.dumps(compact_voice_tool_result(name, result), separators=(",", ":"))
+        print("[GBOP-RT-TOOL]", name, "duration_ms=", round((time.monotonic() - started_at) * 1000),
+              "result_chars=", original_chars, "voice_chars=", len(output))
+
         await self.send_event(
             {
                 "type": "conversation.item.create",
                 "item": {
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": json.dumps(result),
+                    "output": output,
                 },
             }
         )
 
         self.tool_output_pending = True
-        await self.refresh_context()
+        # The verified result is already in the conversation. Rebuilding every
+        # profile/journal/coach snapshot here delayed the reply and busted caches.
 
     async def receiver_loop(self):
         async for raw in self.websocket:
@@ -6342,7 +6353,7 @@ class GBOPRealtimeSession:
             if event_type == "response.output_audio_transcript.done":
                 transcript = (event.get("transcript", "") or "").strip()
                 if transcript:
-                    ai_save_message(self.member.id, "assistant", transcript)
+                    await asyncio.to_thread(ai_save_message, self.member.id, "assistant", transcript)
                 continue
 
             if event_type == "response.output_item.done":
@@ -6354,6 +6365,17 @@ class GBOPRealtimeSession:
             if event_type == "response.done":
                 response = event.get("response") or {}
                 status = response.get("status")
+                usage = response.get("usage") or {}
+                print("[GBOP-RT-USAGE] input_tokens=", usage.get("input_tokens"),
+                      "output_tokens=", usage.get("output_tokens"))
+                if status == "failed":
+                    error = (response.get("status_details") or {}).get("error") or {}
+                    self.last_error = ("OpenAI voice rate limit reached. Wait briefly before retrying."
+                                       if error.get("code") == "rate_limit_exceeded"
+                                       else "Voice response failed: " + str(error.get("code", "unknown")))
+                    self.tool_output_pending = False
+                elif status == "completed":
+                    self.last_error = None
                 print(
                     "[GBOP-RT-EVENT] response.done:",
                     self.member,
@@ -6385,7 +6407,10 @@ class GBOPRealtimeSession:
 
                 receiver = asyncio.create_task(self.receiver_loop())
 
-                await self.send_event(self.session_update())
+                update = await asyncio.to_thread(self.session_update)
+                print("[GBOP-RT-CONTEXT] instructions_chars=", len(update['session']['instructions']),
+                      "history_token_limit=", VOICE_TRUNCATION['token_limits']['post_instructions'])
+                await self.send_event(update)
                 await asyncio.wait_for(self.ready.wait(), timeout=10)
 
                 sender = asyncio.create_task(self.sender_loop())
