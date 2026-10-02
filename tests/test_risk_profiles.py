@@ -5,6 +5,7 @@ import sqlite3
 import unittest
 from pathlib import Path
 from gbop_voice_web import risk_profiles as rp
+from gbop_voice_web.trade_numbers import trade_number
 
 class RiskProfileTests(unittest.TestCase):
     def setUp(self):
@@ -65,7 +66,7 @@ class RiskProfileTests(unittest.TestCase):
         tree = ast.parse(Path('gbop_voice_web/server.py').read_text())
         nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'tool_open_trade']
         ns = dict(get_profile=rp.get_profile, tier_limit=rp.tier_limit, db=self.db,
-                  GTOP_GUILD_ID=10, infer_tier=lambda model, tier: tier, math=math, now_iso=lambda: 'today')
+                  GTOP_GUILD_ID=10, trade_number=trade_number, infer_tier=lambda model, tier: tier, math=math, now_iso=lambda: 'today')
         exec(compile(ast.Module(body=nodes, type_ignores=[]), '<test>', 'exec'), ns)
         args = dict(entry_model='Custom', tier=1, risk_r=.7, asset='TEST', direction='Bullish', play='Other')
         self.assertEqual(ns['tool_open_trade'](20, args)['warnings'], [])

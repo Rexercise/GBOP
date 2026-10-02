@@ -12,6 +12,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, market_tool, init_market
+from gbop_voice_web.market_routes import market_router
 from db_compat import db
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
 from gbop_voice_web.member_intelligence import (
@@ -103,7 +105,8 @@ async def initialize_persistent_journal_features():
     # Initialize durable photo + handwritten-journal tables before serving requests.
     await asyncio.to_thread(init_coach, db)
     await asyncio.to_thread(init_intelligence, db)
-    print("[GBOP-WEB] durable photo/journal + member intelligence storage initialized.")
+    await asyncio.to_thread(init_market, db)
+    print("[GBOP-WEB] durable photo/journal + member intelligence + market storage initialized.")
 
 
 
@@ -961,9 +964,12 @@ TOOLS.extend(PHOTO_TOOLS)
 TOOLS.extend(COACH_TOOLS)
 TOOLS.extend(INTELLIGENCE_TOOLS)
 TOOLS.extend(TRADE_ASSIST_TOOLS)
+TOOLS.extend(MARKET_TOOLS)
 
 
 def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
+    if name in MARKET_NAMES:
+        return market_tool(db, name, args)
     if name in TRADE_ASSIST_NAMES:
         return trade_assist_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in INTELLIGENCE_NAMES:
@@ -1056,6 +1062,7 @@ BACKEND_PROMPT += (
     + "\n\n" + COACH_PROMPT
     + "\n\n" + INTELLIGENCE_PROMPT
     + "\n\n" + TRADE_ASSIST_PROMPT
+    + "\n\n" + MARKET_PROMPT
 )
 
 
@@ -1475,3 +1482,6 @@ async def delegate(request: Request, body: DelegateRequest):
         "result": result,
     }
 
+
+
+app.include_router(market_router(db, require_authenticated_user))

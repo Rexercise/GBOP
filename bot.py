@@ -25,6 +25,7 @@ from gbop_voice_web.member_intelligence import (
 )
 from gbop_voice_web.trade_photos import (PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES,
     MAX_IMAGE_BYTES, save_upload, photo_tool)
+from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, market_tool, init_market
 from gbop_voice_web.trade_assist import (
     TRADE_ASSIST_PROMPT,
     TRADE_ASSIST_TOOLS,
@@ -4071,6 +4072,10 @@ def _init_coach_db():
     init_coach(db)
 
 
+def _init_market_db():
+    init_market(db)
+
+
 def _init_intelligence_db():
     init_intelligence(db)
 
@@ -4089,6 +4094,7 @@ async def setup_hook():
         init_checkin_db,
         _init_coach_db,
         _init_intelligence_db,
+        _init_market_db,
     ):
         print(f"[GBOP-STARTUP] Starting {initializer.__name__}")
         try:
@@ -5352,16 +5358,20 @@ GBOP_AI_TOOLS.extend(PHOTO_TOOLS)
 GBOP_AI_TOOLS.extend(COACH_TOOLS)
 GBOP_AI_TOOLS.extend(INTELLIGENCE_TOOLS)
 GBOP_AI_TOOLS.extend(TRADE_ASSIST_TOOLS)
+GBOP_AI_TOOLS.extend(MARKET_TOOLS)
 GTOP_AI_PROMPT += (
     "\n\n" + TRADE_NUMBERING_PROMPT
     + "\n\n" + PHOTO_PROMPT
     + "\n\n" + COACH_PROMPT
     + "\n\n" + INTELLIGENCE_PROMPT
     + "\n\n" + TRADE_ASSIST_PROMPT
+    + "\n\n" + MARKET_PROMPT
 )
 
 
 def ai_execute_tool(user_id: int, name: str, args: dict):
+    if name in MARKET_NAMES:
+        return market_tool(db, name, args)
     if name in TRADE_ASSIST_NAMES:
         return trade_assist_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in INTELLIGENCE_NAMES:

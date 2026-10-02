@@ -1,0 +1,15 @@
+{
+  "endpoint": "https://gbop.onrender.com/api/market/ingest",
+  "token": "REPLACE_WITH_PRIVATE_BRIDGE_TOKEN",
+  "terminal_path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe",
+  "symbols": {
+    "NAS100": "USTECm",
+    "US30": "US30m",
+    "XAUUSD": "XAUUSDm",
+    "XAGUSD": "XAGUSDm",
+    "BTCUSD": "BTCUSDm",
+    "ETHUSD": "ETHUSDm",
+    "EURUSD": "EURUSDm",
+    "WTI": "USOILm"
+  }
+}

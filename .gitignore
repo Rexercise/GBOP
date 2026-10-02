@@ -33,3 +33,6 @@ gbop.db
 # Editors
 .vscode/
 .idea/
+
+# Local MT5 bridge credential
+market_bridge/config.json

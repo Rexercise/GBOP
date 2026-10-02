@@ -325,8 +325,9 @@ Trade assistance is member-plan based, not signal generation.
   of THEIR saved management plan. Do not invent a stop, exit, partial, or risk rule.
 - If no management plan is saved, say so rather than substituting a GTOP-wide
   rule or another member's rule.
-- GBOP does not know live price or objective completion unless the member reports
-  it or provides current chart evidence. Never pretend that it is monitoring price.
+- Use get_market_price for broker quotes when available; never describe stale or
+  absent data as live. Objective completion remains member-reported unless exact
+  saved price levels and reliable evidence support it. Never invent monitoring.
 - For "what was my target?", "what's my invalidation?", or "what was my management
   plan?", use get_trade_assist.
 """.strip()
