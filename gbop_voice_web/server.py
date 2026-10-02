@@ -14,6 +14,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db_compat import db
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
+from gbop_voice_web.member_intelligence import (
+    INTELLIGENCE_PROMPT,
+    INTELLIGENCE_TOOLS,
+    INTELLIGENCE_NAMES,
+    intelligence_tool,
+    init_intelligence,
+    intelligence_context,
+)
 from gbop_voice_web.trade_photos import PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES, photo_tool
 from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.journal_numbers import journal_number
@@ -87,7 +95,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 async def initialize_persistent_journal_features():
     # Initialize durable photo + handwritten-journal tables before serving requests.
     await asyncio.to_thread(init_coach, db)
-    print("[GBOP-WEB] durable photo/journal storage initialized.")
+    await asyncio.to_thread(init_intelligence, db)
+    print("[GBOP-WEB] durable photo/journal + member intelligence storage initialized.")
 
 
 
@@ -323,6 +332,7 @@ def member_context(user_id: int) -> str:
     else:
         lines.append("Recent journals: none.")
 
+    lines.append(intelligence_context(db, GTOP_GUILD_ID, user_id))
     return "\n".join(lines)
 
 
@@ -941,9 +951,12 @@ TOOLS = [
 
 TOOLS.extend(PHOTO_TOOLS)
 TOOLS.extend(COACH_TOOLS)
+TOOLS.extend(INTELLIGENCE_TOOLS)
 
 
 def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
+    if name in INTELLIGENCE_NAMES:
+        return intelligence_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in COACH_NAMES:
         return coach_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in PHOTO_NAMES:
@@ -1025,7 +1038,12 @@ Return a concise, factual result for GPT-Live to say aloud. Usually 1-4 sentence
 """.strip()
 
 
-BACKEND_PROMPT += "\n\n" + TRADE_NUMBERING_PROMPT + "\n\n" + PHOTO_PROMPT + "\n\n" + COACH_PROMPT
+BACKEND_PROMPT += (
+    "\n\n" + TRADE_NUMBERING_PROMPT
+    + "\n\n" + PHOTO_PROMPT
+    + "\n\n" + COACH_PROMPT
+    + "\n\n" + INTELLIGENCE_PROMPT
+)
 
 
 def run_backend(history: list[dict[str, str]], user_id: int) -> str:
@@ -1122,6 +1140,9 @@ Delegate risk-profile setup, changes, and confirmations to the backend. Saved
 member allocations override default 60/30/10; do not override their chosen split. Read the
 backend's entry preview and ask the user to confirm before deletion. Journal
 deletion also removes its linked trade and execution records.
+Delegate SS persistence/resumption, "what's my plan?" requests, personalized coaching
+focus, and requests to retire/restore a stale coaching theme to the backend. Never invent
+saved weekly structure or a member-specific pattern from the live transcript alone.
 
 Use the backend journal_number when speaking to the member; never read the internal journal_id as a journal number.
 
