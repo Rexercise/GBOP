@@ -25,7 +25,7 @@ from gbop_voice_web.member_intelligence import (
 )
 from gbop_voice_web.trade_photos import (PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES,
     MAX_IMAGE_BYTES, save_upload, photo_tool)
-from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, market_tool, init_market
+from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, market_clock, market_tool, init_market
 from gbop_voice_web.trade_assist import (
     TRADE_ASSIST_PROMPT,
     TRADE_ASSIST_TOOLS,
@@ -4391,7 +4391,7 @@ def ai_member_context(user_id: int):
         )).fetchall()
 
     profile = get_profile(db, GTOP_GUILD_ID, user_id)
-    lines = ["CURRENT MEMBER STATE", profile_context(profile)]
+    lines = [market_clock(), "CURRENT MEMBER STATE", profile_context(profile)]
 
     if open_trades:
         lines.append("Open trades:")

@@ -25,6 +25,7 @@ class MarketTests(unittest.TestCase):
         self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute(market.CREATE_SQL)
+        self.conn.execute(market.HISTORY_SQL)
         @contextlib.contextmanager
         def db():
             with self.conn:
@@ -143,6 +144,7 @@ class MarketTests(unittest.TestCase):
     def test_collector_closed_bars_only_no_trading_methods(self):
         class FakeMT5:
             TIMEFRAME_M5=5
+            TIMEFRAME_M1=1
             def terminal_info(s): return SimpleNamespace(connected=True)
             def symbol_select(s,symbol,enable): return True
             def symbol_info_tick(s,symbol): return SimpleNamespace(bid=101,ask=102,time=self.now)

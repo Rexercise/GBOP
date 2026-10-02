@@ -34,7 +34,7 @@ def load_config(path):
     return config
 
 
-def collect(mt5, symbols, now=None):
+def collect(mt5, symbols, now=None, *, backfill=True):
     now = int(time.time() if now is None else now)
     info = mt5.terminal_info()
     if info is None or not info.connected:
@@ -45,7 +45,7 @@ def collect(mt5, symbols, now=None):
             logging.warning('Symbol unavailable: %s (%s)', asset, symbol)
             continue
         tick = mt5.symbol_info_tick(symbol)
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 1, 2304)
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 1, 4032 if backfill else 24)
         if tick is None or rates is None or tick.bid <= 0 or tick.ask <= 0:
             logging.warning('No usable market data: %s', asset)
             continue
@@ -53,7 +53,14 @@ def collect(mt5, symbols, now=None):
         bars = [dict(time=int(r['time']), **{k: float(r[k]) for k in ('open', 'high', 'low', 'close')})
                 for r in rates if now - 14 * 86400 <= int(r['time']) and int(r['time']) + 300 <= now]
         bars.sort(key=lambda b: b['time'])
-        instruments.append(dict(asset=asset, symbol=symbol, bid=float(tick.bid), ask=float(tick.ask), tick_time=int(tick.time), bars=bars))
+        rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 20160 if backfill else 120)
+        bars_m1 = [] if rates_m1 is None else [
+            dict(time=int(r['time']), **{k: float(r[k]) for k in ('open', 'high', 'low', 'close')})
+            for r in rates_m1 if now - 14 * 86400 <= int(r['time']) and int(r['time']) + 60 <= now]
+        bars_m1.sort(key=lambda b: b['time'])
+        if not bars_m1:
+            logging.warning('M1 history unavailable for %s; retaining M5 coverage', asset)
+        instruments.append(dict(asset=asset, symbol=symbol, bid=float(tick.bid), ask=float(tick.ask), tick_time=int(tick.time), bars=bars, bars_m1=bars_m1))
     if not instruments:
         raise RuntimeError('No configured symbols have usable quotes.')
     return dict(captured_at=now, instruments=instruments)
@@ -61,7 +68,7 @@ def collect(mt5, symbols, now=None):
 
 def send(config, payload):
     encoded = json.dumps(payload, separators=(',', ':'), allow_nan=False).encode()
-    if len(encoded) > 2_000_000:
+    if len(encoded) > 4_000_000:
         items = payload['instruments']
         if len(items) < 2:
             raise ValueError('Single instrument exceeds receiver payload limit.')
@@ -98,12 +105,16 @@ def main():
     config = load_config(args.config)
     import MetaTrader5 as mt5
     delay = 30
+    last_backfill = 0
     while True:
         try:
             path = config.get('terminal_path')
             if not (mt5.initialize(path) if path else mt5.initialize()):
                 raise RuntimeError('MT5 initialization failed.')
-            result = send(config, collect(mt5, config['symbols']))
+            backfill = time.monotonic() - last_backfill >= 3600 or last_backfill == 0
+            result = send(config, collect(mt5, config['symbols'], backfill=backfill))
+            if backfill:
+                last_backfill = time.monotonic()
             logging.info('Feed acknowledged: %s', ', '.join(result['accepted_assets']))
             delay = 30
         except Exception as exc:
