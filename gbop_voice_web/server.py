@@ -1411,7 +1411,10 @@ async def live_session(request: Request):
         raise HTTPException(status_code=400, detail="Missing WebRTC SDP offer.")
 
     risk_profile = await asyncio.to_thread(get_profile, db, GTOP_GUILD_ID, user_id)
-    member_instructions = LIVE_INSTRUCTIONS + "\n\n" + market_clock() + "\n\n" + profile_context(risk_profile)
+    member_instructions = (LIVE_INSTRUCTIONS + "\n\n" + market_clock() + "\n\n" + profile_context(risk_profile)
+        + "\nDiscord and browser use this member's same saved records. Delegate requests for current trade, "
+        "journal or risk state to the backend. Do not create a new trade just because the member changed "
+        "devices or switched between Discord and browser voice.")
     if not risk_profile["configured"]:
         member_instructions += ("\nAt the first natural opening, invite personal risk setup: "
             "What percentage of your account do you want your total thesis risk budget to represent? "

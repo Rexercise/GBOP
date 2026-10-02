@@ -11,7 +11,9 @@ import re
 import json
 import asyncio
 from typing import Literal
-from gbop_voice_web.discord_controls import VOICE_HELP, summon_requested, in_voice_channel
+from gbop_voice_web.discord_controls import (
+    VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild,
+)
 from db_compat import db
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
 from gbop_voice_web.member_intelligence import (
@@ -235,6 +237,26 @@ intents.members = True
 
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+# A helper is a separate Discord bot identity, sharing this process and database.
+# Never reuse the primary token: that would compete for the same voice connection.
+GBOP_VOICE_HELPER_TOKEN = os.getenv("GBOP_VOICE_HELPER_TOKEN", "").strip()
+GBOP_VOICE_CLIENTS = [client]
+if GBOP_VOICE_HELPER_TOKEN:
+    if GBOP_VOICE_HELPER_TOKEN == DISCORD_TOKEN:
+        logging.error("GBOP second voice slot disabled: helper must use a distinct bot identity.")
+        GBOP_VOICE_HELPER_TOKEN = ""
+    else:
+        GBOP_VOICE_CLIENTS.append(discord.Client(intents=intents))
+
+
+def gbop_voice_connections(guild_id):
+    return [guild.voice_client for bot in GBOP_VOICE_CLIENTS
+            if (guild := bot.get_guild(guild_id)) is not None and guild.voice_client is not None]
+
+
+def gbop_member_voice_client(member):
+    return next((vc for vc in gbop_voice_connections(member.guild.id)
+                 if in_voice_channel(member, vc)), None)
 
 
 # -----------------------------
@@ -4128,6 +4150,9 @@ async def on_ready():
     print(f"Bot User ID: {client.user.id}")
     print(f"GTOP Guild ID: {GTOP_GUILD_ID}")
     print(f"Database: {DB_PATH}")
+    voice_guild = client.get_guild(GTOP_GUILD_ID)
+    print(f"[GBOP-VOICE] Configured Discord identities: {len(GBOP_VOICE_CLIENTS)}")
+    print(f"[GBOP-VOICE] Private room permission: {bool(voice_guild and voice_guild.me.guild_permissions.manage_channels)}")
     print("=" * 55)
 
 
@@ -5931,11 +5956,11 @@ class GBOPOutputManager:
             self.item_id = None
 
 
-def gbop_output_manager(guild_id: int):
-    manager = GBOP_RT_OUTPUT_MANAGERS.get(guild_id)
+def gbop_output_manager(channel_id: int):
+    manager = GBOP_RT_OUTPUT_MANAGERS.get(channel_id)
     if manager is None:
-        manager = GBOPOutputManager(guild_id)
-        GBOP_RT_OUTPUT_MANAGERS[guild_id] = manager
+        manager = GBOPOutputManager(channel_id)
+        GBOP_RT_OUTPUT_MANAGERS[channel_id] = manager
     return manager
 
 
@@ -5972,6 +5997,7 @@ class GBOPRealtimeSession:
             + "- While the member is trading, keep acknowledgements brief and ask only for missing required trade details. Never invent fills, prices, risk, or results.\n"
             + "- Use the market tools for current/historical prices and CRT evidence. Use the member tools for their trades, journal, risk profile and recaps.\n"
             + "- You log member-reported executions; you cannot place broker orders or see their live positions.\n"
+            + "- Discord and browser share this member's saved records. Before changing an existing trade or journal, fetch its current state; never duplicate it just because the member switched devices or voice interfaces.\n"
             + "- Everyone in this Discord channel can hear you. Do not volunteer private journal history or personal risk details; use the DM delivery tools when requested.\n"
             + "- For photo input, tell the member to DM the image to GBOP. For pausing listening, tell them to use /gbop action:pause; resume uses /gbop action:resume.\n"
             + "- If exactly one fact is missing for an action, ask only for that fact.\n"
@@ -6207,7 +6233,7 @@ class GBOPRealtimeSession:
                 # immediately, but do NOT send a second response.cancel/truncate
                 # from here: that races the server-side cancellation and can
                 # produce delayed/stale replies after natural barge-in.
-                manager = gbop_output_manager(self.member.guild.id)
+                manager = gbop_output_manager(self.voice_client.channel.id)
                 source = manager.source
 
                 if source is not None:
@@ -6271,7 +6297,7 @@ class GBOPRealtimeSession:
                     continue
 
                 item_id = event.get("item_id")
-                manager = gbop_output_manager(self.member.guild.id)
+                manager = gbop_output_manager(self.voice_client.channel.id)
 
                 if item_id not in self._logged_audio_items:
                     self._logged_audio_items.add(item_id)
@@ -6441,11 +6467,18 @@ class GBOPRealtimeManager:
         key = self.key(member)
         if key in self.paused or not in_voice_channel(member, voice_client):
             return None
+        owner = private_room_owner(voice_client.channel)
+        if owner is not None and owner != member.id:
+            return None
         session = self.sessions.get(key)
 
         if session is not None and not session.closed:
-            session.voice_client = voice_client
-            return session
+            if session.voice_client.channel.id != voice_client.channel.id:
+                await self.close_member(member)
+                session = None
+            else:
+                session.voice_client = voice_client
+                return session
 
         lock = GBOP_RT_LOCKS.get(key)
         if lock is None:
@@ -6495,8 +6528,8 @@ class GBOPRealtimeManager:
     async def close_member(self, member):
         key = self.key(member)
         session = self.sessions.pop(key, None)
-        manager = GBOP_RT_OUTPUT_MANAGERS.get(member.guild.id)
         if session is not None:
+            manager = GBOP_RT_OUTPUT_MANAGERS.get(session.voice_client.channel.id)
             if manager is not None and manager.session is session:
                 await manager.interrupt()
             await session.close()
@@ -6514,9 +6547,24 @@ class GBOPRealtimeManager:
             if session is not None:
                 await session.close()
 
-        manager = GBOP_RT_OUTPUT_MANAGERS.pop(guild_id, None)
+        channels = [channel_id for channel_id, manager in GBOP_RT_OUTPUT_MANAGERS.items()
+                    if manager.voice_client and manager.voice_client.guild.id == guild_id]
+        for channel_id in channels:
+            await self.close_channel(channel_id)
+
+    async def close_channel(self, channel_id):
+        keys = [key for key, session in self.sessions.items()
+                if session.voice_client.channel.id == channel_id]
+        for key in keys:
+            session = self.sessions.pop(key, None)
+            if session:
+                await session.close()
+        manager = GBOP_RT_OUTPUT_MANAGERS.pop(channel_id, None)
         if manager is not None:
             await manager.interrupt()
+        sink = GBOP_RT_SINKS.pop(channel_id, None)
+        if sink is not None:
+            sink.cleanup()
 
 
 GBOP_REALTIME_MANAGER = GBOPRealtimeManager()
@@ -6580,7 +6628,7 @@ def gbop_start_realtime_listener(voice_client):
     loop = asyncio.get_running_loop()
     sink = GBOPRealtimeSink(loop, voice_client)
 
-    GBOP_RT_SINKS[voice_client.guild.id] = sink
+    GBOP_RT_SINKS[voice_client.channel.id] = sink
 
     def after(error):
         print("[GBOP-RT] Discord receive listener ended:", repr(error))
@@ -6599,7 +6647,7 @@ def gbop_start_realtime_listener(voice_client):
 
 async def gbop_voice_health_text(interaction):
     guild = interaction.guild
-    vc = guild.voice_client if guild else None
+    vc = gbop_member_voice_client(interaction.user) if guild else None
 
     session = None
     if guild is not None:
@@ -6621,7 +6669,7 @@ async def gbop_voice_health_text(interaction):
             ),
             (
                 f"Voice sink: "
-                f"**{type(GBOP_RT_SINKS.get(guild.id)).__name__ if guild and GBOP_RT_SINKS.get(guild.id) else 'None'}**"
+                f"**{type(GBOP_RT_SINKS.get(vc.channel.id)).__name__ if vc and GBOP_RT_SINKS.get(vc.channel.id) else 'None'}**"
             ),
             f"Realtime model: **{GBOP_REALTIME_MODEL}**",
             f"Realtime voice: **{GBOP_REALTIME_VOICE}**",
@@ -6665,13 +6713,22 @@ async def voice(interaction: discord.Interaction):
 
     try:
         async with gbop_voice_control_lock(interaction.guild.id):
-            vc = interaction.guild.voice_client
-            if vc and vc.channel.id != channel.id:
+            owner = private_room_owner(channel)
+            if owner is not None and owner != member.id:
                 await interaction.followup.send(
-                    f"I'm already in {vc.channel.mention}. Join me there; "
-                    "I won't interrupt that channel's session.", ephemeral=True)
+                    "This is another member's private GBOP room. Use `/gbop action:room` for yours.",
+                    ephemeral=True)
                 return
-            permissions = channel.permissions_for(interaction.guild.me)
+            voice_guild = pick_voice_guild(GBOP_VOICE_CLIENTS, interaction.guild.id, channel.id)
+            if voice_guild is None:
+                await interaction.followup.send(
+                    "All GBOP Discord voice slots are in use. Your existing sessions won't be interrupted. "
+                    "Try again later or open your private browser session below.",
+                    view=gbop_private_voice_view(), ephemeral=True)
+                return
+            channel = voice_guild.get_channel(channel.id)
+            vc = voice_guild.voice_client
+            permissions = channel.permissions_for(voice_guild.me)
             if not (permissions.view_channel and permissions.connect and permissions.speak):
                 await interaction.followup.send(
                     "I need View Channel, Connect and Speak permissions in your voice channel.",
@@ -6679,15 +6736,21 @@ async def voice(interaction: discord.Interaction):
                 return
             if vc is not None and not isinstance(vc, voice_recv.VoiceRecvClient):
                 await vc.disconnect(force=True)
-                await GBOP_REALTIME_MANAGER.close_guild(interaction.guild.id)
+                await GBOP_REALTIME_MANAGER.close_channel(channel.id)
                 vc = None
             if vc is None:
                 vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
             GBOP_REALTIME_MANAGER.paused.discard((interaction.guild.id, member.id))
             if not vc.is_listening():
                 gbop_start_realtime_listener(vc)
-            session = await GBOP_REALTIME_MANAGER.get_session(member, vc, asyncio.get_running_loop())
+            voice_member = voice_guild.get_member(member.id)
+            session = await GBOP_REALTIME_MANAGER.get_session(voice_member or member, vc, asyncio.get_running_loop())
 
+        if session is None:
+            await interaction.followup.send(
+                "Your voice session is paused or you left the channel. Join your room and use `/gbop` again.",
+                ephemeral=True)
+            return
         if session is not None:
             try:
                 await asyncio.wait_for(session.ready.wait(), timeout=12)
@@ -6737,7 +6800,9 @@ async def voiceoff(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=False)
 
     guild = interaction.guild
-    vc = guild.voice_client if guild else None
+    vc = gbop_member_voice_client(interaction.user) if guild else None
+    if vc is None and guild and is_owner(interaction.user):
+        vc = next(iter(gbop_voice_connections(guild.id)), None)
 
     if vc is None:
         await interaction.followup.send(
@@ -6761,7 +6826,8 @@ async def voiceoff(interaction: discord.Interaction):
     except Exception as exc:
         shutdown_notes.append(f"listener stop: {type(exc).__name__}")
 
-    sink = GBOP_RT_SINKS.pop(guild.id, None)
+    channel_id = vc.channel.id
+    sink = GBOP_RT_SINKS.pop(channel_id, None)
     if sink is not None:
         try:
             sink.cleanup()
@@ -6788,7 +6854,7 @@ async def voiceoff(interaction: discord.Interaction):
     # manager must never prevent the Discord disconnect above.
     try:
         await asyncio.wait_for(
-            GBOP_REALTIME_MANAGER.close_guild(guild.id),
+            GBOP_REALTIME_MANAGER.close_channel(channel_id),
             timeout=4.0,
         )
         print("[GBOP-VOICEOFF] Realtime sessions closed.")
@@ -6805,10 +6871,7 @@ async def voiceoff(interaction: discord.Interaction):
 
     # Discord.py should clear guild.voice_client after disconnect. If it did
     # not, report that explicitly instead of pretending shutdown succeeded.
-    still_connected = bool(
-        guild.voice_client
-        and guild.voice_client.is_connected()
-    )
+    still_connected = vc.is_connected()
 
     if still_connected:
         details = "; ".join(shutdown_notes) or "voice client still reports connected"
@@ -6828,10 +6891,71 @@ async def voiceoff(interaction: discord.Interaction):
     )
 
 
-@tree.command(name="gbop", description="Call GBOP into voice, pause/resume your audio, or get help.", guild=GUILD)
+def gbop_private_voice_view():
+    view = discord.ui.View(timeout=300)
+    room = discord.ui.Button(label="My private Discord room", style=discord.ButtonStyle.primary)
+    async def open_room(interaction):
+        await gbop_control.callback(interaction, action="room")
+    room.callback = open_room
+    view.add_item(room)
+    view.add_item(discord.ui.Button(
+        label="Open my private GBOP session", style=discord.ButtonStyle.link,
+        url="https://gbop.onrender.com/",
+    ))
+    return view
+
+
+async def gbop_private_room(interaction):
+    guild, member = interaction.guild, interaction.user
+    async with gbop_voice_control_lock(guild.id):
+        if not guild.me.guild_permissions.manage_channels:
+            await interaction.followup.send(
+                "Private Discord rooms need the GBOP bot role to have **Manage Channels**. "
+                "The server owner can enable that; browser voice is available now.",
+                view=gbop_private_voice_view(), ephemeral=True)
+            return
+        room = next((channel for channel in guild.voice_channels
+                     if private_room_owner(channel) == member.id), None)
+        if room:
+            # Refuse to silently repurpose a room made visible to a wider audience.
+            for target, overwrite in room.overwrites.items():
+                allowed_target = target == member or getattr(target, 'bot', False)
+                if not allowed_target and (overwrite.view_channel is True or overwrite.connect is True):
+                    await interaction.followup.send(
+                        "Your existing GBOP room has shared access. Ask the owner to restore its private permissions first.",
+                        ephemeral=True)
+                    return
+            base = room.overwrites_for(guild.default_role)
+            if base.view_channel is not False or base.connect is not False:
+                await interaction.followup.send(
+                    "Your existing GBOP room needs private permissions restored by the server owner.", ephemeral=True)
+                return
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+            member: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, use_voice_activation=True),
+        }
+        for bot in GBOP_VOICE_CLIENTS:
+            if bot.user and (bot_member := guild.get_member(bot.user.id)) is not None:
+                overwrites[bot_member] = discord.PermissionOverwrite(
+                    view_channel=True, connect=True, speak=True, use_voice_activation=True)
+        if room is None:
+            name = "gbop-private-" + re.sub(r"\s+", "-", member.display_name.lower())[:65]
+            room = await guild.create_voice_channel(
+                name=name, overwrites=overwrites, reason="Member requested a private GBOP room")
+        else:
+            await room.edit(overwrites=overwrites, reason="Member refreshed their private GBOP room")
+    await interaction.followup.send(
+        f"Your room is {room.mention}. **Join it, then run `/gbop`** to start voice. "
+        "The room stays available for your next session. Server administrators can still access it.\n"
+        "Discord and browser voice use your same member profile, saved trades and journals. "
+        "Use one voice connection at a time for yourself; another member can use theirs independently.",
+        view=gbop_private_voice_view(), ephemeral=True)
+
+
+@tree.command(name="gbop", description="Open private browser voice, call GBOP into a channel, or get help.", guild=GUILD)
 async def gbop_control(
     interaction: discord.Interaction,
-    action: Literal["join", "pause", "resume", "status", "leave", "help"] = "join",
+    action: Literal["join", "room", "private", "pause", "resume", "status", "leave", "help"] = "join",
 ):
     if action in {"join", "resume"}:
         await voice.callback(interaction)
@@ -6842,21 +6966,33 @@ async def gbop_control(
     if not await require_member(interaction):
         return
     await interaction.response.defer(ephemeral=True, thinking=False)
-    if action == "help":
-        await interaction.followup.send(VOICE_HELP, ephemeral=True)
+    if action == "room":
+        await gbop_private_room(interaction)
+    elif action == "private":
+        await interaction.followup.send(
+            "Open your own browser voice session below and sign in with **your own Discord account**. "
+            "Allow microphone access, then connect. Each member opens their own session; "
+            "you don't need to wait for the Discord voice channel.\n"
+            "Disconnect browser voice when finished. If you are already using GBOP in a server "
+            "voice channel, pause that listening with `/gbop action:pause` first.",
+            view=gbop_private_voice_view(), ephemeral=True)
+    elif action == "help":
+        await interaction.followup.send(VOICE_HELP, view=gbop_private_voice_view(), ephemeral=True)
     elif action == "pause":
         await GBOP_REALTIME_MANAGER.pause_member(interaction.user)
         await interaction.followup.send(
             "Your GBOP listening is paused. Other members can continue. "
             "Use `/gbop action:resume` when ready.", ephemeral=True)
     else:
-        vc = interaction.guild.voice_client
+        vc = gbop_member_voice_client(interaction.user)
         session = GBOP_REALTIME_MANAGER.sessions.get((interaction.guild.id, interaction.user.id))
         paused = (interaction.guild.id, interaction.user.id) in GBOP_REALTIME_MANAGER.paused
         status = "paused" if paused else "ready" if session and session.ready.is_set() else "not connected yet"
         where = vc.channel.mention if vc and vc.is_connected() else "not in a voice channel"
         await interaction.followup.send(
             f"GBOP: {where}. Your voice session: **{status}**.\n"
+            f"Discord slots connected: **{len(gbop_voice_connections(interaction.guild.id))}**. "
+            f"Bot identities ready here: **{sum(bot.is_ready() and bot.get_guild(interaction.guild.id) is not None for bot in GBOP_VOICE_CLIENTS)}**.\n"
             "Use `/gbop` to connect, or `/gbop action:help` for examples.", ephemeral=True)
 
 
@@ -6865,18 +7001,20 @@ async def on_voice_state_update(member, before, after):
     if before.channel == after.channel:
         return
     if member.bot:
-        if client.user and member.id == client.user.id and after.channel is None:
-            sink = GBOP_RT_SINKS.pop(member.guild.id, None)
-            if sink:
-                sink.cleanup()
-            await GBOP_REALTIME_MANAGER.close_guild(member.guild.id)
+        own_bot = any(bot.user and member.id == bot.user.id for bot in GBOP_VOICE_CLIENTS)
+        if own_bot and before.channel and after.channel is None:
+            await GBOP_REALTIME_MANAGER.close_channel(before.channel.id)
         return
     async with gbop_voice_control_lock(member.guild.id):
-        await GBOP_REALTIME_MANAGER.close_member(member)
-        vc = member.guild.voice_client
-        if vc and not any(not person.bot for person in vc.channel.members):
-            await asyncio.wait_for(vc.disconnect(force=True), timeout=5)
-            await GBOP_REALTIME_MANAGER.close_guild(member.guild.id)
+        session = GBOP_REALTIME_MANAGER.sessions.get((member.guild.id, member.id))
+        if session and before.channel and session.voice_client.channel.id == before.channel.id:
+            await GBOP_REALTIME_MANAGER.close_member(member)
+        for vc in gbop_voice_connections(member.guild.id):
+            channel = member.guild.get_channel(vc.channel.id)
+            if channel and not any(not person.bot for person in channel.members):
+                channel_id = channel.id
+                await asyncio.wait_for(vc.disconnect(force=True), timeout=5)
+                await GBOP_REALTIME_MANAGER.close_channel(channel_id)
 
 
 @tree.command(
@@ -6947,6 +7085,27 @@ async def gbop_tree_error(
         pass
 
 
+async def gbop_run_clients():
+    async def run_helper():
+        helper = GBOP_VOICE_CLIENTS[1]
+        try:
+            await helper.start(GBOP_VOICE_HELPER_TOKEN)
+        except Exception as exc:
+            # A helper login problem must not take the primary bot offline.
+            logging.error("GBOP second voice slot unavailable (%s). Check helper setup.", type(exc).__name__)
+        finally:
+            await helper.close()
+
+    helper_task = asyncio.create_task(run_helper()) if len(GBOP_VOICE_CLIENTS) > 1 else None
+    try:
+        await client.start(DISCORD_TOKEN)
+    finally:
+        await client.close()
+        if helper_task:
+            helper_task.cancel()
+            await asyncio.gather(helper_task, return_exceptions=True)
+
+
 if __name__ == "__main__":
     print("[GBOP-STARTUP] bot.py launched; connecting to Discord.")
-    client.run(DISCORD_TOKEN)
+    asyncio.run(gbop_run_clients())
