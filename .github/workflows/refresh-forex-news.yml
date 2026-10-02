@@ -97,5 +97,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Refresh Forex Factory calendar cache"
+          git commit -m "Refresh Forex Factory calendar cache [skip ci]"
           git push origin HEAD:calendar-cache
