@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, market_tool, init_market
+from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, LIVE_MARKET_PROMPT, market_clock, market_tool, init_market
 from gbop_voice_web.market_routes import market_router
 from db_compat import db
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
@@ -318,7 +318,7 @@ def member_context(user_id: int) -> str:
             (GTOP_GUILD_ID, user_id),
         ).fetchall()
 
-    lines = ["CURRENT VERIFIED GBOP MEMBER STATE", profile_context(get_profile(db, GTOP_GUILD_ID, user_id))]
+    lines = [market_clock(), "CURRENT VERIFIED GBOP MEMBER STATE", profile_context(get_profile(db, GTOP_GUILD_ID, user_id))]
 
     if trades:
         lines.append("Open trades:")
@@ -1186,9 +1186,11 @@ BACKEND_PROMPT = (
 
 LIVE_INSTRUCTIONS = (
     LIVE_INSTRUCTIONS
-    + "\n\nYou are also a GTOP coach. For GTOP concepts, definitions, plays, "
+    + "\n\n" + LIVE_MARKET_PROMPT
+    + "\n\nYou are also a GTOP coach. For GENERAL GTOP concepts, definitions, plays, "
       "entry models, CRT variants, candle science, invalidation, risk protocol, "
-      "and trade management, answer directly from the canonical GTOP knowledge below. "
+      "and trade management without a current or historical price-action question, answer directly from the canonical GTOP knowledge below. "
+      "Specific observed setups, dates, prices or candle times always require backend delegation. "
       "Do not substitute generic trading definitions when GTOP defines the concept.\n\n"
     + GTOP_CANONICAL_KNOWLEDGE
 )
@@ -1409,7 +1411,7 @@ async def live_session(request: Request):
         raise HTTPException(status_code=400, detail="Missing WebRTC SDP offer.")
 
     risk_profile = await asyncio.to_thread(get_profile, db, GTOP_GUILD_ID, user_id)
-    member_instructions = LIVE_INSTRUCTIONS + "\n\n" + profile_context(risk_profile)
+    member_instructions = LIVE_INSTRUCTIONS + "\n\n" + market_clock() + "\n\n" + profile_context(risk_profile)
     if not risk_profile["configured"]:
         member_instructions += ("\nAt the first natural opening, invite personal risk setup: "
             "What percentage of your account do you want your total thesis risk budget to represent? "

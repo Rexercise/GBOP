@@ -66,3 +66,32 @@ Activation still requires approval/access outside GitHub:
 
 Until these checks succeed, describe the bridge as implemented, awaiting activation.
 Do not describe it as live or unattended after reboot.
+# Candle evidence upgrade (October 2026)
+
+The server accepts existing M5 collectors and upgraded M1 collectors. Updating
+Render alone does **not** update the copy of `bridge.py` on Windows. Replace that
+file on the VM with the reviewed version from GitHub, preserve `config.json` and
+the existing virtual environment, then restart the existing bridge process/task.
+No new VM, paid plan, credential or trading permission is required.
+
+The upgraded collector sends up to 14 calendar days of closed M1 and M5 candles
+at startup and hourly, then a two-hour overlap every 30 seconds. The server merges
+history by broker symbol, timeframe and UTC day, retaining 90 calendar days as
+data accumulates. History before the initial backfill is not retroactively known.
+MT5 may return fewer bars while history downloads; the bot reports missing coverage.
+
+Conversation behavior, shared by Discord text/voice and browser voice:
+
+- “Did today's NAS 988 happen?” fetches the session evidence before answering.
+- “When was that high purged?” uses the selected asset/range from context.
+- “What was last week's Wednesday low, and when did it form?” reads the requested
+  historical window, stating coverage and source precision.
+- `review_market_crt` accepts arbitrary anchor starts/timeframes, with the GTOP
+  Monthly→Daily, Weekly→H4, Daily→H1, H4→M15, H1→M5 mappings.
+- M2/M3/M4 and other minute intervals can be aggregated from M1. M5 cannot be
+  reverse-engineered into finer candles. Timestamps identify intervals, not ticks.
+- MOB is canonical discretionary knowledge, not automated PD-array detection.
+
+Daily, weekly and monthly boundaries must match the member's chart. Do not equate
+New York midnight with a broker session boundary. Incomplete data and market
+closures are explicitly reported; they do not prove that a setup did not happen.

@@ -341,3 +341,15 @@ GTOP identity, terminology, playbook organization, and GTOP-exclusive methodolog
 
 === GTOP CANONICAL ADDENDUM V2 END ===
 
+
+
+MOB — MAKE OR BREAK LEVEL (ROMEO)
+MOB means Make or Break, taught by Romeo. Within a CRT, it is an opposing PD array
+later in the sequence, near the drawn liquidity. How price handles that level can
+make or break whether the drawn liquidity is achieved. It is a discretionary
+structural level, not a fixed percentage, candle open, or automatic entry trigger.
+Do not substitute MOB for the CRT range's close-based invalidation rule. A member
+may identify a breaker, order block, or other opposing PD array as their MOB; keep
+that as their selected level without claiming deterministic identification.
+GBOP does not need automatic PD-array detection to discuss MOB. Primary market-data
+work is factual OHLC, extreme formation times, purge candles and invalidating closes.
