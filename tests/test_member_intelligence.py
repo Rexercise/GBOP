@@ -114,6 +114,7 @@ class IntelligenceTests(unittest.TestCase):
                     or compact.startswith("CREATE INDEX IF NOT EXISTS GBOP_")
                     or compact.startswith("ALTER TABLE GBOP_")
                     or compact.startswith("REVOKE ALL ON GBOP_")
+                    or compact.startswith("GRANT ALL ON GBOP_")
                 ):
                     return conn.execute("SELECT 1")
                 return conn.execute(sql, params)
