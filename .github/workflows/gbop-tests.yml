@@ -19,5 +19,6 @@ jobs:
           gbop_voice_web/server.py
           gbop_voice_web/snapshots.py
           gbop_voice_web/member_intelligence.py
+          gbop_voice_web/forex_news.py
       - name: Run regression tests
-        run: python -m unittest tests.test_snapshots tests.test_member_intelligence
+        run: python -m unittest tests.test_snapshots tests.test_member_intelligence tests.test_forex_news

@@ -48,6 +48,13 @@ from gbop_voice_web.snapshots import (
     format_trade_breakdown,
     format_execution_breakdown,
 )
+from gbop_voice_web.forex_news import (
+    FF_NEWS_LEAD_MINUTES,
+    due_high_impact_events,
+    event_delivery_key,
+    format_red_folder_alert,
+    get_high_impact_events,
+)
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
@@ -3748,6 +3755,76 @@ async def _send_snapshot_event(event_key, period):
         )
 
 
+
+async def _send_forex_news_alerts(now_eastern):
+    """DM GBOP role members once when Forex Factory high-impact news is near."""
+    try:
+        events = await asyncio.to_thread(get_high_impact_events)
+    except Exception:
+        logger.exception("GBOP Forex Factory calendar refresh failed")
+        return
+
+    due = due_high_impact_events(
+        events,
+        now_eastern,
+        lead_minutes=FF_NEWS_LEAD_MINUTES,
+    )
+    if not due:
+        return
+
+    sent = 0
+    failed = 0
+
+    for member in _gbop_role_members():
+        pending = []
+        keys = []
+        for event in due:
+            key = event_delivery_key(
+                event,
+                lead_minutes=FF_NEWS_LEAD_MINUTES,
+            )
+            if not _snapshot_delivery_exists(key, member.id):
+                pending.append(event)
+                keys.append(key)
+
+        if not pending:
+            continue
+
+        try:
+            message = await member.send(
+                format_red_folder_alert(
+                    pending,
+                    now_eastern,
+                    lead_minutes=FF_NEWS_LEAD_MINUTES,
+                )
+            )
+            message_id = getattr(message, "id", "")
+            for key in keys:
+                _record_snapshot_delivery(key, member.id, message_id)
+            sent += 1
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            failed += 1
+            logger.warning(
+                "GBOP red-folder DM failed user=%s error=%s",
+                member.id,
+                type(exc).__name__,
+            )
+        except Exception:
+            failed += 1
+            logger.exception(
+                "GBOP red-folder alert failed user=%s",
+                member.id,
+            )
+
+    if sent or failed:
+        logger.info(
+            "GBOP Forex Factory red-folder alert sent=%s failed=%s events=%s",
+            sent,
+            failed,
+            len(due),
+        )
+
+
 def _scheduled_shift_events(now_eastern):
     date_key = now_eastern.date().isoformat()
     current_minute = now_eastern.hour * 60 + now_eastern.minute
@@ -3789,8 +3866,9 @@ async def _post_shift_checkin_loop():
     await client.wait_until_ready()
     while not client.is_closed():
         try:
+            now_eastern = datetime.now(GBOP_EASTERN_TZ)
             for event_key, text, checkin_shift, shift_date in _scheduled_shift_events(
-                datetime.now(GBOP_EASTERN_TZ)
+                now_eastern
             ):
                 personalized_shift = None
                 if event_key.endswith(":day_pre5"):
@@ -3812,8 +3890,9 @@ async def _post_shift_checkin_loop():
                         sent,
                         failed,
                     )
+            await _send_forex_news_alerts(now_eastern)
             for event_key, period in _scheduled_snapshot_events(
-                datetime.now(GBOP_EASTERN_TZ)
+                now_eastern
             ):
                 await _send_snapshot_event(
                     event_key,
