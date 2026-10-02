@@ -1,0 +1,101 @@
+name: Refresh Forex Factory calendar cache
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/refresh-forex-news.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: forex-factory-calendar-cache
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Forex Factory weekly JSON export
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            --retry 4 \
+            --retry-all-errors \
+            --retry-delay 15 \
+            --connect-timeout 15 \
+            --max-time 60 \
+            -A "Mozilla/5.0 (compatible; GBOP Forex Calendar Cache/1.0)" \
+            -H "Accept: application/json,text/plain,*/*" \
+            -e "https://www.forexfactory.com/" \
+            "https://nfs.faireconomy.media/ff_calendar_thisweek.json" \
+            -o /tmp/ff_calendar_thisweek.json
+
+      - name: Validate calendar payload
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          path = Path("/tmp/ff_calendar_thisweek.json")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          if not isinstance(payload, list):
+              raise SystemExit("Forex Factory payload must be a JSON list")
+          if not payload:
+              raise SystemExit("Forex Factory payload is unexpectedly empty")
+
+          required = {"title", "country", "date", "impact"}
+          bad = [
+              index
+              for index, row in enumerate(payload)
+              if not isinstance(row, dict) or not required.issubset(row)
+          ]
+          if bad:
+              raise SystemExit(f"Invalid Forex Factory rows: {bad[:5]}")
+
+          print(f"Validated {len(payload)} Forex Factory calendar rows")
+
+      - name: Publish cache branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin calendar-cache >/dev/null 2>&1; then
+            git fetch origin calendar-cache
+            git switch -C calendar-cache origin/calendar-cache
+          else
+            git switch --orphan calendar-cache
+            git rm -rf . || true
+          fi
+
+          cp /tmp/ff_calendar_thisweek.json ff_calendar_thisweek.json
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          Path("ff_calendar_fetched_at.txt").write_text(
+              datetime.now(timezone.utc).isoformat() + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          git add ff_calendar_thisweek.json ff_calendar_fetched_at.txt
+          if git diff --cached --quiet; then
+            echo "Calendar cache already current."
+            exit 0
+          fi
+
+          git commit -m "Refresh Forex Factory calendar cache"
+          git push origin HEAD:calendar-cache

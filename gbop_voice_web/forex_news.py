@@ -19,6 +19,10 @@ FF_CALENDAR_URL = os.getenv(
     "GBOP_FF_CALENDAR_URL",
     "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
 )
+FF_CACHE_URL = os.getenv(
+    "GBOP_FF_CACHE_URL",
+    "https://raw.githubusercontent.com/Rexercise/GBOP/calendar-cache/ff_calendar_thisweek.json",
+)
 FF_NEWS_LEAD_MINUTES = max(
     1,
     int(os.getenv("GBOP_FF_NEWS_LEAD_MINUTES", "15")),
@@ -133,6 +137,7 @@ def parse_high_impact_events(
 
 
 def _download_calendar_payload() -> Any:
+    """Prefer Forex Factory directly, then fall back to GBOP's GitHub mirror."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -142,14 +147,45 @@ def _download_calendar_payload() -> Any:
         "Accept": "application/json,text/plain,*/*",
         "Referer": "https://www.forexfactory.com/",
     }
+    failures = []
+
     with httpx.Client(
         timeout=FF_HTTP_TIMEOUT_SECONDS,
         follow_redirects=True,
         headers=headers,
     ) as client:
-        response = client.get(FF_CALENDAR_URL)
-        response.raise_for_status()
-        return response.json()
+        for source, url in (
+            ("forex_factory", FF_CALENDAR_URL),
+            ("github_cache", FF_CACHE_URL),
+        ):
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, (list, dict)):
+                    raise ValueError("calendar payload is not JSON rows")
+                if source == "github_cache":
+                    logger.info(
+                        "Forex Factory direct feed unavailable; using GBOP GitHub calendar cache."
+                    )
+                return payload
+            except Exception as exc:
+                status = (
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else None
+                )
+                failures.append(
+                    f"{source}:{type(exc).__name__}"
+                    + (f":{status}" if status is not None else "")
+                )
+                if source == "forex_factory":
+                    logger.info(
+                        "Forex Factory direct feed unavailable (%s); trying GitHub cache.",
+                        failures[-1],
+                    )
+
+    raise RuntimeError("calendar sources unavailable: " + ", ".join(failures))
 
 
 def get_high_impact_events(*, force: bool = False) -> list[ForexNewsEvent]:
@@ -178,12 +214,9 @@ def get_high_impact_events(*, force: bool = False) -> list[ForexNewsEvent]:
         payload = _download_calendar_payload()
         events = parse_high_impact_events(payload)
     except Exception as exc:
-        detail = type(exc).__name__
-        if isinstance(exc, httpx.HTTPStatusError):
-            detail += f" status={exc.response.status_code}"
         logger.warning(
             "Forex Factory calendar fetch failed; using cached events: %s",
-            detail,
+            str(exc)[:300],
         )
         return list(_CACHE_EVENTS)
 
