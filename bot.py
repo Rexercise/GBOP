@@ -25,6 +25,13 @@ from gbop_voice_web.member_intelligence import (
 )
 from gbop_voice_web.trade_photos import (PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES,
     MAX_IMAGE_BYTES, save_upload, photo_tool)
+from gbop_voice_web.trade_assist import (
+    TRADE_ASSIST_PROMPT,
+    TRADE_ASSIST_TOOLS,
+    TRADE_ASSIST_NAMES,
+    trade_assist_tool,
+    trade_assist_context,
+)
 from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.journal_numbers import journal_number, journal_record_id
 from gbop_voice_web.trade_numbers import trade_number, trade_record_id, TRADE_NUMBERING_PROMPT
@@ -4410,6 +4417,7 @@ def ai_member_context(user_id: int):
         lines.append("Recent journals: none.")
 
     lines.append(intelligence_context(db, GTOP_GUILD_ID, user_id))
+    lines.append(trade_assist_context(db, GTOP_GUILD_ID, user_id))
     return "\n".join(lines)
 
 
@@ -5343,15 +5351,19 @@ GBOP_AI_TOOLS.append(
 GBOP_AI_TOOLS.extend(PHOTO_TOOLS)
 GBOP_AI_TOOLS.extend(COACH_TOOLS)
 GBOP_AI_TOOLS.extend(INTELLIGENCE_TOOLS)
+GBOP_AI_TOOLS.extend(TRADE_ASSIST_TOOLS)
 GTOP_AI_PROMPT += (
     "\n\n" + TRADE_NUMBERING_PROMPT
     + "\n\n" + PHOTO_PROMPT
     + "\n\n" + COACH_PROMPT
     + "\n\n" + INTELLIGENCE_PROMPT
+    + "\n\n" + TRADE_ASSIST_PROMPT
 )
 
 
 def ai_execute_tool(user_id: int, name: str, args: dict):
+    if name in TRADE_ASSIST_NAMES:
+        return trade_assist_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in INTELLIGENCE_NAMES:
         return intelligence_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in COACH_NAMES:

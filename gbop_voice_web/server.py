@@ -23,6 +23,13 @@ from gbop_voice_web.member_intelligence import (
     intelligence_context,
 )
 from gbop_voice_web.trade_photos import PHOTO_PROMPT, PHOTO_TOOLS, PHOTO_NAMES, photo_tool
+from gbop_voice_web.trade_assist import (
+    TRADE_ASSIST_PROMPT,
+    TRADE_ASSIST_TOOLS,
+    TRADE_ASSIST_NAMES,
+    trade_assist_tool,
+    trade_assist_context,
+)
 from gbop_voice_web.deletion import delete_trade_records
 from gbop_voice_web.journal_numbers import journal_number
 from gbop_voice_web.trade_numbers import trade_number, trade_record_id, TRADE_NUMBERING_PROMPT
@@ -333,6 +340,7 @@ def member_context(user_id: int) -> str:
         lines.append("Recent journals: none.")
 
     lines.append(intelligence_context(db, GTOP_GUILD_ID, user_id))
+    lines.append(trade_assist_context(db, GTOP_GUILD_ID, user_id))
     return "\n".join(lines)
 
 
@@ -952,9 +960,12 @@ TOOLS = [
 TOOLS.extend(PHOTO_TOOLS)
 TOOLS.extend(COACH_TOOLS)
 TOOLS.extend(INTELLIGENCE_TOOLS)
+TOOLS.extend(TRADE_ASSIST_TOOLS)
 
 
 def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
+    if name in TRADE_ASSIST_NAMES:
+        return trade_assist_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in INTELLIGENCE_NAMES:
         return intelligence_tool(db, GTOP_GUILD_ID, user_id, name, args)
     if name in COACH_NAMES:
@@ -1010,7 +1021,8 @@ GTOP protocol:
 - Risk violations are WARN + SAVE. Do not refuse to record a real trade merely
   because protocol was broken.
 - Turtle Wick Soup is commonly managed toward roughly 50% of the range.
-- Approximately 80% objective delivery triggers GTOP profit-protection awareness.
+- Do not turn a member's personal binary-event sizing rule into a GTOP-wide law.
+- Approximately 80% objective delivery triggers GTOP profit-protection awareness only when that rule exists in the member's saved plan or current GTOP canon.
 - For 9ate8, a closure outside the selected range is the key invalidation;
   mere stalling is not.
 - Custom plays and entry models are allowed.
@@ -1043,6 +1055,7 @@ BACKEND_PROMPT += (
     + "\n\n" + PHOTO_PROMPT
     + "\n\n" + COACH_PROMPT
     + "\n\n" + INTELLIGENCE_PROMPT
+    + "\n\n" + TRADE_ASSIST_PROMPT
 )
 
 
@@ -1141,8 +1154,9 @@ member allocations override default 60/30/10; do not override their chosen split
 backend's entry preview and ask the user to confirm before deletion. Journal
 deletion also removes its linked trade and execution records.
 Delegate SS persistence/resumption, "what's my plan?" requests, personalized coaching
-focus, and requests to retire/restore a stale coaching theme to the backend. Never invent
-saved weekly structure or a member-specific pattern from the live transcript alone.
+focus, trader dashboard/profile questions, active-trade objective/invalidation/management
+plan updates, and member-reported trade progress to the backend. Never invent saved weekly
+structure, live price progress, or a member-specific pattern from the live transcript alone.
 
 Use the backend journal_number when speaking to the member; never read the internal journal_id as a journal number.
 

@@ -177,7 +177,7 @@ Adds require a valid thesis, an existing position in profit protected at breakev
 At approximately 80% of the predetermined objective, activate Profit Protection Mode: advance the stop into protected profit, commonly +0.20R to +0.30R, respecting logical structure. Do not invent a stop price or claim it was moved.
 The protection trigger is 80%, not 88.7%. No automatic partial at 50% is required; no mechanical breakeven rule replaces protected-profit management. A runner needs a supporting thesis and risk plan.
 88.7 remains a retracement refinement; do not confuse it with objective protection.
-Never bring regular size into a binary event such as FOMC.
+Binary-event sizing constraints are member-specific unless explicitly adopted as a GTOP community rule. Do not treat an individual member's Never Again rule as community canon.
 Record tier, allocated and total risk, entry/thesis invalidation, objective, maximum objective completion before failure, protection activation, MAE/MFE when known, final R, adherence and study note. Do not fabricate missing metrics.
 WARN + SAVE actual executions even when protocol is broken. Never erase or refuse a real trade solely for a risk violation.
 This is the community protocol. Do not apply an individual member's personal compounding allocation or equity-risk percentage as the community default.

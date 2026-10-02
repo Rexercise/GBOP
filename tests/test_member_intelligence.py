@@ -101,6 +101,39 @@ class IntelligenceTests(unittest.TestCase):
             updated_at TEXT NOT NULL,
             PRIMARY KEY (guild_id,user_id,session_date,shift)
         );
+        CREATE TABLE theses (
+            id INTEGER PRIMARY KEY,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            asset TEXT,
+            direction TEXT,
+            play TEXT,
+            session TEXT,
+            status TEXT,
+            final_result_r REAL,
+            created_at TEXT NOT NULL,
+            closed_at TEXT
+        );
+        CREATE TABLE thesis_executions (
+            id INTEGER PRIMARY KEY,
+            thesis_id INTEGER NOT NULL,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            entry_model TEXT,
+            tier INTEGER,
+            risk_r REAL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE member_risk_profiles (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            account_risk_pct REAL,
+            tier1_pct REAL NOT NULL,
+            tier2_pct REAL NOT NULL,
+            tier3_pct REAL NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (guild_id,user_id)
+        );
         """)
 
         conn = self.conn
@@ -283,6 +316,52 @@ class IntelligenceTests(unittest.TestCase):
         self.assertIn("Day Shift begins in 5 minutes", msg)
         self.assertIn("Tuesday's launchpad", msg)
         self.assertIn("planned objective", msg)
+
+    def test_member_dashboard_summarizes_evidence_without_assuming_preferences(self):
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT INTO theses
+            (id,guild_id,user_id,asset,direction,play,session,status,final_result_r,created_at,closed_at)
+            VALUES (1,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                self.guild, self.user, "NAS", "Bearish", "Young Lefty", "day",
+                "CLOSED", 2.0, now, now,
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO thesis_executions
+            (id,thesis_id,guild_id,user_id,entry_model,tier,risk_r,created_at)
+            VALUES (1,1,?,?,?,?,?,?)""",
+            (self.guild, self.user, "Blessed Thief", 3, 0.5, now),
+        )
+        self.conn.execute(
+            """INSERT INTO journals
+            (id,guild_id,user_id,description,rule_adherence,result_r,study_note,created_at,thesis_id)
+            VALUES (1,?,?,?,?,?,?,?,1)""",
+            (
+                self.guild, self.user, "Good read; exit was early.", "partial",
+                2.0, "Let objective work.", now,
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO member_risk_profiles
+            (guild_id,user_id,account_risk_pct,tier1_pct,tier2_pct,tier3_pct,updated_at)
+            VALUES (?,?,?,?,?,?,?)""",
+            (self.guild, self.user, 20.0, 75.0, 25.0, 0.0, now),
+        )
+
+        dashboard = intel.get_member_dashboard(
+            self.db, self.guild, self.user, {"days": 30}
+        )
+
+        self.assertTrue(dashboard["ok"])
+        self.assertEqual(dashboard["performance"]["net_r"], 2.0)
+        self.assertEqual(dashboard["most_traded_plays"][0]["play"], "Young Lefty")
+        self.assertEqual(
+            dashboard["strongest_execution_model"]["entry_model"],
+            "Blessed Thief",
+        )
+        self.assertIn("frequency-based", dashboard["evidence_note"])
 
     def test_default_ss_week_uses_only_completed_week(self):
         friday_morning = datetime(2026, 10, 2, 9, 0, tzinfo=intel.EASTERN)

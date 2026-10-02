@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from gbop_voice_web.trade_photos import schema, STR
+from gbop_voice_web.risk_profiles import get_profile
 
 EASTERN = ZoneInfo("America/New_York")
 HALF_LIFE_DAYS = 14.0
@@ -834,6 +835,188 @@ def get_member_plan(db, guild, user, args=None):
     }
 
 
+
+def _adherence_bucket(value):
+    text = (value or "").strip().lower()
+    if not text:
+        return "unknown"
+    if "partial" in text:
+        return "partial"
+    if text in {"yes", "y", "followed", "full", "true"} or "followed" in text:
+        return "followed"
+    if text in {"no", "n", "violated", "false"} or "violat" in text:
+        return "violated"
+    return "unknown"
+
+
+def get_member_dashboard(db, guild, user, args=None):
+    """Evidence-grounded trader profile from this member's own stored records."""
+    args = args or {}
+    raw_days = args.get("days")
+    days = 30 if raw_days is None else int(raw_days)
+    if days < 1 or days > 3650:
+        raise ValueError("days must be between 1 and 3650.")
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    with db() as conn:
+        trades = conn.execute(
+            """SELECT id,asset,direction,play,session,status,final_result_r,created_at,closed_at
+            FROM theses
+            WHERE guild_id=? AND user_id=? AND created_at>=?
+            ORDER BY id""",
+            (guild, user, cutoff),
+        ).fetchall()
+        executions = conn.execute(
+            """SELECT thesis_id,entry_model,tier,risk_r,created_at
+            FROM thesis_executions
+            WHERE guild_id=? AND user_id=? AND created_at>=?
+            ORDER BY id""",
+            (guild, user, cutoff),
+        ).fetchall()
+        journals = conn.execute(
+            """SELECT rule_adherence,result_r,study_note,created_at
+            FROM journals
+            WHERE guild_id=? AND user_id=? AND created_at>=?
+            ORDER BY id""",
+            (guild, user, cutoff),
+        ).fetchall()
+        risk_flag_count = conn.execute(
+            """SELECT COUNT(*) AS n FROM risk_flags
+            WHERE guild_id=? AND user_id=? AND created_at>=?""",
+            (guild, user, cutoff),
+        ).fetchone()["n"]
+
+    scored = [
+        row for row in trades
+        if row["status"] == "CLOSED" and row["final_result_r"] is not None
+    ]
+    results = [float(row["final_result_r"]) for row in scored]
+
+    play_stats = defaultdict(lambda: {"count": 0, "scored": 0, "net_r": 0.0})
+    for row in trades:
+        play = (row["play"] or "Unspecified").strip() or "Unspecified"
+        play_stats[play]["count"] += 1
+        if row["status"] == "CLOSED" and row["final_result_r"] is not None:
+            play_stats[play]["scored"] += 1
+            play_stats[play]["net_r"] += float(row["final_result_r"])
+
+    most_traded_plays = [
+        {"play": name, **values}
+        for name, values in sorted(
+            play_stats.items(),
+            key=lambda pair: (pair[1]["count"], pair[1]["net_r"]),
+            reverse=True,
+        )[:5]
+    ]
+
+    result_by_trade = {
+        row["id"]: float(row["final_result_r"])
+        for row in scored
+    }
+    model_stats = defaultdict(
+        lambda: {
+            "execution_count": 0,
+            "risk_r": 0.0,
+            "scored_trade_ids": set(),
+            "associated_net_r": 0.0,
+        }
+    )
+    for row in executions:
+        name = (row["entry_model"] or "Unspecified").strip() or "Unspecified"
+        model_stats[name]["execution_count"] += 1
+        model_stats[name]["risk_r"] += float(row["risk_r"] or 0.0)
+        thesis_id = row["thesis_id"]
+        if (
+            thesis_id in result_by_trade
+            and thesis_id not in model_stats[name]["scored_trade_ids"]
+        ):
+            model_stats[name]["scored_trade_ids"].add(thesis_id)
+            model_stats[name]["associated_net_r"] += result_by_trade[thesis_id]
+
+    execution_models = []
+    for name, values in model_stats.items():
+        execution_models.append({
+            "entry_model": name,
+            "execution_count": values["execution_count"],
+            "risk_r": round(values["risk_r"], 4),
+            "scored_trades": len(values["scored_trade_ids"]),
+            "associated_net_r": round(values["associated_net_r"], 4),
+        })
+    execution_models.sort(
+        key=lambda item: (
+            item["associated_net_r"],
+            item["scored_trades"],
+            item["execution_count"],
+        ),
+        reverse=True,
+    )
+
+    adherence = defaultdict(int)
+    for row in journals:
+        adherence[_adherence_bucket(row["rule_adherence"])] += 1
+    known_adherence = adherence["followed"] + adherence["partial"] + adherence["violated"]
+    adherence_rate = (
+        100.0 * adherence["followed"] / known_adherence
+        if known_adherence else None
+    )
+
+    coaching = coaching_profile(db, guild, user)
+    focus = coaching.get("current_focus")
+    ss = get_ss_review(db, guild, user, {})["review"]
+    risk_profile = get_profile(db, guild, user)
+
+    emphasis = (
+        focus["reminder"]
+        if focus
+        else "No recurring coaching issue has enough evidence yet; keep following the member's written plan and collecting clean journal data."
+    )
+
+    return {
+        "ok": True,
+        "window_days": days,
+        "sample": {
+            "trades": len(trades),
+            "closed_scored_trades": len(scored),
+            "executions": len(executions),
+            "journals": len(journals),
+        },
+        "performance": {
+            "wins": sum(1 for value in results if value > 0),
+            "losses": sum(1 for value in results if value < 0),
+            "breakeven": sum(1 for value in results if value == 0),
+            "win_rate_pct": (
+                100.0 * sum(1 for value in results if value > 0) / len(results)
+                if results else None
+            ),
+            "net_r": round(sum(results), 4),
+            "avg_r": round(sum(results) / len(results), 4) if results else None,
+        },
+        "most_traded_plays": most_traded_plays,
+        "execution_models": execution_models[:5],
+        "strongest_execution_model": execution_models[0] if execution_models and execution_models[0]["scored_trades"] else None,
+        "risk": {
+            "profile": risk_profile,
+            "flags_in_window": int(risk_flag_count or 0),
+        },
+        "adherence": {
+            "followed": adherence["followed"],
+            "partial": adherence["partial"],
+            "violated": adherence["violated"],
+            "unknown": adherence["unknown"],
+            "full_adherence_rate_pct": adherence_rate,
+        },
+        "coaching": coaching,
+        "current_ss": ss,
+        "weekly_emphasis": emphasis,
+        "evidence_note": (
+            "Most-traded plays are frequency-based, not assumed preferences. "
+            "Execution-model performance is the closed-trade outcome associated "
+            "with trades containing that model; it is not isolated entry attribution."
+        ),
+    }
+
+
 def intelligence_context(db, guild, user):
     try:
         state = get_member_plan(db, guild, user, {})
@@ -940,6 +1123,12 @@ For "what's my plan?", "what do I need to remember?", or "what did we conclude
 in SS?", use get_member_plan. Combine the saved SS structure with the member's
 current coaching focus; do not substitute generic advice.
 
+For "what do you know about me as a trader?", "show my trader profile/dashboard",
+"what are my strongest setups?", or similar member-profile questions, use
+get_member_dashboard. Treat most-traded plays as measured frequency, not an
+assumed personal preference. Explain sample size and do not overclaim model
+performance when only a few scored trades exist.
+
 The coaching profile is evidence-based and recency-weighted. Old issues decay.
 A member can correct a stale theme by saying it is no longer an issue; use
 set_coaching_theme with active=false. This retires prior evidence, but genuinely
@@ -988,6 +1177,11 @@ INTELLIGENCE_TOOLS = [
         {"session_date": TEXT_NULL, "shift": TEXT_NULL},
     ),
     schema(
+        "get_member_dashboard",
+        "Read an evidence-grounded trader dashboard: recent performance, most-traded plays, execution models, adherence, risk profile, SS, and living coaching focus.",
+        {"days": {"type": ["integer", "null"]}},
+    ),
+    schema(
         "set_coaching_theme",
         "Retire or restore a coaching theme when the member explicitly says it is or is not still relevant.",
         {
@@ -1006,6 +1200,7 @@ def intelligence_tool(db, guild, user, name, args):
         "get_ss_review": get_ss_review,
         "save_ss_review": save_ss_review,
         "get_member_plan": get_member_plan,
+        "get_member_dashboard": get_member_dashboard,
         "set_coaching_theme": set_coaching_theme,
     }
     fn = handlers.get(name)
