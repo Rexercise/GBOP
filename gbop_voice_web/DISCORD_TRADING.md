@@ -31,7 +31,7 @@ requesting member's DMs, subject to their Discord privacy settings.
 | Command | Effect |
 | --- | --- |
 | `/gbop` | Join your channel, or reuse the current connection |
-| `/gbop action:room` | Create/reuse your private Discord room, then join it and run `/gbop` |
+| `/gbop action:room` | Create/reuse your private Discord room; GBOP joins automatically when you join voice |
 | `/gbop action:private` | Open your individual browser voice session; other members can open theirs simultaneously |
 | `/gbop action:pause` | Stop sending your audio and close your AI session |
 | `/gbop action:resume` | Resume your listening in the connected channel |
@@ -39,6 +39,14 @@ requesting member's DMs, subject to their Discord privacy settings.
 | `/gbop action:help` | Show examples and controls privately |
 | `/gbop action:leave` | End the channel session; requires being there or owner access |
 | `/voicehealth` | Existing detailed voice diagnostics |
+
+Private-room members only need to open their room and join voice. No second slash
+command is required, including on later visits through the channel list. Entering
+the room starts listening and streams the owner's speech to OpenAI, as disclosed
+in the room response. Auto-join is restricted to the authorized room owner and
+rooms whose private permissions remain intact. Admin visits, bot joins and
+mute/deafen changes do not start or resume a session. A paused session stays paused
+until the member explicitly resumes or leaves and re-enters their private room.
 
 Pausing one member does not pause others. Leaving closes that member's AI
 session. GBOP disconnects when no human members remain; private rooms persist.
@@ -81,7 +89,7 @@ Rooms are never deleted automatically; a restart does not lose their owner ACL.
    bot access. Discord uses the `manage_roles` permission for this channel setting.
    Creating a room requires Manage Channels; changing its access requires the
    separate permission. Administrator is not needed.
-5. Both members create their rooms, join them, and run `/gbop`. Each room gets an
+5. Both members create their rooms and join them. GBOP joins automatically using an
    available bot. The helper runs only voice transport; the main bot continues
    commands, DMs and scheduled alerts so those are not duplicated.
 

@@ -14,6 +14,7 @@ from typing import Literal
 from gbop_voice_web.voice_runtime import compact_voice_tool_result, VOICE_TRUNCATION
 from gbop_voice_web.discord_controls import (
     VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild, voice_readiness,
+    private_room_autojoin_allowed,
 )
 from db_compat import db
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
@@ -6714,6 +6715,69 @@ async def gbop_voice_health_text(interaction):
     )
 
 
+async def gbop_connect_member_voice(member, channel):
+    """Shared connection path for an explicit command or private-room entry."""
+    async with gbop_voice_control_lock(member.guild.id):
+        current = getattr(getattr(member, 'voice', None), 'channel', None)
+        if current is None or current.id != channel.id:
+            raise RuntimeError("You left the voice channel before GBOP could join.")
+        owner = private_room_owner(channel)
+        if owner is not None and owner != member.id:
+            raise RuntimeError("This is another member's private GBOP room. Use `/gbop action:room` for yours.")
+        voice_guild = pick_voice_guild(GBOP_VOICE_CLIENTS, member.guild.id, channel.id)
+        if voice_guild is None:
+            raise RuntimeError("All GBOP Discord voice slots are in use. Try again later or use browser voice.")
+        channel = voice_guild.get_channel(channel.id)
+        if channel is None:
+            raise RuntimeError("Your room is not visible to the available voice bot yet.")
+        permissions = channel.permissions_for(voice_guild.me)
+        if not (permissions.view_channel and permissions.connect and permissions.speak):
+            raise RuntimeError("I need View Channel, Connect and Speak permissions in your voice channel.")
+        vc = voice_guild.voice_client
+        if vc is not None and not isinstance(vc, voice_recv.VoiceRecvClient):
+            await vc.disconnect(force=True)
+            await GBOP_REALTIME_MANAGER.close_channel(channel.id)
+            vc = None
+        if vc is None:
+            vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
+        # Voice handshakes can take seconds; don't start listening after a quick exit.
+        if not in_voice_channel(member, vc):
+            if not any(not person.bot for person in channel.members):
+                await vc.disconnect(force=True)
+                await GBOP_REALTIME_MANAGER.close_channel(channel.id)
+            raise RuntimeError("You left the voice channel before GBOP could start.")
+        GBOP_REALTIME_MANAGER.paused.discard((member.guild.id, member.id))
+        if not vc.is_listening():
+            gbop_start_realtime_listener(vc)
+        session = await GBOP_REALTIME_MANAGER.get_session(member, vc, asyncio.get_running_loop())
+        return channel, session
+
+
+async def gbop_autojoin_private_room(member, channel):
+    if member.guild.id != GTOP_GUILD_ID or not private_room_autojoin_allowed(member, channel):
+        return
+    allowed, _ = await asyncio.to_thread(gbop_voice_member_allowed, member)
+    if not allowed:
+        return
+    try:
+        channel, session = await gbop_connect_member_voice(member, channel)
+        if session is not None:
+            await asyncio.wait_for(session.ready.wait(), timeout=12)
+            print("[GBOP-AUTOJOIN] Private-room voice ready.", flush=True)
+    except Exception as exc:
+        print("[GBOP-AUTOJOIN] Private-room start failed:", type(exc).__name__, str(exc), flush=True)
+        # Only notify the requesting room owner while they are still there.
+        current = getattr(getattr(member, 'voice', None), 'channel', None)
+        if current and current.id == channel.id:
+            try:
+                message = ("GBOP is in your room but the AI connection is still starting. "
+                           "Check `/gbop action:status`." if isinstance(exc, asyncio.TimeoutError)
+                           else f"GBOP could not auto-join your private room: {exc}")
+                await member.send(message, view=gbop_private_voice_view(channel))
+            except Exception:
+                pass
+
+
 @tree.command(
     name="voice",
     description="Start GBOP's live Realtime AI in your current voice channel.",
@@ -6737,39 +6801,7 @@ async def voice(interaction: discord.Interaction):
         return
 
     try:
-        async with gbop_voice_control_lock(interaction.guild.id):
-            owner = private_room_owner(channel)
-            if owner is not None and owner != member.id:
-                await interaction.followup.send(
-                    "This is another member's private GBOP room. Use `/gbop action:room` for yours.",
-                    ephemeral=True)
-                return
-            voice_guild = pick_voice_guild(GBOP_VOICE_CLIENTS, interaction.guild.id, channel.id)
-            if voice_guild is None:
-                await interaction.followup.send(
-                    "All GBOP Discord voice slots are in use. Your existing sessions won't be interrupted. "
-                    "Try again later or open your private browser session below.",
-                    view=gbop_private_voice_view(), ephemeral=True)
-                return
-            channel = voice_guild.get_channel(channel.id)
-            vc = voice_guild.voice_client
-            permissions = channel.permissions_for(voice_guild.me)
-            if not (permissions.view_channel and permissions.connect and permissions.speak):
-                await interaction.followup.send(
-                    "I need View Channel, Connect and Speak permissions in your voice channel.",
-                    ephemeral=True)
-                return
-            if vc is not None and not isinstance(vc, voice_recv.VoiceRecvClient):
-                await vc.disconnect(force=True)
-                await GBOP_REALTIME_MANAGER.close_channel(channel.id)
-                vc = None
-            if vc is None:
-                vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
-            GBOP_REALTIME_MANAGER.paused.discard((interaction.guild.id, member.id))
-            if not vc.is_listening():
-                gbop_start_realtime_listener(vc)
-            voice_member = voice_guild.get_member(member.id)
-            session = await GBOP_REALTIME_MANAGER.get_session(voice_member or member, vc, asyncio.get_running_loop())
+        channel, session = await gbop_connect_member_voice(member, channel)
 
         if session is None:
             await interaction.followup.send(
@@ -6792,6 +6824,7 @@ async def voice(interaction: discord.Interaction):
                 "❌ GBOP could not start Realtime voice.\n"
                 f"`{type(exc).__name__}: {exc}`"
             ),
+            view=gbop_private_voice_view(),
             ephemeral=True,
         )
         return
@@ -7003,8 +7036,10 @@ async def gbop_private_room(interaction):
                 view=gbop_private_voice_view(room), ephemeral=True)
             return
     await interaction.followup.send(
-        f"Your room is {room.mention}. **Open it below, join voice, then run `/gbop`** to start. "
+        f"Your room is {room.mention}. **Open it below and join voice—GBOP joins you automatically.** "
         "The room stays available for your next session. Server administrators can still access it.\n"
+        "Entering your private room starts GBOP listening and sends your speech to OpenAI. "
+        "Use `/gbop action:pause` to pause or leave the room to end your session.\n"
         "Discord and browser voice use your same member profile, saved trades and journals. "
         "Use one voice connection at a time for yourself; another member can use theirs independently.",
         view=gbop_private_voice_view(room), ephemeral=True)
@@ -7073,6 +7108,9 @@ async def on_voice_state_update(member, before, after):
                 channel_id = channel.id
                 await asyncio.wait_for(vc.disconnect(force=True), timeout=5)
                 await GBOP_REALTIME_MANAGER.close_channel(channel_id)
+
+    if after.channel is not None:
+        await gbop_autojoin_private_room(member, after.channel)
 
 
 @tree.command(
