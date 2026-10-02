@@ -67,3 +67,22 @@ def pick_voice_guild(clients, guild_id, channel_id):
         if vc is None:
             available.append(guild)
     return available[0] if available else None
+
+
+def voice_readiness(clients, guild_id):
+    """Credential-free gateway and server readiness for operations logs."""
+    slots = []
+    for number, bot in enumerate(clients, 1):
+        guild = bot.get_guild(guild_id)
+        ready = bool(bot.is_ready() and guild and not getattr(guild, 'unavailable', False))
+        permissions = getattr(getattr(guild, 'me', None), 'guild_permissions', None)
+        slots.append({
+            'slot': number,
+            'ready_here': ready,
+            'in_server': guild is not None,
+            'voice_permissions': all(bool(getattr(permissions, name, False))
+                                     for name in ('view_channel', 'connect', 'speak')),
+            'manage_channels': bool(getattr(permissions, 'manage_channels', False)),
+        })
+    return {'configured': len(slots), 'ready_here': sum(slot['ready_here'] for slot in slots),
+            'slots': slots}

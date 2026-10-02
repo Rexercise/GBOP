@@ -87,7 +87,7 @@ class PrivateVoiceTests(unittest.IsolatedAsyncioTestCase):
                    create_voice_channel=AsyncMock(return_value=room))
         interaction = NS(guild=guild, user=owner, followup=NS(send=AsyncMock()))
         ns = dict(asyncio=asyncio, re=__import__('re'), private_room_owner=private_room_owner,
-                  gbop_voice_control_lock=lambda _: asyncio.Lock(), gbop_private_voice_view=lambda: None,
+                  gbop_voice_control_lock=lambda _: asyncio.Lock(), gbop_private_voice_view=lambda *args: None,
                   discord=NS(PermissionOverwrite=lambda **kw: NS(**kw)),
                   GBOP_VOICE_CLIENTS=[NS(user=primary), NS(user=helper)])
         await code('gbop_private_room', ns)(interaction)

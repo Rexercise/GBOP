@@ -12,7 +12,7 @@ import json
 import asyncio
 from typing import Literal
 from gbop_voice_web.discord_controls import (
-    VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild,
+    VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild, voice_readiness,
 )
 from db_compat import db
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
@@ -6891,13 +6891,20 @@ async def voiceoff(interaction: discord.Interaction):
     )
 
 
-def gbop_private_voice_view():
+def gbop_private_voice_view(room=None):
     view = discord.ui.View(timeout=300)
-    room = discord.ui.Button(label="My private Discord room", style=discord.ButtonStyle.primary)
-    async def open_room(interaction):
-        await gbop_control.callback(interaction, action="room")
-    room.callback = open_room
-    view.add_item(room)
+    if room is not None:
+        # Navigation remains usable after the five-minute callback view expires.
+        view.add_item(discord.ui.Button(
+            label="Open my private Discord room", style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{room.guild.id}/{room.id}",
+        ))
+    else:
+        create_room = discord.ui.Button(label="Create my private Discord room", style=discord.ButtonStyle.primary)
+        async def open_room(interaction):
+            await gbop_control.callback(interaction, action="room")
+        create_room.callback = open_room
+        view.add_item(create_room)
     view.add_item(discord.ui.Button(
         label="Open my private GBOP session", style=discord.ButtonStyle.link,
         url="https://gbop.onrender.com/",
@@ -6945,11 +6952,11 @@ async def gbop_private_room(interaction):
         else:
             await room.edit(overwrites=overwrites, reason="Member refreshed their private GBOP room")
     await interaction.followup.send(
-        f"Your room is {room.mention}. **Join it, then run `/gbop`** to start voice. "
+        f"Your room is {room.mention}. **Open it below, join voice, then run `/gbop`** to start. "
         "The room stays available for your next session. Server administrators can still access it.\n"
         "Discord and browser voice use your same member profile, saved trades and journals. "
         "Use one voice connection at a time for yourself; another member can use theirs independently.",
-        view=gbop_private_voice_view(), ephemeral=True)
+        view=gbop_private_voice_view(room), ephemeral=True)
 
 
 @tree.command(name="gbop", description="Open private browser voice, call GBOP into a channel, or get help.", guild=GUILD)
@@ -7085,6 +7092,18 @@ async def gbop_tree_error(
         pass
 
 
+async def gbop_voice_readiness_monitor():
+    # A configured token alone does not prove the helper joined this server.
+    # Inspect cached state only; never make API calls or print credentials/audio.
+    previous = None
+    while True:
+        snapshot = voice_readiness(GBOP_VOICE_CLIENTS, GTOP_GUILD_ID)
+        if snapshot != previous:
+            print("[GBOP-VOICE-READINESS] " + json.dumps(snapshot, sort_keys=True), flush=True)
+            previous = snapshot
+        await asyncio.sleep(10)
+
+
 async def gbop_run_clients():
     async def run_helper():
         helper = GBOP_VOICE_CLIENTS[1]
@@ -7097,6 +7116,7 @@ async def gbop_run_clients():
             await helper.close()
 
     helper_task = asyncio.create_task(run_helper()) if len(GBOP_VOICE_CLIENTS) > 1 else None
+    readiness_task = asyncio.create_task(gbop_voice_readiness_monitor())
     try:
         await client.start(DISCORD_TOKEN)
     finally:
@@ -7104,6 +7124,8 @@ async def gbop_run_clients():
         if helper_task:
             helper_task.cancel()
             await asyncio.gather(helper_task, return_exceptions=True)
+        readiness_task.cancel()
+        await asyncio.gather(readiness_task, return_exceptions=True)
 
 
 if __name__ == "__main__":
