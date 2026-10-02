@@ -180,7 +180,8 @@ class ForexNewsTests(unittest.TestCase):
         self.assertIn("8:30 AM ET", message)
         self.assertIn("USD", message)
         self.assertIn("CPI m/m", message)
-        self.assertIn("Never bring regular size into a binary event", message)
+        self.assertIn("News-risk reminder", message)
+        self.assertNotIn("Never bring regular size into a binary event", message)
 
 
 if __name__ == "__main__":
