@@ -210,9 +210,14 @@ def default_ss_week_start(now_eastern=None) -> str:
     now_eastern = now_eastern or datetime.now(EASTERN)
     today = now_eastern.date()
     current_monday = _monday(today)
-    # Friday after the trading week, Saturday, and Sunday review the current week.
-    # Monday-Thursday default to the most recently completed week.
-    if today.weekday() >= 4:
+    # SS reviews a completed weekly candle. Before the typical Friday 5 PM
+    # New York weekly close, the most recently completed week is still the
+    # prior one. Saturday/Sunday (and Friday after 5 PM) use the current week.
+    week_is_complete = (
+        today.weekday() >= 5
+        or (today.weekday() == 4 and now_eastern.hour >= 17)
+    )
+    if week_is_complete:
         return current_monday.isoformat()
     return (current_monday - timedelta(days=7)).isoformat()
 
@@ -643,17 +648,33 @@ def get_ss_review(db, guild, user, args=None):
                 (guild, user, _clean_asset(asset)),
             ).fetchone()
         else:
+            target_week = default_ss_week_start()
             row = conn.execute(
                 """SELECT * FROM gbop_ss_weekly_reviews
-                WHERE guild_id=? AND user_id=?
-                ORDER BY week_start DESC, updated_at DESC LIMIT 1""",
-                (guild, user),
+                WHERE guild_id=? AND user_id=? AND week_start=?
+                ORDER BY updated_at DESC LIMIT 1""",
+                (guild, user, target_week),
             ).fetchone()
 
+    target_week = (
+        date.fromisoformat(str(week_start)).isoformat()
+        if week_start else
+        (None if asset else default_ss_week_start())
+    )
     if row is None:
-        return {"ok": True, "review": None, "next_step": "Start with the completed weekly candle."}
+        return {
+            "ok": True,
+            "review": None,
+            "target_week_start": target_week,
+            "next_step": "Start with the completed weekly candle.",
+        }
     review = _rowdict(row)
-    return {"ok": True, "review": review, "next_step": _next_ss_step(review)}
+    return {
+        "ok": True,
+        "review": review,
+        "target_week_start": target_week or review.get("week_start"),
+        "next_step": _next_ss_step(review),
+    }
 
 
 def set_coaching_theme(db, guild, user, args):
