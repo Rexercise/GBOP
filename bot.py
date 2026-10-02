@@ -243,8 +243,10 @@ GBOP_VOICE_HELPER_TOKEN = os.getenv("GBOP_VOICE_HELPER_TOKEN", "").strip()
 GBOP_VOICE_CLIENTS = [client]
 if GBOP_VOICE_HELPER_TOKEN:
     if GBOP_VOICE_HELPER_TOKEN == DISCORD_TOKEN:
-        raise RuntimeError("GBOP voice helper must use a different Discord bot identity.")
-    GBOP_VOICE_CLIENTS.append(discord.Client(intents=intents))
+        logging.error("GBOP second voice slot disabled: helper must use a distinct bot identity.")
+        GBOP_VOICE_HELPER_TOKEN = ""
+    else:
+        GBOP_VOICE_CLIENTS.append(discord.Client(intents=intents))
 
 
 def gbop_voice_connections(guild_id):
