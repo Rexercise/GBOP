@@ -40,7 +40,7 @@ def asset_name(value):
 
 def authorized(header):
     secret = os.getenv('GBOP_MARKET_BRIDGE_TOKEN', '')
-    return bool(len(secret) >= 32 and header and hmac.compare_digest(header, 'Bearer ' + secret))
+    return bool(len(secret) >= 32 and isinstance(header, str) and header.isascii() and secret.isascii() and hmac.compare_digest(header, 'Bearer ' + secret))
 
 
 def number(value):
@@ -182,6 +182,8 @@ def session_review(bars, day, shift):
                     if later['close'] > high or later['close'] < low:
                         result['status'] = 'invalidated_by_hourly_close'
                         result['invalidating_hour_ny'] = h
+                        result['direction'] = None
+                        result['primary_target'] = None
                         break
         results.append(result)
     return {'date_ny': day.isoformat(), 'shift': shift, 'timezone': 'America/New_York', 'observations': results,

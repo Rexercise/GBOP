@@ -31,3 +31,31 @@ Resume: `Start-ScheduledTask -TaskName 'GBOP Market Bridge'`.
 Remove task: `Unregister-ScheduledTask -TaskName 'GBOP Market Bridge'`.
 
 The feed is shared market data for authorized GTOP members, never shared account data. Ingestion requires the bridge token; HTTP reads reuse Discord member authentication. Supabase's public Data API roles have no access to the table. Schema creation is serialized across GBOP's web and Discord startup.
+
+## Repository completion and activation checklist
+
+The collector, bounded token-authenticated ingestion, shared market storage,
+member-authenticated price reads, and market tools for Discord and web are wired
+in the repository. Configuration checks reject unsupported asset keys and malformed
+endpoints/tokens before connecting to MT5. Oversized multi-asset captures split into
+bounded uploads; partial upload failures are retried on the next capture. Config
+permissions are restricted before installation or the first upload.
+
+Repository verification: `python -m unittest discover -s tests` and
+`python -m compileall -q bot.py gbop_voice_web market_bridge`.
+Tests use mocked MT5/HTTP and a local database; they do not establish a live feed.
+
+Activation still requires approval/access outside GitHub:
+
+1. Approve merging and deploying the reviewed changes to the existing GBOP service.
+2. Configure the private receiver token on that service (same token as Windows).
+3. Provide access to an existing eligible Windows host; no VM or paid resource is
+   provisioned by this repository. Install MT5/Python, sign into MT5 using investor
+   access, and verify the exact broker symbols.
+4. Run the Windows installer and compare a fresh GBOP quote to MT5. Test the task
+   after disconnecting RDP and again after reboot/login. Windows task execution,
+   broker connectivity, receiver database permissions, and end-to-end live quotes
+   must be verified on the actual host/service.
+
+Until these checks succeed, describe the bridge as implemented, awaiting activation.
+Do not describe it as live or unattended after reboot.

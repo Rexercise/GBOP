@@ -10,18 +10,25 @@ from urllib.request import Request
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent
+ASSETS = {'NAS100', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
 
 
 def load_config(path):
     config = json.loads(Path(path).read_text(encoding='utf-8-sig'))
     url = urlparse(config['endpoint'])
-    if url.scheme != 'https' or url.username or url.password or url.query or url.fragment or url.path != '/api/market/ingest':
+    if not url.hostname or url.scheme != 'https' or url.username or url.password or url.query or url.fragment or url.path != '/api/market/ingest':
         raise ValueError('Use the HTTPS GBOP /api/market/ingest endpoint.')
-    if len(config.get('token', '')) < 32:
+    token = config.get('token', '')
+    if not isinstance(token, str) or len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
         raise ValueError('Bridge token must contain at least 32 characters.')
     symbols = config.get('symbols', {})
     if not isinstance(symbols, dict) or not 1 <= len(symbols) <= 8:
         raise ValueError('Configure 1–8 exact broker symbols.')
+    for asset, symbol in symbols.items():
+        if asset not in ASSETS:
+            raise ValueError('Use canonical GBOP asset names in symbols.')
+        if not isinstance(symbol, str) or not 1 <= len(symbol) <= 40 or not all(c.isalnum() or c in '._-#' for c in symbol):
+            raise ValueError('Configure exact broker symbol names.')
     return config
 
 
@@ -51,7 +58,18 @@ def collect(mt5, symbols, now=None):
 
 
 def send(config, payload):
-    request = Request(config['endpoint'], data=json.dumps(payload, separators=(',', ':')).encode(),
+    encoded = json.dumps(payload, separators=(',', ':'), allow_nan=False).encode()
+    if len(encoded) > 2_000_000:
+        items = payload['instruments']
+        if len(items) < 2:
+            raise ValueError('Single instrument exceeds receiver payload limit.')
+        midpoint = len(items) // 2
+        accepted = []
+        for part in (items[:midpoint], items[midpoint:]):
+            result = send(config, dict(captured_at=payload['captured_at'], instruments=part))
+            accepted.extend(result['accepted_assets'])
+        return dict(ok=True, accepted_assets=accepted, captured_at=payload['captured_at'])
+    request = Request(config['endpoint'], data=encoded,
                       headers={'Authorization': 'Bearer ' + config['token'], 'Content-Type': 'application/json'}, method='POST')
     # Reject redirects so a moved endpoint cannot receive the bridge credential.
     from urllib.request import build_opener, HTTPRedirectHandler
