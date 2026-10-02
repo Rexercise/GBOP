@@ -3,6 +3,9 @@ import copy
 from datetime import datetime
 import os
 import sqlite3
+import json
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -10,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from gbop_voice_web import market_data as market
 from gbop_voice_web.market_routes import market_router
-from market_bridge.bridge import collect
+from market_bridge.bridge import collect, load_config, send
 
 
 class MarketTests(unittest.TestCase):
@@ -146,6 +149,55 @@ class MarketTests(unittest.TestCase):
         payload=collect(FakeMT5(),{'NAS100':'USTECm'},self.now)
         market.validate_payload(payload,self.now)
         self.assertEqual(len(payload['instruments'][0]['bars']),1)
+
+    def test_bad_auth_is_rejected_without_exception(self):
+        with patch.dict(os.environ, {'GBOP_MARKET_BRIDGE_TOKEN': 'x'*40}):
+            for header in (None, 123, 'Bearer ' + 'é'*40, 'Bearer wrong'):
+                self.assertFalse(market.authorized(header))
+
+    def test_config_rejects_bad_endpoint_token_and_mapping(self):
+        config = dict(endpoint='https://gbop.onrender.com/api/market/ingest', token='x'*40,
+                      symbols={'NAS100': 'USTECm'})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps(config))
+            self.assertEqual(load_config(path), config)
+            for change in [dict(endpoint='https:///api/market/ingest'), dict(token=123),
+                           dict(token='é'*40), dict(token='x'*39+'\n'),
+                           dict(symbols={'NAS': 'USTECm'}), dict(symbols={'NAS100': ''})]:
+                path.write_text(json.dumps(dict(config, **change)))
+                with self.assertRaises(ValueError): load_config(path)
+
+    def test_later_invalidation_removes_active_direction_and_target(self):
+        bars = self.bars()
+        start = bars[-1]['time'] + 300
+        bars.extend(dict(time=start+n*300, open=100, high=115, low=95, close=114) for n in range(12))
+        for result in market.session_review(bars, '2026-10-02', 'day')['observations']:
+            self.assertEqual(result['status'], 'invalidated_by_hourly_close')
+            self.assertEqual(result['invalidating_hour_ny'], 10)
+            self.assertIsNone(result['direction'])
+            self.assertIsNone(result['primary_target'])
+
+    def test_large_capture_splits_without_losing_instruments(self):
+        class Opener:
+            def open(s, request, timeout):
+                self.assertLessEqual(len(request.data), market.MAX_BYTES)
+                data = json.loads(request.data)
+                response = SimpleNamespace()
+                response.read = lambda: json.dumps(dict(ok=True, accepted_assets=[i['asset'] for i in data['instruments']])).encode()
+                return contextlib.nullcontext(response)
+        items = [dict(asset=asset, padding='x'*600000) for asset in sorted(market.ASSETS)]
+        with patch('urllib.request.build_opener', return_value=Opener()):
+            result = send(dict(endpoint='https://gbop.onrender.com/api/market/ingest', token='x'*40),
+                          dict(captured_at=self.now, instruments=items))
+        self.assertEqual(result['accepted_assets'], sorted(market.ASSETS))
+
+    def test_send_rejects_nonfinite_prices_before_network(self):
+        data = copy.deepcopy(self.payload)
+        data['instruments'][0]['bid'] = float('nan')
+        with patch('urllib.request.build_opener') as opener:
+            with self.assertRaises(ValueError): send({}, data)
+            opener.assert_not_called()
 
 
 if __name__=='__main__': unittest.main()
