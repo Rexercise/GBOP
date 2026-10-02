@@ -10,6 +10,8 @@ import threading
 import re
 import json
 import asyncio
+from typing import Literal
+from gbop_voice_web.discord_controls import VOICE_HELP, summon_requested, in_voice_channel
 from db_compat import db
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
 from gbop_voice_web.member_intelligence import (
@@ -5556,6 +5558,11 @@ async def on_message(message: discord.Message):
 
     content = content.strip()
 
+    if not is_dm and summon_requested(content):
+        await message.reply("Join your voice channel, then use `/gbop` to call me in. "
+                            "Use `/gbop action:help` for hands-free trading examples.")
+        return
+
     if not content and not message.attachments:
         await message.reply(
             "I'm here. Talk to me normally about your GTOP trade, "
@@ -5639,6 +5646,11 @@ GBOP_RT_SESSIONS = {}
 GBOP_RT_OUTPUT_MANAGERS = {}
 GBOP_RT_SINKS = {}
 GBOP_RT_LOCKS = {}
+GBOP_VOICE_CONTROL_LOCKS = {}
+
+
+def gbop_voice_control_lock(guild_id):
+    return GBOP_VOICE_CONTROL_LOCKS.setdefault(guild_id, asyncio.Lock())
 _GBOP_VOICE_ACCESS_CACHE = {}
 _GBOP_VOICE_ACCESS_CACHE_TTL = 15.0
 _GBOP_VOICE_ACCESS_CACHE_LOCK = threading.Lock()
@@ -5957,6 +5969,11 @@ class GBOPRealtimeSession:
             + "- Example: one inside bar before manipulation = Variant 4; two or more = Variant 5.\n"
             + "- Skip filler preambles for direct answers. Do not say 'hmm', 'let me think', or narrate internal processing.\n"
             + "- Speak naturally. Do not read markdown syntax, headings, tables, or long lists aloud.\n"
+            + "- While the member is trading, keep acknowledgements brief and ask only for missing required trade details. Never invent fills, prices, risk, or results.\n"
+            + "- Use the market tools for current/historical prices and CRT evidence. Use the member tools for their trades, journal, risk profile and recaps.\n"
+            + "- You log member-reported executions; you cannot place broker orders or see their live positions.\n"
+            + "- Everyone in this Discord channel can hear you. Do not volunteer private journal history or personal risk details; use the DM delivery tools when requested.\n"
+            + "- For photo input, tell the member to DM the image to GBOP. For pausing listening, tell them to use /gbop action:pause; resume uses /gbop action:resume.\n"
             + "- If exactly one fact is missing for an action, ask only for that fact.\n"
             + "- If audio is unclear, ask one short clarification instead of guessing.\n"
             + "- Never claim a database action occurred unless its tool returned success.\n"
@@ -6333,6 +6350,7 @@ class GBOPRealtimeSession:
 
         while not self.closed:
             self.ready.clear()
+            receiver = sender = None
 
             try:
                 print("[GBOP-RT] connecting:", self.member, GBOP_REALTIME_MODEL)
@@ -6377,6 +6395,11 @@ class GBOPRealtimeSession:
                 backoff = min(8.0, backoff * 2)
 
             finally:
+                children = [task for task in (receiver, sender) if task is not None]
+                for task in children:
+                    task.cancel()
+                if children:
+                    await asyncio.gather(*children, return_exceptions=True)
                 ws = self.websocket
                 self.websocket = None
                 self.ready.clear()
@@ -6409,12 +6432,15 @@ class GBOPRealtimeSession:
 class GBOPRealtimeManager:
     def __init__(self):
         self.sessions = {}
+        self.paused = set()
 
     def key(self, member):
         return (member.guild.id, member.id)
 
     async def get_session(self, member, voice_client, loop):
         key = self.key(member)
+        if key in self.paused or not in_voice_channel(member, voice_client):
+            return None
         session = self.sessions.get(key)
 
         if session is not None and not session.closed:
@@ -6427,6 +6453,8 @@ class GBOPRealtimeManager:
             GBOP_RT_LOCKS[key] = lock
 
         async with lock:
+            if key in self.paused or not in_voice_channel(member, voice_client):
+                return None
             session = self.sessions.get(key)
 
             if session is not None and not session.closed:
@@ -6461,9 +6489,24 @@ class GBOPRealtimeManager:
             return
 
         session = await self.get_session(member, voice_client, loop)
-        session.enqueue_audio(pcm24)
+        if session is not None and self.key(member) not in self.paused:
+            session.enqueue_audio(pcm24)
+
+    async def close_member(self, member):
+        key = self.key(member)
+        session = self.sessions.pop(key, None)
+        manager = GBOP_RT_OUTPUT_MANAGERS.get(member.guild.id)
+        if session is not None:
+            if manager is not None and manager.session is session:
+                await manager.interrupt()
+            await session.close()
+
+    async def pause_member(self, member):
+        self.paused.add(self.key(member))
+        await self.close_member(member)
 
     async def close_guild(self, guild_id: int):
+        self.paused.difference_update({key for key in self.paused if key[0] == guild_id})
         keys = [key for key in self.sessions if key[0] == guild_id]
 
         for key in keys:
@@ -6621,18 +6664,39 @@ async def voice(interaction: discord.Interaction):
         return
 
     try:
-        vc = interaction.guild.voice_client
+        async with gbop_voice_control_lock(interaction.guild.id):
+            vc = interaction.guild.voice_client
+            if vc and vc.channel.id != channel.id:
+                await interaction.followup.send(
+                    f"I'm already in {vc.channel.mention}. Join me there; "
+                    "I won't interrupt that channel's session.", ephemeral=True)
+                return
+            permissions = channel.permissions_for(interaction.guild.me)
+            if not (permissions.view_channel and permissions.connect and permissions.speak):
+                await interaction.followup.send(
+                    "I need View Channel, Connect and Speak permissions in your voice channel.",
+                    ephemeral=True)
+                return
+            if vc is not None and not isinstance(vc, voice_recv.VoiceRecvClient):
+                await vc.disconnect(force=True)
+                await GBOP_REALTIME_MANAGER.close_guild(interaction.guild.id)
+                vc = None
+            if vc is None:
+                vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
+            GBOP_REALTIME_MANAGER.paused.discard((interaction.guild.id, member.id))
+            if not vc.is_listening():
+                gbop_start_realtime_listener(vc)
+            session = await GBOP_REALTIME_MANAGER.get_session(member, vc, asyncio.get_running_loop())
 
-        if vc is not None and not isinstance(vc, voice_recv.VoiceRecvClient):
-            await vc.disconnect(force=True)
-            vc = None
-
-        if vc is None:
-            vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
-        elif vc.channel.id != channel.id:
-            await vc.move_to(channel)
-
-        gbop_start_realtime_listener(vc)
+        if session is not None:
+            try:
+                await asyncio.wait_for(session.ready.wait(), timeout=12)
+            except asyncio.TimeoutError:
+                await interaction.followup.send(
+                    "I'm in your channel, but the AI connection isn't ready yet. "
+                    "Use `/gbop action:status` to check or `/voicehealth` for diagnostics. "
+                    "Text and slash commands remain available.", ephemeral=True)
+                return
 
     except Exception as exc:
         await interaction.followup.send(
@@ -6652,7 +6716,10 @@ async def voice(interaction: discord.Interaction):
             "is streamed to OpenAI in real time. GBOP does not intentionally "
             "save the raw audio.\n\n"
             "Speak naturally—no wake word is needed. If GBOP is talking, "
-            "just interrupt it by speaking."
+            "just interrupt it by speaking.\n"
+            "Use `/gbop action:pause` to pause your listening, "
+            "`/gbop action:resume` to return, or `/gbop action:help` for examples. "
+            "Everyone here can hear voice replies; use DMs for private details."
         ),
         ephemeral=True,
     )
@@ -6677,6 +6744,11 @@ async def voiceoff(interaction: discord.Interaction):
             "GBOP is not connected to voice.",
             ephemeral=True,
         )
+        return
+
+    if not is_owner(interaction.user) and not in_voice_channel(interaction.user, vc):
+        await interaction.followup.send(
+            "Join GBOP's voice channel before ending its session.", ephemeral=True)
         return
 
     shutdown_notes = []
@@ -6756,6 +6828,57 @@ async def voiceoff(interaction: discord.Interaction):
     )
 
 
+@tree.command(name="gbop", description="Call GBOP into voice, pause/resume your audio, or get help.", guild=GUILD)
+async def gbop_control(
+    interaction: discord.Interaction,
+    action: Literal["join", "pause", "resume", "status", "leave", "help"] = "join",
+):
+    if action in {"join", "resume"}:
+        await voice.callback(interaction)
+        return
+    if action == "leave":
+        await voiceoff.callback(interaction)
+        return
+    if not await require_member(interaction):
+        return
+    await interaction.response.defer(ephemeral=True, thinking=False)
+    if action == "help":
+        await interaction.followup.send(VOICE_HELP, ephemeral=True)
+    elif action == "pause":
+        await GBOP_REALTIME_MANAGER.pause_member(interaction.user)
+        await interaction.followup.send(
+            "Your GBOP listening is paused. Other members can continue. "
+            "Use `/gbop action:resume` when ready.", ephemeral=True)
+    else:
+        vc = interaction.guild.voice_client
+        session = GBOP_REALTIME_MANAGER.sessions.get((interaction.guild.id, interaction.user.id))
+        paused = (interaction.guild.id, interaction.user.id) in GBOP_REALTIME_MANAGER.paused
+        status = "paused" if paused else "ready" if session and session.ready.is_set() else "not connected yet"
+        where = vc.channel.mention if vc and vc.is_connected() else "not in a voice channel"
+        await interaction.followup.send(
+            f"GBOP: {where}. Your voice session: **{status}**.\n"
+            "Use `/gbop` to connect, or `/gbop action:help` for examples.", ephemeral=True)
+
+
+@client.event
+async def on_voice_state_update(member, before, after):
+    if before.channel == after.channel:
+        return
+    if member.bot:
+        if client.user and member.id == client.user.id and after.channel is None:
+            sink = GBOP_RT_SINKS.pop(member.guild.id, None)
+            if sink:
+                sink.cleanup()
+            await GBOP_REALTIME_MANAGER.close_guild(member.guild.id)
+        return
+    async with gbop_voice_control_lock(member.guild.id):
+        await GBOP_REALTIME_MANAGER.close_member(member)
+        vc = member.guild.voice_client
+        if vc and not any(not person.bot for person in vc.channel.members):
+            await asyncio.wait_for(vc.disconnect(force=True), timeout=5)
+            await GBOP_REALTIME_MANAGER.close_guild(member.guild.id)
+
+
 @tree.command(
     name="voicehealth",
     description="Show GBOP Realtime voice diagnostics.",
@@ -6827,4 +6950,3 @@ async def gbop_tree_error(
 if __name__ == "__main__":
     print("[GBOP-STARTUP] bot.py launched; connecting to Discord.")
     client.run(DISCORD_TOKEN)
-
