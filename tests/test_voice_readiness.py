@@ -15,6 +15,19 @@ def bot(*, ready=True, in_server=True, unavailable=False, speak=True, manage=Fal
 
 
 class VoiceReadinessTests(unittest.IsolatedAsyncioTestCase):
+    def test_existing_room_button_opens_exact_room_without_a_callback(self):
+        class View:
+            def __init__(self, **kwargs):
+                self.children = []
+            def add_item(self, item):
+                self.children.append(item)
+        ns = dict(discord=NS(ui=NS(View=View, Button=lambda **kwargs: NS(**kwargs)),
+                             ButtonStyle=NS(link=5, primary=1)))
+        view = code('gbop_private_voice_view', ns)(NS(guild=NS(id=123), id=456))
+        self.assertEqual(view.children[0].url, 'https://discord.com/channels/123/456')
+        self.assertFalse(hasattr(view.children[0], 'callback'))
+        self.assertEqual(view.children[1].url, 'https://gbop.onrender.com/')
+
     def test_configured_is_not_ready_until_connected_to_the_server(self):
         state = voice_readiness([bot(manage=True), bot(ready=False)], 123)
         self.assertEqual(state['configured'], 2)

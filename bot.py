@@ -6891,13 +6891,20 @@ async def voiceoff(interaction: discord.Interaction):
     )
 
 
-def gbop_private_voice_view():
+def gbop_private_voice_view(room=None):
     view = discord.ui.View(timeout=300)
-    room = discord.ui.Button(label="My private Discord room", style=discord.ButtonStyle.primary)
-    async def open_room(interaction):
-        await gbop_control.callback(interaction, action="room")
-    room.callback = open_room
-    view.add_item(room)
+    if room is not None:
+        # Navigation remains usable after the five-minute callback view expires.
+        view.add_item(discord.ui.Button(
+            label="Open my private Discord room", style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{room.guild.id}/{room.id}",
+        ))
+    else:
+        create_room = discord.ui.Button(label="Create my private Discord room", style=discord.ButtonStyle.primary)
+        async def open_room(interaction):
+            await gbop_control.callback(interaction, action="room")
+        create_room.callback = open_room
+        view.add_item(create_room)
     view.add_item(discord.ui.Button(
         label="Open my private GBOP session", style=discord.ButtonStyle.link,
         url="https://gbop.onrender.com/",
@@ -6945,11 +6952,11 @@ async def gbop_private_room(interaction):
         else:
             await room.edit(overwrites=overwrites, reason="Member refreshed their private GBOP room")
     await interaction.followup.send(
-        f"Your room is {room.mention}. **Join it, then run `/gbop`** to start voice. "
+        f"Your room is {room.mention}. **Open it below, join voice, then run `/gbop`** to start. "
         "The room stays available for your next session. Server administrators can still access it.\n"
         "Discord and browser voice use your same member profile, saved trades and journals. "
         "Use one voice connection at a time for yourself; another member can use theirs independently.",
-        view=gbop_private_voice_view(), ephemeral=True)
+        view=gbop_private_voice_view(room), ephemeral=True)
 
 
 @tree.command(name="gbop", description="Open private browser voice, call GBOP into a channel, or get help.", guild=GUILD)
