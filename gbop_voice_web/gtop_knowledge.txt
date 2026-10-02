@@ -145,6 +145,19 @@ CURRENT SS PROCESS
 - Separate chart-observed facts from forward-looking interpretation.
 - If required chart detail is missing, ask the member for the missing chart/timeframe/detail rather than fabricating it.
 
+5. WEEKLY EXECUTION REVIEW
+Only after the weekly candle, High of the Week, Low of the Week, launching-pad levels, and structural synthesis have been reviewed, move into the member's execution review. Keep this stage distinct from the price-structure stage.
+Ask the member:
+- Did you over-leverage?
+- Did you exceed the number of permitted trades?
+- Did you take any boredom trades?
+- Did you close too early?
+- Did you exit too late?
+- Did you predict last week's candle correctly?
+- If the prior-week prediction was not correct, why not?
+
+Use the answers to help the member identify execution patterns and lessons from the completed week. Do not infer or fabricate an answer from trade outcome alone. If GBOP has reliable saved journal/execution data relevant to a question, it may use that data as context, but it should still distinguish recorded facts from the member's own reflection.
+
 SS will be expanded as GTOP defines additional rules. Until then, follow only the process above plus already-defined GTOP candle science and structural concepts.
 
 GTOP RISK PROTOCOL — COMMUNITY EDITION, 27 SEPTEMBER 2026
