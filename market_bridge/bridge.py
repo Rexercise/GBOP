@@ -5,9 +5,11 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+import ssl
 import time
 from urllib.request import Request
 from urllib.parse import urlparse
+import certifi
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = {'NAS100', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
@@ -72,11 +74,14 @@ def send(config, payload):
     request = Request(config['endpoint'], data=encoded,
                       headers={'Authorization': 'Bearer ' + config['token'], 'Content-Type': 'application/json'}, method='POST')
     # Reject redirects so a moved endpoint cannot receive the bridge credential.
-    from urllib.request import build_opener, HTTPRedirectHandler
+    from urllib.request import build_opener, HTTPRedirectHandler, HTTPSHandler
     class NoRedirect(HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
-    with build_opener(NoRedirect()).open(request, timeout=60) as response:
+    # Fresh Windows hosts may not have populated their system CA store yet.
+    # Use Mozilla's CA bundle while retaining certificate and hostname checks.
+    context = ssl.create_default_context(cafile=certifi.where())
+    with build_opener(NoRedirect(), HTTPSHandler(context=context)).open(request, timeout=60) as response:
         result = json.load(response)
     if not result.get('ok'):
         raise RuntimeError('Bridge receiver did not acknowledge capture.')

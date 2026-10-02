@@ -34,6 +34,13 @@ The feed is shared market data for authorized GTOP members, never shared account
 
 ## Repository completion and activation checklist
 
+HTTPS uploads use certifi's Mozilla CA bundle, including on new Windows hosts
+whose system certificate store is not yet populated. Certificate and hostname
+verification remain enabled, and redirects remain blocked. If an older collector
+reports `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`,
+update `bridge.py` and `requirements.txt` from the same repository revision and
+rerun `install.ps1`; retain the private `config.json`. Do not disable TLS checks.
+
 The collector, bounded token-authenticated ingestion, shared market storage,
 member-authenticated price reads, and market tools for Discord and web are wired
 in the repository. Configuration checks reject unsupported asset keys and malformed

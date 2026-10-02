@@ -3,12 +3,15 @@ import copy
 from datetime import datetime
 import os
 import sqlite3
+import ssl
 import json
 import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
+from urllib.error import URLError
+from urllib.request import HTTPSHandler, HTTPRedirectHandler
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from gbop_voice_web import market_data as market
@@ -198,6 +201,29 @@ class MarketTests(unittest.TestCase):
         with patch('urllib.request.build_opener') as opener:
             with self.assertRaises(ValueError): send({}, data)
             opener.assert_not_called()
+
+    def test_upload_trusts_ca_bundle_without_system_store_and_blocks_redirects(self):
+        response = SimpleNamespace(read=lambda: b'{"ok":true,"accepted_assets":["NAS100"]}')
+        with patch.object(ssl.SSLContext, 'load_default_certs', side_effect=AssertionError('System store unavailable')), \
+             patch('urllib.request.build_opener') as build:
+            build.return_value.open.return_value = contextlib.nullcontext(response)
+            send(dict(endpoint='https://gbop.onrender.com/api/market/ingest', token='x'*40), self.payload)
+        handlers = build.call_args.args
+        context = next(h._context for h in handlers if isinstance(h, HTTPSHandler))
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertGreater(context.cert_store_stats()['x509_ca'], 0)
+        redirect = next(h for h in handlers if isinstance(h, HTTPRedirectHandler))
+        self.assertIsNone(redirect.redirect_request(None, None, 302, 'Found', {}, 'https://other.example/'))
+
+    def test_certificate_failure_is_not_retried_without_verification(self):
+        failure = URLError(ssl.SSLCertVerificationError('Untrusted certificate'))
+        with patch('urllib.request.build_opener') as build:
+            build.return_value.open.side_effect = failure
+            with self.assertRaises(URLError):
+                send(dict(endpoint='https://gbop.onrender.com/api/market/ingest', token='x'*40), self.payload)
+            build.assert_called_once()
+            build.return_value.open.assert_called_once()
 
 
 if __name__=='__main__': unittest.main()
