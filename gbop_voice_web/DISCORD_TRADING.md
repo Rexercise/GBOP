@@ -75,7 +75,12 @@ Rooms are never deleted automatically; a restart does not lose their owner ACL.
    Render service's Environment settings. Do not put it in chat or GitHub. The
    normal Render restart loads it; no new worker, VM or plan is required by code.
 4. Run `/gbop action:status` and confirm two bot identities are ready. Existing
-   private rooms can be refreshed with `/gbop action:room` to allow the new helper.
+   private rooms reopen without editing permissions when access is already correct.
+   If a room predates the helper, grant the primary bot **Manage Permissions** in
+   that channel (Edit Channel → Permissions), then `/gbop action:room` can update
+   bot access. Discord uses the `manage_roles` permission for this channel setting.
+   Creating a room requires Manage Channels; changing its access requires the
+   separate permission. Administrator is not needed.
 5. Both members create their rooms, join them, and run `/gbop`. Each room gets an
    available bot. The helper runs only voice transport; the main bot continues
    commands, DMs and scheduled alerts so those are not duplicated.
