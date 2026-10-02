@@ -277,7 +277,7 @@ def collect_snapshot(
 
         opened_count = conn.execute(
             """
-            SELECT COUNT(*)
+            SELECT COUNT(*) AS count_value
             FROM theses
             WHERE guild_id=?
               AND user_id=?
@@ -290,11 +290,11 @@ def collect_snapshot(
                 start_utc,
                 end_utc,
             ),
-        ).fetchone()[0]
+        ).fetchone()["count_value"]
 
         open_now = conn.execute(
             """
-            SELECT COUNT(*)
+            SELECT COUNT(*) AS count_value
             FROM theses
             WHERE guild_id=?
               AND user_id=?
@@ -304,7 +304,7 @@ def collect_snapshot(
                 guild_id,
                 user_id,
             ),
-        ).fetchone()[0]
+        ).fetchone()["count_value"]
 
         executions = conn.execute(
             """
