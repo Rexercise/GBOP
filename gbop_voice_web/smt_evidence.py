@@ -122,4 +122,5 @@ def compare_ranges(left, right, start, anchor_end, through, timeframe='H1', dete
     result['limits'] = ('Positive-correlation comparison. Times identify closed source intervals, not ticks. '
                         'Same-bar dual sweeps cannot establish an earlier intrabar divergence. Missing coverage does not prove absence. '
                         'SMT, anchor validity, subsequent objectives and member executions are separate facts.')
-    return result
+    from gbop_voice_web.smt_reference import attach_paired_model1
+    return attach_paired_model1(result, data, anchors, timeframe)

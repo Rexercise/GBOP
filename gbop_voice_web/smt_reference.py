@@ -148,7 +148,7 @@ def reconcile_paired_recap(review, asset):
             if outcome.get('status') == 'objective_complete_while_range_valid':
                 text += (f" It completed its own opposing-liquidity objective at {outcome['level']} "
                          f"in the candle opening {clock(outcome['touch_bar_open_ny'])}, "
-                         'before subsequent invalidation. No local initiating-side purge was required.'
+                         'while the range was valid. No local initiating-side purge was required.'
                          if boneless else
                          f" It completed its own opposing-liquidity objective at {outcome['level']}.")
             else:

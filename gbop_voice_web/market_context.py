@@ -7,15 +7,14 @@ PAIRINGS = {'XAUUSD': 'XAGUSD', 'XAGUSD': 'XAUUSD',
             'NAS100': 'SPX', 'SPX': 'NAS100'}
 
 LIFECYCLE_PROMPT = """
-Use candle_lifecycle.purge_candles and recap.candle_timeline for candle identity,
-OHLC, wick/body type, separate CSD/Super Soup, reference retests, body closes and
-own objectives. Follow the canonical lifecycle rules and each evidence status;
-legacy entry_confirmed=false or model1.csd_status=not_assessed cannot negate them.
-Name the candle first. Keep identity, confirmation, execution and parent-range
-invalidation separate. Fold relevant facts into the recap without dumping tables.
-Use paired_smt plus paired_context for configured gold/silver, Bitcoin/Ethereum
-and NAS100/SPX comparisons. Volunteer boneless_asset and each own objective_status.
-Missing SPX is not no SMT or US30. Never invent context unavailable at entry.
+Use candle_lifecycle.purge_candles and recap.candle_timeline for OHLC, wick/body,
+CSD, Super Soup, retests and own targets. Unconfirmed does not erase identity.
+Name candles by OPENING time; state closing time separately.
+Use paired_smt/paired_context and paired_model1.boneless_reference for the
+same-time SMT-inherited Model 1, not a local purge or later opposite model.
+Volunteer boneless_asset and own objective_status. Prefer recap.paired_interpretation
+to local-only failure; preserve earlier delivery. Missing SPX is not no SMT or US30.
+Never invent context unavailable at entry.
 """.strip()
 
 
@@ -71,10 +70,17 @@ def enrich_smt(review):
                 text += f" {asset} reached its own midpoint; its full objective is {full.get('status', 'unverified').replace('_', ' ')}."
             else:
                 text += f" {asset}'s full objective is {full.get('status', 'unverified').replace('_', ' ')}."
+        identity = event.get('paired_model1', {})
+        if identity.get('status') == 'identified':
+            ref = identity['boneless_reference']
+            text += (f" {ref['asset']}'s SMT-inherited Model 1 is its {ref['timeframe']} candle opening "
+                     f"{ref['bar_open_ny']}, matching {event['swept_asset']}'s body-purge candle. "
+                     'This is a same-time reference, not a visible local purge or inherited CSD confirmation.')
         text += ' These are paired market facts, not proof of a member execution.'
         passages.append(text)
     review['spoken_summary'] = ' '.join(passages)
     review['response_contract'] = ('Use boneless_asset as an event-specific asset adjective. Use objective_status '
         'for valid-thesis delivery; raw later touches may occur after invalidation. Later invalidation '
-        'does not erase earlier SMT or delivery. No local body candle or member fill is implied.')
+        'does not erase earlier SMT or delivery. Use paired_model1.boneless_reference for the same-time '
+        'SMT-inherited Model 1 identity; no visible local body purge or member fill is implied.')
     return review
