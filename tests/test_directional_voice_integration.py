@@ -10,10 +10,10 @@ from unittest.mock import Mock, patch
 
 from gbop_voice_web import market_data as market
 from gbop_voice_web.market_prefetch import prefetch_market_evidence
-from gbop_voice_web.voice_payload import voice_tool_payload
+from gbop_voice_web.voice_payload import voice_tool_payload, shift_voice_overview
 import test_voice_context_payloads as context_fixtures
 from test_voice_payload_budget import expanded
-from test_market_conversation import function
+from test_market_conversation import function, auth_db
 
 ROOT = Path(__file__).resolve().parents[1]
 NY = lambda clock: '2026-10-02T' + clock + ':00-04:00'
@@ -28,14 +28,15 @@ class DirectionalVoiceIntegrationTests(unittest.TestCase):
         self.raw = self.replay.run_tool('review_market_session', {
             'asset': 'NAS100', 'date_ny': '2026-10-02', 'shift': 'day'})
         self.context = self.replay.context
+        self.context.owner = (1, 2, 'synthetic-authenticated-session')
         self.calls = []
 
     def run_market(self, name, args):
         self.calls.append((name, deepcopy(args)))
         return market.market_tool(self.replay.replay.db, name, args)
 
-    def test_realistic_overview_has_named_direction_attempt_and_observed_soup(self):
-        wire = voice_tool_payload('review_market_session', self.raw)
+    def test_explicit_complete_overview_has_named_direction_attempt_and_observed_soup(self):
+        wire = shift_voice_overview(self.raw)
         self.assertTrue(wire['ok'], wire)
         self.assertLessEqual(len(json.dumps(wire, separators=(',', ':'))), 32000)
         page = expanded(wire, wire)
@@ -127,7 +128,7 @@ class DirectionalVoiceIntegrationTests(unittest.TestCase):
         create = Mock(return_value=NS(output=[], output_text='measured result'))
         tree = ast.parse((ROOT / 'bot.py').read_text())
         node = next(n for n in tree.body if getattr(n, 'name', None) == 'ai_run_turn')
-        namespace = dict(GTOP_GUILD_ID=1, GBOP_AI_TOOLS=[], init_ai_db=lambda: None,
+        namespace = dict(db=auth_db, GTOP_GUILD_ID=1, GBOP_AI_TOOLS=[], init_ai_db=lambda: None,
             ai_recent_messages=lambda *a, **k: [], ai_member_context=lambda _: '',
             GTOP_AI_PROMPT='', OPENAI_MODEL='offline-test', ai_client=NS(responses=NS(create=create)),
             ai_execute_tool=lambda user, name, args: self.run_market(name, args), json=json)

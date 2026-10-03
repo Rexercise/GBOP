@@ -1,5 +1,6 @@
 """Synthetic utterances and public market facts only; no live provider calls."""
 import ast
+from contextlib import contextmanager
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -395,10 +396,17 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(len(self.provider.calls), calls)
 
 
+@contextmanager
+def auth_db():
+    yield NS(execute=lambda *a: NS(fetchone=lambda: {
+        'activated': 1, 'revoked': 0, 'leadership_ack': 1, 'updated_at': 'auth-v1'}))
+
+
 def function(name, namespace):
     path = Path(__file__).resolve().parents[1] / 'gbop_voice_web/server.py'
     node = next(n for n in ast.parse(path.read_text()).body if getattr(n, 'name', '') == name)
     node.decorator_list = []
+    namespace.setdefault("db", auth_db)
     namespace.update(Request=object, DelegateRequest=object, LiveContextRequest=object)
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), namespace)
     return namespace[name]

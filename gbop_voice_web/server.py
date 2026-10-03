@@ -484,7 +484,9 @@ def tool_open_trade(user_id: int, args: dict):
     objective = args.get("objective") or "Not specified at entry"
     invalidation = args.get("thesis_invalidation") or "Not specified at entry"
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import prepare_trade_metadata, save_trade_metadata, journal_transaction
+    metadata = prepare_trade_metadata(GTOP_GUILD_ID, user_id, args)
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
         cur = conn.execute(
             """
             INSERT INTO theses (
@@ -492,7 +494,7 @@ def tool_open_trade(user_id: int, args: dict):
                 crt_variant, htf_context, liquidity_purged, objective,
                 thesis_invalidation, status, max_r, created_at
             )
-            VALUES (?, ?, ?, ?, ?, '', '', '', '', ?, ?, 'OPEN', 1.0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, '', '', '', ?, ?, 'OPEN', 1.0, ?)
             """,
             (
                 GTOP_GUILD_ID,
@@ -500,6 +502,7 @@ def tool_open_trade(user_id: int, args: dict):
                 str(args["asset"]).strip(),
                 str(args["direction"]).strip(),
                 str(args["play"]).strip(),
+                metadata.get('session') or '',
                 str(objective).strip(),
                 str(invalidation).strip(),
                 now_iso(),
@@ -526,6 +529,7 @@ def tool_open_trade(user_id: int, args: dict):
             ),
         )
         execution_id = cur.lastrowid
+        save_trade_metadata(conn, GTOP_GUILD_ID, user_id, trade_id, metadata)
 
     warnings = []
     if risk_r > tier_limit(profile, tier) + 1e-6:
@@ -566,7 +570,8 @@ def tool_add_entry(user_id: int, args: dict):
         return {"ok": False, "error": "Risk must be a finite number greater than 0R."}
     used_before = thesis_used_r(row["id"])
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
         cur = conn.execute(
             """
             INSERT INTO thesis_executions (
@@ -621,7 +626,8 @@ def tool_record_trade_event(user_id: int, args: dict):
     if result_r is not None:
         result_r = float(result_r)
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
         conn.execute(
             """
             INSERT INTO thesis_events (
@@ -656,12 +662,26 @@ def tool_close_trade(user_id: int, args: dict):
     result_r = args.get("final_result_r")
     if result_r is not None:
         result_r = float(result_r)
+        if not math.isfinite(result_r):
+            return {'ok': False, 'error': 'Result R must be finite or unknown.'}
 
     summary = str(args["summary"]).strip()
     adherence = str(args["rule_adherence"]).strip()
     study_note = str(args["study_note"]).strip()
 
+    from gbop_voice_web.journal_context import close_metadata, save_closed_metadata, journal_transaction
     with db() as conn:
+        metadata = close_metadata(conn, GTOP_GUILD_ID, user_id, row, args)
+    if metadata:
+        from gbop_voice_web.journal_coach import init_coach
+        init_coach(db)
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+                               (row['id'], GTOP_GUILD_ID, user_id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            return {'ok': False, 'error': 'This trade has already closed or changed. Read its journal before retrying.'}
+        # Re-read after preparation, in the guarded final transaction.
+        metadata = close_metadata(conn, GTOP_GUILD_ID, user_id, row, args)
         conn.execute(
             """
             UPDATE theses
@@ -720,6 +740,7 @@ def tool_close_trade(user_id: int, args: dict):
             )
 
         journal_id = cur.lastrowid
+        save_closed_metadata(conn, GTOP_GUILD_ID, user_id, journal_id, metadata)
 
     return {
         "ok": True,
@@ -1090,7 +1111,9 @@ BACKEND_PROMPT += (
 
 def run_backend(history: list[dict[str, str]], user_id: int, market_context=None, client_turn=None) -> str:
     from gbop_voice_web.market_conversation import MarketConversation, contextual_tools, SCOPED_TOOLS
+    from gbop_voice_web.journal_context import WRITE_TOOLS
     market_context = market_context or MarketConversation((GTOP_GUILD_ID, user_id, 'browser_request'))
+    market_context.auth_provider = (db, GTOP_GUILD_ID, user_id)
     user_text = next((item.get('text', '') for item in reversed(history) if item.get('role') == 'user'), '')
     market_generation = market_context.begin_turn(user_text, client_turn=client_turn)
     if market_generation is None:
@@ -1158,7 +1181,7 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
             args = {}
             try:
                 args = json.loads(call.arguments)
-                if call.name in SCOPED_TOOLS:
+                if call.name in SCOPED_TOOLS | WRITE_TOOLS:
                     result = market_context.run(call.name, args,
                         lambda name, values: run_tool(user_id, name, values, confirmation_token),
                         generation=market_generation)
@@ -1174,11 +1197,12 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
             scope_log = market_scope_log(call.name, args, result)
             if scope_log is not None:
                 print("[GBOP-MARKET-SCOPE]", json.dumps(scope_log, separators=(",", ":")))
+            from gbop_voice_web.voice_payload import voice_tool_payload
             items.append(
                 {
                     "type": "function_call_output",
                     "call_id": call.call_id,
-                    "output": json.dumps(result),
+                    "output": json.dumps(voice_tool_payload(call.name, result)),
                 }
             )
 

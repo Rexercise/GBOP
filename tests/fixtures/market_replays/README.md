@@ -38,8 +38,14 @@ These are analytical claims from the retained broker sample, not member fills.
    fails locally at 10:20, yet physically reaches its own 30963.6 in 10:52 M1.
    Neither later physical delivery restores the failed local CRT or proves a
    completed Super Soup variant. Their parent range separately delivers 30829.47.
-5. Silver's 10:50 M5 bullish Model 1 has a clean 10:55 sequel but fails at 11:05
-   without either local objective. This later failure does not erase earlier
+   The 10:00 Model 1 full low is 30930.59. Its 10:50 M5 close 30939.09 remains
+   above that low; 10:55 M5 only wicks to 30929.84 and closes at 30939.34.
+   The first strict below-low M5 close is the 11:00 candle at 30913.09, known
+   when that candle closes at 11:05. Neither the body-open crossing nor the
+   earlier wick confirms CISD, and later CISD does not restore local CRT validity.
+5. Silver's 10:50 M5 bullish Model 1 has a returning-body 10:55 sequel, not a
+   clean wick: that sequel opens at 60.766 below the Model 1 low 60.771 and
+   closes back at 60.81. It fails at 11:05 without either local objective. This later failure does not erase earlier
    bearish SMT delivery.
 6. NAS Blessed Thief analysis retains the 10 AM open 30957.59 and the subsequent
    11 AM open 30939.59. Directional revisit evidence appears in 10:53 and 11:02 M1,

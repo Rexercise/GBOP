@@ -19,7 +19,7 @@ def bars():
 class LifecycleIntegrationTests(unittest.TestCase):
     def run_tool(self, asset='NAS100', name='review_market_session', extra=None):
         source=bars()
-        def feed(db, value):
+        def feed(db, value, now=None):
             asset=market.asset_name(value)
             if asset=='SPX': return {'ok':False,'asset':asset,'status':'not_connected'}
             return {'ok':True,'asset':asset,'symbol':asset+'test','bid':100,'ask':101,'bars':source,'bars_m1':[]}

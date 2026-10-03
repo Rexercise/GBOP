@@ -45,7 +45,7 @@ or trade result. Do not modify live permissions merely to simulate failures.
   own target/time; the initiating wick-only silver event is not falsely called a
   proven body-purge/inherited Model 1. Later local failures remain separate.
 - [ ] Ask about NAS 10:00 and 10:10 M5 Model 1s: clean versus unclean structure,
-  local CRT invalidity, later local function and parent delivery remain distinct.
+  Model 1 own CRT invalidity, later local function and selected-range delivery remain distinct.
   Ask about silver 10:50 M5: clean formation is not automatically a successful CRT.
 - [ ] Ask about NAS Blessed Thief 10 AM and subsequent 11 AM opens. It treats
   opening prices and delayed revisit evidence separately from actual execution.
@@ -62,7 +62,10 @@ candles. Do not patch the expected answer just to match a voice reply.
 
 - [ ] After the October 2 NAS100 day-shift overview, ask about the **9 AM range's
   Model 1**. It names **10:00 AM M5**, distinguishes the **10:02 M1** source purge,
-  and, when asked, gives CSD on the **10:50 M5** candle's closure at **10:55**.
+  and, when asked, gives CISD on the **11:00 M5** candle's closure at **11:05**.
+  Its **30913.09** close is strictly below the full Model 1 low, **30930.59**.
+  The 10:50 close **30939.09** is above that low; 10:55 wicks to **30929.84**
+  but closes **30939.34**, so neither confirms. Body-open crossing is insufficient.
   A continued tool request must not silently return the 8 AM range.
 - [ ] Continue the October 2 gold review with “what about Young Lefty?” It retrieves
   that same asset/date's **7 AM range**, preserving **8:10 M5 Turtle Wick Soup**,
@@ -168,16 +171,67 @@ answer generation. Audio-only tool selection still depends on the live model.
   delivery source minute; tick order is unknown. Its assigned identity is known
   at 11:15, so it is not an earlier bearish pre-delivery candidate.
 - [ ] Ask about the 10AM Model 1's Super Soup. The assigned soup candle opens
-  10:05, is known at 10:10, and is observed before the 10:50–10:55 CSD candle.
+  10:05, is known at 10:10, and is observed before the 11:00–11:05 CISD candle.
   Its own local CRT invalidates at 10:20. Its physical own target at 10:59 does
-  not restore that CRT; the parent 9AM target at 11:12 is a separate outcome.
+  not restore that CRT; the selected 9AM H1 target at 11:12 is a separate outcome.
 - [ ] Ask how close the 8AM bearish attempt came to midpoint. The read-only
   source-bar calculation gives midpoint 30821.71, closest retained low 30829.47
   in the 09:32 M1 candle, 7.76 provider price points short. Explain coverage and
   boundary-order limits if the requested source window is incomplete.
+- [ ] Check ordinary wording: selected 9AM H1 range and Model 1 own candle range.
+  Model 1 purges the selected boundary and need not be inside that range.
+  Parent/child CRT wording is reserved for explicit fractal requests.
 - [ ] Follow with an elliptical CSD or target question. Keep the same named
   asset/date/range/candle; fetch omitted detail rather than claiming it is absent.
   Check the scoped tool log for an actual retrieval when one is promised.
 - [ ] Recheck gold Young Lefty and potential/pending boneless explanations.
   Qualified/potential paired evidence must survive payload compaction; rejected
   paired target details have an explicit same-scope recovery request.
+
+## Contextual journal handoff acceptance (2026-10-03)
+
+Use an isolated test account/database for write scenarios. A market example is
+not evidence that a member traded it; do not create a production journal merely
+to test the feature. Automated mock/fixture coverage is separate from the human
+spoken checks below.
+
+- [ ] Review a named setup, then report a trade on that candle with an exit time.
+  The saved journal retains the verified instrument, NY date/shift, selected
+  range, exact candle identity and evidence provenance. Ask a short clarification
+  if the candle or existing trade is ambiguous.
+- [ ] Report a stop-out without R, fills or P/L. Preserve the reported stop-out
+  and unknown numeric result; market target delivery does not turn it into a
+  winning trade, and a stop-out does not become an assumed minus-one-R result.
+- [ ] Distinguish reported execution timestamps or candle intervals from the
+  later journal logging time. Do not assign an exact tick time from a candle.
+- [ ] Close an already linked trade and inspect its resulting journal. Preserve
+  the original trade association; a different selected setup must not silently
+  replace its context. Read the saved evidence again in a new session.
+- [ ] Correct a saved asset, date, direction or reported time. Keep the explicit
+  correction and provenance without silently rewriting the market evidence.
+- [ ] Switch instruments/ranges, interrupt the request, replace the live session,
+  log out, and try a second member. Stale or foreign context must not attach.
+- [ ] Repeat an already successful same-turn save. Verify that retries do not
+  duplicate the journal or close the wrong trade.
+
+## Short recap and current-time acceptance (2026-10-03)
+
+- [ ] Ask for a completed shift recap. Lead briefly with 9ate8, its supported
+  direction/variant and own 50%/opposing objective status, then relevant later
+  ranges. Detailed Model 1/Soup candidates stay behind named follow-up requests.
+- [ ] Verify that a real early seven-range Young Lefty remains visible even when
+  eight/nine fails, including an opposite-direction case. Omit uninitiated Young
+  Lefty chatter; do not borrow 9ate8's direction or objectives for seven.
+- [ ] Ask what the bot sees on a named market at different actual times: before,
+  during and outside either shift. Use the current request's real NY clock and
+  available source bars, never the latest completed shift as a substitute.
+- [ ] At a pre-shift time such as 8:50, distinguish seven's closed reference from
+  eight's forming H1. Repeat at other stage boundaries and with an explicit
+  supported higher-timeframe/chart anchor. A forming reference cannot establish
+  a purge, variant or CISD that requires its close.
+- [ ] Check stale/delayed snapshots and incomplete candles. State observed-through
+  time and source precision; periodic collector data is not instantaneous tick
+  streaming. Do not claim that a purge is happening at the instant of speech.
+- [ ] Follow a current review with a named candle question or reported journal.
+  Preserve its snapshot cutoff and identity; an explicit new current request may
+  refresh them. A historical recap remains historical until explicitly changed.

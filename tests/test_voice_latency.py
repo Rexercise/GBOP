@@ -65,7 +65,7 @@ class VoiceLatencyTests(unittest.IsolatedAsyncioTestCase):
         session.refresh_context.assert_not_awaited()
         self.assertTrue(session.tool_output_pending)
 
-    async def test_full_shift_reply_gets_scoped_audio_budget(self):
+    async def test_short_shift_synopsis_keeps_default_audio_budget(self):
         result = {'ok': True, 'review': {'shift_story': {'ranges': [], 'recap': {'headline': 'Later setup delivered'}}}}
         async def run_tool(fn, *args):
             return fn(*args)
@@ -75,9 +75,9 @@ class VoiceLatencyTests(unittest.IsolatedAsyncioTestCase):
         session = NS(member=NS(id=42), send_event=AsyncMock(), _tool_response_options={})
         await method('execute_tool', ns)(session, {'name': 'review_market_session', 'call_id': 'shift', 'arguments': '{}'})
         sent = json.loads(session.send_event.await_args.args[0]['item']['output'])
-        self.assertEqual(sent['voice_view']['kind'], 'shift_overview')
+        self.assertEqual(sent['voice_view']['kind'], 'shift_synopsis')
         self.assertLessEqual(len(json.dumps(sent, separators=(',', ':'))), 32000)
-        self.assertEqual(session._tool_response_options, {'max_output_tokens': 2200})
+        self.assertEqual(session._tool_response_options, {})
         async def events():
             yield json.dumps({'type': 'response.done', 'response': {'status': 'completed'}})
         session.websocket = events()
@@ -85,9 +85,9 @@ class VoiceLatencyTests(unittest.IsolatedAsyncioTestCase):
         session._voice_turn_count = 1
         await method('receiver_loop', dict(json=json))(session)
         self.assertEqual(session.send_event.await_args.args[0],
-                         {'type': 'response.create', 'response': {'max_output_tokens': 2200}})
+                         {'type': 'response.create', 'response': {}})
         self.assertEqual(session._tool_response_options, {})
-        self.assertEqual(session._last_response_options, {'max_output_tokens': 2200})
+        self.assertEqual(session._last_response_options, {})
 
     async def test_market_error_does_not_expand_reply_budget(self):
         async def run_tool(fn, *args):

@@ -85,7 +85,7 @@ class RetainedNASNightSetupTests(unittest.TestCase):
             for day, values in days.items():
                 self.conn.execute('INSERT INTO gbop_market_history VALUES(?,?,?,?,?)',
                                   (asset,item['symbol'],step,day,json.dumps(values)))
-        feed = patch.object(market,'read_feed',side_effect=lambda db,asset: dict(
+        feed = patch.object(market,'read_feed',side_effect=lambda db,asset,now=None: dict(
             ok=True,asset=market.asset_name(asset),symbol=self.symbols[market.asset_name(asset)],
             status='historical_replay',is_live=False,bars=[],bars_m1=[]))
         feed.start(); self.addCleanup(feed.stop)

@@ -229,8 +229,8 @@ class RetainedConversationRangeTests(unittest.TestCase):
         self.assertEqual(first['purge_source_interval']['bar_open_ny'], retained.ny('10:02'))
         self.assertEqual(first['purge_source_interval']['bar_close_ny'], retained.ny('10:03'))
         candle = result['review']['candle_lifecycle']['purge_candles'][0]
-        self.assertEqual(candle['csd']['evidence']['bar_open_ny'], retained.ny('10:50'))
-        self.assertEqual(candle['csd']['evidence']['confirmed_at_ny'], retained.ny('10:55'))
+        self.assertEqual(candle['csd']['evidence']['bar_open_ny'], retained.ny('11:00'))
+        self.assertEqual(candle['csd']['evidence']['confirmed_at_ny'], retained.ny('11:05'))
 
     def test_retained_nas_continue_selects_nine_range_ten_model_one(self):
         self.overview()

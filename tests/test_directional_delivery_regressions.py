@@ -23,7 +23,7 @@ class DirectionalDeliveryRegressionTests(unittest.TestCase):
         retained = json.loads(fixture_path.read_text())
         self.bars = {item['asset']: [dict(zip(('time','open','high','low','close'), row))
                                    for row in item['candles']] for item in retained['instruments']}
-        p = patch.object(market, 'read_feed', side_effect=lambda db, asset: dict(
+        p = patch.object(market, 'read_feed', side_effect=lambda db, asset, now=None: dict(
             ok=True, asset=market.asset_name(asset), symbol=market.asset_name(asset), is_live=False))
         p.start(); self.addCleanup(p.stop)
         p = patch.object(market, 'history_bars', side_effect=lambda db, feed, *args: (self.bars[feed['asset']], 60))

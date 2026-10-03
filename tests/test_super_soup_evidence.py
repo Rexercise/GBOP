@@ -107,16 +107,18 @@ class SuperSoupEvidenceTests(unittest.TestCase):
         self.assertIsNone(soup['event'])
 
     def test_soup_and_csd_may_share_closing_candle(self):
-        item = life([MODEL, (102, 104, 98, 98.5)])
-        self.assertEqual(item['super_soup']['structural_quality'], 'clean')
+        item = life([MODEL, (102, 104, 97, 97.5)])
+        self.assertEqual(item['super_soup']['structural_quality'], 'not_clean')
         self.assertTrue(item['super_soup']['csd_same_assigned_close'])
-        self.assertEqual(item['csd']['body_reference_level'], 99)
+        self.assertFalse(item['super_soup']['pre_csd'])
+        self.assertEqual(item['csd']['reference_level'], 98)
         self.assertEqual(item['csd']['status'], 'confirmed')
 
-    def test_csd_reference_is_body_not_wick_extreme(self):
+    def test_close_through_body_open_but_above_full_low_is_not_csd(self):
         item = life([MODEL, (102, 103, 98.25, 98.5)])
-        self.assertEqual(item['csd']['status'], 'confirmed')
-        self.assertGreater(item['csd']['evidence']['close'], 98)
+        self.assertEqual(item['csd']['status'], 'not_observed_by_cutoff')
+        self.assertEqual(item['csd']['reference_level'], 98)
+        self.assertIsNone(item['csd']['evidence'])
 
     def test_boundary_touch_is_not_purge(self):
         soup = life([MODEL, (102, 103, 101, 102)])['super_soup']
@@ -157,7 +159,7 @@ class SuperSoupEvidenceTests(unittest.TestCase):
         self.assertEqual(soup['structural_quality'], 'not_clean')
 
     def test_body_reference_retest_time_is_separate(self):
-        item = life([MODEL, CLEAN, (102, 103, 98, 98.5), (98.5, 100, 98, 99)])
+        item = life([MODEL, CLEAN, (102, 103, 97, 97.5), (97.5, 100, 97, 99)])
         self.assertEqual(item['body_reference_retest_after_csd']['bar_open_ny'], stamp(T + 900))
 
     def test_bullish_is_symmetric(self):
@@ -185,7 +187,7 @@ class SuperSoupEvidenceTests(unittest.TestCase):
         self.assertNotIn('lifecycle', out['model1'])
 
     def test_retest_is_not_inferred_from_close_only(self):
-        item = life([MODEL, CLEAN, (102, 103, 98, 98.5), (97, 98, 94, 95)])
+        item = life([MODEL, CLEAN, (102, 103, 97, 97.5), (97, 98, 94, 95)])
         self.assertIsNone(item['body_reference_retest_after_csd'])
 
     def test_clean_v6_needs_resoup_of_manipulation_extreme(self):

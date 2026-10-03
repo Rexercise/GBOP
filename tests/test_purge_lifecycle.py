@@ -22,7 +22,7 @@ def evaluate(seq, end=None, invalid=None, side='buy', step=300, mapped='M5'):
 
 class PurgeLifecycleTests(unittest.TestCase):
     def test_next_candle_wick_soups_model1_then_csd_and_delivery(self):
-        r=evaluate([bar(1,102,104,100,101),bar(2,101,102,97,98),bar(3,98,99,89,91)])
+        r=evaluate([bar(1,102,104,100,101),bar(2,101,102,96,97),bar(3,98,99,89,91)])
         e=r['lifecycles'][0]
         self.assertEqual(e['super_soup']['status'],'super_soup_observed')
         self.assertEqual(e['super_soup']['sweep']['form'],'wick_only')
@@ -39,7 +39,7 @@ class PurgeLifecycleTests(unittest.TestCase):
         e=evaluate([bar(1,102,106,101,105),bar(2,105,106,100,101)])['lifecycles'][0]
         self.assertEqual(e['super_soup']['status'],'body_purge_then_return_observed')
     def test_no_super_soup_when_csd_without_new_extreme(self):
-        e=evaluate([bar(1,102,103,97,98),bar(2,98,105,96,97)])['lifecycles'][0]
+        e=evaluate([bar(1,102,103,96,97),bar(2,98,105,96,97)])['lifecycles'][0]
         self.assertEqual(e['super_soup']['status'],'not_observed_in_complete_pre_csd_window')
         self.assertEqual(e['csd']['status'],'observed')
     def test_equal_extreme_is_not_a_sweep(self):
@@ -47,9 +47,9 @@ class PurgeLifecycleTests(unittest.TestCase):
         self.assertIsNone(e['super_soup']['sweep'])
     def test_same_candle_sweep_and_csd_is_explicit(self):
         e=evaluate([bar(1,102,104,96,97)])['lifecycles'][0]
-        self.assertEqual(e['super_soup']['status'],'super_soup_observed')
+        self.assertEqual(e['super_soup']['status'],'same_candle_as_csd_order_unresolved')
         self.assertEqual(e['csd']['evidence']['confirmed_at_ny'],stamp(T+600))
-        self.assertTrue(e['super_soup']['sweep']['before_csd_close_verified'])
+        self.assertFalse(e['super_soup']['sweep']['before_csd_close_verified'])
     def test_later_candle_can_soup_without_immediate_soup(self):
         e=evaluate([bar(1,102,103,100,101),bar(2,101,104,100,102)])['lifecycles'][0]
         self.assertFalse(e['super_soup']['sweep']['immediate_next_assigned_candle'])
@@ -84,12 +84,12 @@ class PurgeLifecycleTests(unittest.TestCase):
         after=evaluate([bar(1,102,104,100,101)])['candles']
         self.assertEqual(before,after)
     def test_retest_and_adverse_close_are_not_stopouts(self):
-        e=evaluate([bar(1,102,104,100,101),bar(2,101,102,97,98),bar(3,98,100,97,99),bar(4,99,106,98,105)])['lifecycles'][0]
+        e=evaluate([bar(1,102,104,100,101),bar(2,101,102,96,97),bar(3,98,100,97,99),bar(4,99,106,98,105)])['lifecycles'][0]
         self.assertEqual(e['first_body_open_retest_after_csd']['start_ny'],stamp(T+900))
         self.assertIsNotNone(e['later_adverse_close_beyond_model1_extreme'])
         self.assertEqual(e['stopout_status'],'requires_member_stop_rule')
     def test_csd_equality_is_not_confirmation(self):
-        e=evaluate([bar(1,102,103,98,99)])['lifecycles'][0]
+        e=evaluate([bar(1,102,103,97,98)])['lifecycles'][0]
         self.assertEqual(e['csd']['status'],'not_observed_in_complete_window')
     def test_wick_soup_not_relabelled_model1(self):
         r=evaluate([bar(1,99,103,96,99)])
@@ -104,14 +104,14 @@ class LifecycleIntegrationTests(unittest.TestCase):
     def test_real_crt_review_exposes_lifecycle(self):
         from gbop_voice_web.candle_evidence import crt_review
         data=[bar(i,95,100,90,95) for i in range(-12,0)]
-        data += [bar(0,99,103,98,102),bar(1,102,104,100,101),bar(2,101,102,97,98)]
+        data += [bar(0,99,103,98,102),bar(1,102,104,100,101),bar(2,101,102,96,97)]
         r=crt_review(data,T-3600,T+900,'H1',300)
         self.assertFalse(r['entry_confirmed'])
         self.assertEqual(r['model1']['lifecycles'][0]['super_soup']['status'],'super_soup_observed')
     def test_shift_review_carries_the_same_evidence(self):
         from gbop_voice_web.shift_review import review_shift
         data={b['time']:b for b in [bar(i,95,100,90,95) for i in range(-24,24)]}
-        for b in [bar(0,99,103,98,102),bar(1,102,104,100,101),bar(2,101,102,97,98)]:
+        for b in [bar(0,99,103,98,102),bar(1,102,104,100,101),bar(2,101,102,96,97)]:
             data[b['time']]=b
         r=review_shift(sorted(data.values(),key=lambda x:x['time']),'2026-10-02','day',300)
         selected=next(x for x in r['ranges'] if x['anchor_start_ny']==stamp(T-3600))

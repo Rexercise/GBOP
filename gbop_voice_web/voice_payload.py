@@ -1,8 +1,8 @@
-"""Bounded market overviews for voice; authoritative detailed tools stay intact.
+"""Bounded tool presentation; authoritative evidence and saved records stay intact.
 
-The overview is a purpose-built view, never an arbitrary cut of serialized JSON.
-Every range and identified candle is named. Deeper OHLC/lifecycle evidence is
-explicitly queryable by the precise original asset, anchor and cutoff.
+Default shifts use a short synopsis, current reviews preserve snapshot freshness,
+and journals use bounded saved-record views. Complete named-range evidence stays
+queryable with the original asset, anchor, candle and cutoff; omission is not absence.
 """
 from copy import deepcopy
 import json
@@ -12,6 +12,8 @@ from gbop_voice_web.directional_evidence import directional_candidate_evidence
 
 SHIFT_OVERVIEW_TARGET_CHARS = 32000
 VOICE_COMPACTION_TARGET_CHARS = 31000
+SHIFT_SYNOPSIS_TARGET_CHARS = 12000
+CURRENT_OVERVIEW_TARGET_CHARS = 16000
 
 
 def _encoded_size(value):
@@ -32,7 +34,7 @@ def _voice_market_context(context, *, evidence_ref=None):
     """
     out = deepcopy(context)
     if not isinstance(out, dict) or out.get('source_tool') not in {
-            'review_market_session', 'review_market_crt'}:
+            'review_market_session', 'review_market_crt', 'review_current_market'}:
         return out
     if not all(key in out for key in ('selection', 'scope_id', 'evidence_id')):
         return out
@@ -233,11 +235,11 @@ def shift_voice_overview(result):
     out['review'] = view
     out['voice_view'] = {
         'kind': 'shift_overview', 'detail_omitted': True,
-                'note': 'Every hourly range, identified Model 1 body candle, parent objective outcome and uncertainty is represented. '
+                'note': 'Every hourly range, identified Model 1 body candle, selected-range objective outcome and uncertainty is represented. '
                 'Selected ranges include the first original-direction Model 1 lifecycle card. Other lifecycle cards and later wick identities are explicitly omitted and require the range detail_request with exact detail_candle_start_ny. '
                 'Own objectives in model1_outcomes mean midpoint/opposing liquidity of that exact Model 1 candle. Every identity has an attempt_role; separate_opposite_direction cannot be added to the original setup. '
                 'Paired-event objectives belong to that pair anchor and the named asset only. '
-                'Parent outcomes refer to the enclosing H1 range objectives. All times are New York candle intervals, not exact ticks. '
+                'Selected-range outcomes refer to that named H1 range, not assumed candle containment. All times are New York candle intervals, not exact ticks. '
                 'Raw tables, repeated narrative and deeper lifecycle OHLC are omitted. For a specific candle, '
                 'CSD, retest or Blessed Thief follow-up, use that range detail_request before answering omitted facts. '
                 'Do not infer absence from omission. Source purge intervals and assigned-candle closes are different. '
@@ -336,13 +338,82 @@ def _budget_overview(out):
     return out
 
 
+def shift_voice_synopsis(result):
+    """Small default presentation after raw conversation evidence was captured.
+
+    The complete overview remains available via shift_voice_overview. Nothing in
+    this view replaces the raw identity index or exact range/candle detail tools.
+    """
+    from gbop_voice_web.shift_synopsis import build_shift_synopsis
+    review = result['review']
+    out = {key: deepcopy(value) for key, value in result.items() if key != 'review'}
+    if 'market_context' in out:
+        out['market_context'] = _voice_market_context(out['market_context'], evidence_ref='#/review')
+    out['review'] = _pick(review, ('date_ny', 'shift', 'timezone', 'source_resolution_seconds'))
+    out['review']['shift_synopsis'] = build_shift_synopsis(review, result.get('asset'))
+    out['voice_view'] = {
+        'kind': 'shift_synopsis', 'detail_omitted': True,
+        'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
+        'note': 'Default short synopsis only. Do not infer absence from omission. '
+                'Every named range remains recoverable through range_index detail_request; '
+                'specify detail_candle_start_ny for Model 1/CISD/Soup. '
+                'Seven is independent and can oppose eight. Raw verified context is retained.'}
+    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+        synopsis = out['review']['shift_synopsis']
+        return _bounded_error({'ok': False, 'status': 'voice_synopsis_budget_exceeded',
+            'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),
+            'message': 'This synopsis exceeds the response budget. Request an exact named range; no synopsis was supplied.',
+            'range_index': synopsis['range_index'],
+            'detail_request': next((r['detail_request'] for r in synopsis['range_index'] if r['label'] == '9ate8'), None)},
+            SHIFT_SYNOPSIS_TARGET_CHARS)
+    return out
+
+
+def current_voice_overview(result):
+    """Current scope/freshness and compact states, without its raw journal tree."""
+    review = result['review']
+    out = {key: deepcopy(value) for key, value in result.items() if key != 'review'}
+    if 'market_context' in out:
+        out['market_context'] = _voice_market_context(out['market_context'], evidence_ref='#/review')
+    out['review'] = _pick(review, ('mode', 'as_of_ny', 'analysis_cutoff_ny', 'observed_through_ny',
+        'current_scope', 'session_clock', 'freshness', 'selection_status', 'current_candle',
+        'ranges', 'paired_context', 'response_contract'))
+    out['review']['current_candle'] = _pick(review.get('current_candle', {}), (
+        'start_ny', 'end_ny', 'timeframe', 'status', 'complete', 'forming', 'open', 'high',
+        'low', 'close', 'midpoint', 'observed_through_ny', 'bar_count', 'missing_bar_count',
+        'source_resolution_seconds', 'coverage_note'))
+    out['voice_view'] = {
+        'kind': 'current_market', 'detail_omitted': True,
+        'character_budget': CURRENT_OVERVIEW_TARGET_CHARS,
+        'note': 'On-demand current snapshot. Preserve actual as-of, source cutoff and freshness; '
+                'forming candles stay provisional. Do not infer absence from omission. '
+                'Raw selected-range lifecycle remains retained for exact detail/journal binding; '
+                'use each detail_request at this cutoff. Never substitute a completed shift.'}
+    if _encoded_size(out) > CURRENT_OVERVIEW_TARGET_CHARS:
+        _factor_review(out)
+    if _encoded_size(out) > CURRENT_OVERVIEW_TARGET_CHARS:
+        return _bounded_error({'ok': False, 'status': 'voice_current_budget_exceeded',
+            'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),
+            'message': 'Current evidence exceeds the response budget. Use the scoped detail request; no current overview was supplied.',
+            'detail_request': next((r.get('detail_request') for r in review.get('ranges', [])
+                                    if r.get('role') == 'selected_range'), None)},
+            CURRENT_OVERVIEW_TARGET_CHARS)
+    return out
+
+
 def voice_tool_payload(name, result):
-    """Use the overview only for successful full shifts, never precise questions."""
+    """Select a bounded presentation after authoritative context capture."""
+    if (name == 'review_current_market' and isinstance(result, dict)
+            and result.get('review', {}).get('mode') == 'current_market'):
+        return current_voice_overview(result)
     if (name == 'review_market_session' and isinstance(result, dict)
             and isinstance(result.get('review', {}).get('shift_story'), dict)):
-        return shift_voice_overview(result)
+        return shift_voice_synopsis(result)
     if (name == 'review_market_crt' and isinstance(result, dict)
             and isinstance(result.get('review', {}).get('candle_lifecycle'), dict)):
         from gbop_voice_web.voice_detail import crt_voice_detail
         return crt_voice_detail(result)
+    from gbop_voice_web.journal_presentation import journal_tool_payload, JOURNAL_PRESENTATION_TOOLS
+    if name in JOURNAL_PRESENTATION_TOOLS:
+        return journal_tool_payload(name, result)
     return compact_voice_tool_result(name, result)

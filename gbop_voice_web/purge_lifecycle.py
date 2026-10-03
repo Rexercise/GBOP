@@ -1,11 +1,12 @@
 """Closed-candle GTOP lifecycle evidence; no fills, stops, or profit inference.
 
-Use the owner's body-open CSD convention explicitly. A second body purge is
+Use the owner's full-extreme, strict assigned-close CSD convention explicitly. A second body purge is
 reported as an observation awaiting rejection, not silently treated as a
 successful Turtle Soup. Coverage and chronology travel with every conclusion.
 """
 from __future__ import annotations
 from gbop_voice_web.candle_naming import objective_identity
+from gbop_voice_web import cisd_rule
 
 
 def _bar(candle):
@@ -79,8 +80,9 @@ def _life(bars, model, candles, anchor, through, step, invalid_at):
     bearish = side == 'buy'
     extreme = model['high'] if bearish else model['low']
     body_open = model['open']
-    csd, first_sweep, return_inside = None, None, None
-    continuous = True
+    confirmation = cisd_rule.reference(model, bearish)
+    csd, first_sweep, return_inside, wick_soup = None, None, None, None
+    continuous, wick_verified = True, False
     for c in following:
         if not c['complete']:
             continuous = False
@@ -98,12 +100,16 @@ def _life(bars, model, candles, anchor, through, step, invalid_at):
                            'close_back_through_swept_extreme': c['close'] <= extreme if bearish else c['close'] >= extreme}
         if first_sweep and return_inside is None and (c['close'] <= extreme if bearish else c['close'] >= extreme):
             return_inside = _bar(c)
-        cross = c['close'] < body_open if bearish else c['close'] > body_open
+        if wick_soup is None and cisd_rule.wick_soup(c, model, bearish):
+            wick_soup = _bar(c)
+            wick_verified = continuous
+        cross = cisd_rule.confirms(c, model, bearish)
         if cross:
             csd = {'candle': _bar(c), 'confirmed_at_ny': c['end_ny'],
-                   'reference_level': body_open, 'reference': 'Model 1 real-body open',
-                   'rule': 'assigned-timeframe close back through Model 1 body open',
+                   **confirmation,
                    'first_in_continuous_window': continuous}
+            if first_sweep and first_sweep['candle']['end_ny'] == c['end_ny']:
+                first_sweep['before_csd_close_verified'] = False
             break
     observation_end = parse_time(csd['confirmed_at_ny']) if csd else min(through, invalid_at or through)
     expected_cursor = formed
@@ -117,11 +123,15 @@ def _life(bars, model, candles, anchor, through, step, invalid_at):
         expected_cursor = stop
     if expected_cursor != observation_end:
         pre_complete = False
-    if first_sweep:
+    same_csd_sweep = bool(first_sweep and csd and
+                          first_sweep['candle']['end_ny'] == csd['confirmed_at_ny'])
+    if wick_soup and wick_verified:
+        soup_status = 'super_soup_observed'
+    elif same_csd_sweep:
+        soup_status = 'same_candle_as_csd_order_unresolved'
+    elif first_sweep:
         if not first_sweep['before_csd_close_verified']:
             soup_status = 'sweep_observed_pre_csd_order_unverified'
-        elif first_sweep['close_back_through_swept_extreme']:
-            soup_status = 'super_soup_observed'
         elif return_inside:
             soup_status = 'body_purge_then_return_observed'
         else:
@@ -130,7 +140,7 @@ def _life(bars, model, candles, anchor, through, step, invalid_at):
         soup_status = ('no_subsequent_closed_candle' if not any(c['complete'] for c in following) else
                        'not_observed_in_complete_pre_csd_window' if pre_complete
                        else 'unverified_incomplete_pre_csd_window')
-    ss = {'status': soup_status, 'sweep': first_sweep, 'first_close_back_through_swept_extreme': return_inside,
+    ss = {'status': soup_status, 'sweep': first_sweep, 'pre_csd_wick': wick_soup, 'first_close_back_through_swept_extreme': return_inside,
           'formation_is_separate_from_csd_and_execution': True,
           'pre_csd_window_complete': pre_complete,
           'body_purge_is_not_automatically_a_successful_reversal': True}
@@ -149,7 +159,7 @@ def _life(bars, model, candles, anchor, through, step, invalid_at):
                                            'incomplete' if next_c else 'not_available_yet'),
             'csd': {'status': 'observed' if csd else 'not_assessed_no_subsequent_closed_candle' if not any(c['complete'] for c in following) else
                     'not_observed_in_complete_window' if pre_complete else 'unverified_incomplete_window',
-                    'evidence': csd}, 'super_soup': ss,
+                    **confirmation, 'evidence': csd}, 'super_soup': ss,
             'outer_range_invalidated_at_ny': stamp(invalid_at) if invalid_at else None,
             'execution_status': 'not_assessed', 'stopout_status': 'requires_member_stop_rule'}
     source = {'start_ny': model['bar_open_ny'], 'end_ny': model['bar_close_ny'],
@@ -215,7 +225,7 @@ def attach_lifecycles(bars, anchor, mapped, through, step, model1, invalid_at=No
         'adverse closes, outer-range invalidation and objectives are distinct observations. '
         'Body-purge-only is not automatically a completed reversal. Delivery after invalidation '
         'is later price movement, not retroactive valid-thesis success. No inferred entry or profit. '
-        'A missing or forming candle is unknown, not no Super Soup. CSD here uses an explicit body-open close rule.')
+        'A missing or forming candle is unknown, not no Super Soup. CSD requires a strict close below Model 1 full low bearish, above full high bullish; a wick or equality is not confirmation.')
     assessed = any(x['csd']['status'] != 'not_assessed_no_subsequent_closed_candle' for x in model1['lifecycles'])
     if assessed:
         model1['csd_status'] = 'assessed_per_candle'

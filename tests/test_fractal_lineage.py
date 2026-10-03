@@ -78,8 +78,8 @@ class FractalLineageTests(unittest.TestCase):
         self.assertEqual(five['model1_identity_in_parent']['identity'], 'Model 1 candle')
 
     def test_parent_failure_does_not_stop_child_lifecycle(self):
-        # H1 closes above monthly range at 10:00; identified M5 remains within
-        # its own range and confirms CSD after its parent has invalidated.
+        # H1 closes above its parent range at 10:00; the identified M5 keeps
+        # its own assessment and confirms below its full low afterward.
         start = parse_time('2026-10-02T08:00:00-04:00')
         data = fill(start, start+3*3600)
         by = {b['time']: b for b in data}
@@ -87,7 +87,7 @@ class FractalLineageTests(unittest.TestCase):
             by[t].update(open=112, high=114, low=111, close=112)
         model_at = start + 3600 + 55*60
         by[model_at].update(open=109, high=115, low=108, close=112)
-        by[start+2*3600+300].update(open=112, high=113, low=108, close=108.5)
+        by[start+2*3600+300].update(open=112, high=113, low=107, close=107.5)
         r = f.review_fractal(data, start, start+3*3600, 'H1', 300, 'BTCUSD', 'BTCUSDm', max_depth=1)
         root = r['nodes'][0]
         child = next(n for n in r['nodes'][1:] if n['anchor']['start_ny'] == stamp(model_at))

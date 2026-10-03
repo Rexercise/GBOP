@@ -33,15 +33,15 @@ class CandleLifecycleTests(unittest.TestCase):
         f=self.body(self.review(fixture()[:13]))
         self.assertEqual(f['identity'],'Model 1 candle')
         self.assertEqual(f['csd']['status'],'not_observed_by_review_cutoff')
-    def test_csd_uses_body_open_not_wick_low(self):
+    def test_csd_uses_full_low_not_body_open(self):
         f=self.body(self.review())
-        self.assertEqual(f['csd']['reference_level'],108)
-        self.assertEqual(f['csd']['evidence']['confirmed_at_ny'],'2026-10-02T10:15:00-04:00')
+        self.assertEqual(f['csd']['reference_level'],107)
+        self.assertEqual(f['csd']['evidence']['confirmed_at_ny'],'2026-10-02T10:20:00-04:00')
     def test_pre_csd_super_soup(self):
         f=self.body(self.review());self.assertEqual(f['super_soup']['status'],'observed_before_csd')
         self.assertEqual(f['super_soup']['evidence']['return_candle']['bar_close_ny'],'2026-10-02T10:10:00-04:00')
     def test_retest_and_disrespect_are_distinct_from_range_invalidation(self):
-        f=self.body(self.review()); self.assertEqual(f['body_reference_retest']['evidence']['bar_open_ny'],'2026-10-02T10:15:00-04:00')
+        f=self.body(self.review()); self.assertEqual(f['body_reference_retest']['evidence']['bar_open_ny'],'2026-10-02T10:30:00-04:00')
         self.assertEqual(f['body_disrespect_close']['evidence']['bar_close_ny'],'2026-10-02T10:35:00-04:00')
         self.assertTrue(f['body_disrespect_close']['evidence']['not_a_member_stop_or_parent_range_invalidation'])
     def test_own_midpoint_and_full_objective(self):
@@ -65,7 +65,7 @@ class CandleLifecycleTests(unittest.TestCase):
         self.assertEqual(f['csd']['status'],'unverified_incomplete_coverage')
         self.assertEqual(f['super_soup']['status'],'unverified_incomplete_coverage')
     def test_same_candle_super_soup_and_csd_not_claimed_pre_csd(self):
-        bars=fixture();bars[13]=bar(T+3900,112,116,106,107)
+        bars=fixture();bars[13]=bar(T+3900,112,116,105,106)
         f=self.body(self.review(bars))
         self.assertEqual(f['super_soup']['status'],'same_candle_as_csd_order_unresolved')
     def test_wick_soup_is_not_a_body_model1(self):
@@ -110,7 +110,7 @@ class CandleLifecycleTests(unittest.TestCase):
         self.assertEqual(self.review()['execution_status'],'not_assessed')
     def test_summary_keeps_identity_and_confirmation_separate(self):
         text=self.review()['spoken_summary']
-        self.assertIn('10:00 AM',text);self.assertIn('CSD confirmed on the closure of the 10:10 AM M5 candle',text)
+        self.assertIn('10:00 AM',text);self.assertIn('CSD confirmed on the closure of the 10:15 AM M5 candle',text)
     def test_missing_anchor_stays_unverified(self):
         self.assertEqual(self.review(fixture()[1:])['status'],'unverified_incomplete_anchor')
 

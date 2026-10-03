@@ -8,8 +8,9 @@ from gbop_voice_web.candle_evidence import (
 )
 
 from gbop_voice_web.candle_naming import objective_identity
+from gbop_voice_web import cisd_rule
 
-VERSION = 'super-soup-local-function-2026-10-03'
+VERSION = 'super-soup-full-extreme-2026-10-03'
 
 
 def relation(row, reference, bearish):
@@ -151,7 +152,8 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
     parent_validity = all(r['complete'] for r in rows if r['_start'] < start)
     local_invalid = next((r for r in prefix if not model['low'] <= r['close'] <= model['high']), None)
     local_invalid_at = local_invalid['_end'] if local_invalid else None
-    csd = next((r for r in prefix if (r['close'] < model['open'] if bearish else r['close'] > model['open'])), None)
+    confirmation = cisd_rule.reference(model, bearish)
+    csd = next((r for r in prefix if cisd_rule.confirms(r, model, bearish)), None)
     csd_at = csd['_end'] if csd else None
     result = dict(model1_bar_open_ny=model['bar_open_ny'], timeframe=model['timeframe'],
                   window_end_ny=stamp(end), source_coverage_complete=not missing,
@@ -159,8 +161,7 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
                   assigned_candle_forming=forming, execution_status='not_assessed',
                   csd=dict(status='confirmed' if csd else 'unverified_missing_candles' if missing else
                            'pending_assigned_close' if forming else 'not_observed_by_cutoff',
-                           rule='assigned close back through the full Model 1 body',
-                           body_reference_level=model['open'],
+                           **confirmation,
                            evidence=fact(csd) if csd else None),
                   model1_crt_invalidating_close=fact(local_invalid) if local_invalid else None,
                   parent_invalidated_at_ny=stamp(parent_invalid_at) if parent_invalid_at else None,
@@ -208,13 +209,16 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
     rel = relation(event, model, bearish)
     previously_invalid = any(not model['low'] <= r['close'] <= model['high'] for r in prior)
     wrong_side_first = any(r['low'] < model['low'] if bearish else r['high'] > model['high'] for r in prior)
-    clean = rel['close_inside'] and not previously_invalid and not wrong_side_first
+    clean = cisd_rule.wick_soup(event, model, bearish) and not previously_invalid and not wrong_side_first
     purge_bar = next(b for b in event['_bars'] if (b['high'] > model['high'] if bearish else b['low'] < model['low']))
     purge_at = purge_bar['time']
     soup.update(structure_status='observed', structural_quality='clean' if clean else 'not_clean',
                 event={**fact(event), **rel}, purge_source_interval=interval(purge_bar, step),
                 structure_known_at_ny=event['end_ny'],
-                pre_csd=True, csd_same_assigned_close=csd_at == event['_end'],
+                pre_csd=csd_at != event['_end'], csd_same_assigned_close=csd_at == event['_end'],
+                occurrence_type=('pre_csd_wick_super_soup' if cisd_rule.wick_soup(event, model, bearish)
+                                 else 'same_candle_csd_order_unresolved' if csd_at == event['_end']
+                                 else 'model1_range_body_purge'),
                 prior_local_invalidation=previously_invalid, opposite_side_swept_first=wrong_side_first,
                 inside_bars_before_purge=sum(r['high'] <= model['high'] and r['low'] >= model['low'] for r in prior))
     cutoff_values = [t for t in (local_invalid_at, parent_invalid_at) if t is not None]
@@ -238,7 +242,7 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
         if all_inside and n:
             soup['variants'].append({'code': 'V4' if n == 1 else 'V5',
                                      'basis': f'{n} complete inside bars before the purge',
-                                     'scope': 'Model 1 nested CRT'})
+                                     'scope': 'Model 1 own candle range'})
         target = local_targets['opposing_liquidity']
         if n == 0 and target['status'] == 'observed_after_purge':
             t = parse_time(target['evidence']['bar_open_ny'])
@@ -247,7 +251,7 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
                 count = index + 2  # Model 1 is candle one.
                 soup['variants'].append({'code': 'V2' if count == 2 else 'V1' if count == 3 else 'V3',
                                          'basis': f'Opposing Model 1 liquidity reached in candle {count}',
-                                         'scope': 'Model 1 nested CRT'})
+                                         'scope': 'Model 1 own candle range'})
         # V6 requires re-soup of the manipulation extreme BEFORE distribution,
         # not another touch of the original Model 1 boundary.
         midpoint = local_targets['midpoint']
@@ -261,7 +265,7 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
             re_swept = row['high'] > event['high'] if bearish else row['low'] < event['low']
             if re_swept and model['low'] <= row['close'] <= model['high']:
                 soup['variants'].append({'code': 'V6', 'basis': 'Later manipulation extreme re-souped before midpoint delivery',
-                                         'scope': 'Model 1 nested CRT', 'evidence': fact(row)})
+                                         'scope': 'Model 1 own candle range', 'evidence': fact(row)})
                 break
     return result
 
@@ -293,11 +297,12 @@ def enrich_model1(bars, anchor, model1, end, step, parent_invalid_at=None):
                   lifecycle=[model_lifecycle(m, anchor, rows, cutoff, step, parent_invalid_at)
                              for m in model1.get('candles', [])],
                   lifecycle_contract='Use lifecycle keyed by model1_bar_open_ny for CSD, following candles, '
-                  'Super Soup structure and outcomes. Identity stays in candles. assigned_range_purges '
+                  'Super Soup structure and outcomes. CSD requires a strict assigned close below the full Model 1 low bearish, '
+                  'above its full high bullish. A wick or equality is not confirmation. Identity stays in candles. assigned_range_purges '
                   'distinguishes wick-only purges from body-purging Model 1 candles. '
                   'Cleanliness is independent of success. Local Model 1 CRT validity, local_function '
                   'delivery and parent objectives are separate. Local function observations continue '
-                  'after Model 1 invalidation within the parent-range review window; they never '
+                  'after Model 1 invalidation within the selected-range review window; they never '
                   'restore CRT validity or clean structure. Preserve same-bar ordering uncertainty. '
                   'No trade execution or live alert is inferred. '
                   'Legacy top-level not_assessed flags do not override the detailed lifecycle.')

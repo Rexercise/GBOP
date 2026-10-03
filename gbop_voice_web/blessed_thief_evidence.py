@@ -35,7 +35,7 @@ def _level_review(row, sources, purge, bearish, end, step, gap_at, objective, in
         extreme = (max if bearish else min)(local_adverse, key=lambda b: b[extreme_key])
         result['adverse_open_excursion'] = dict(first_observed=_event(local_adverse[0], step),
             extreme_price_at_cutoff=extreme[extreme_key], extreme_evidence=_event(extreme, step),
-            scope='selected candle open; not an asserted new parent-range purge')
+            scope='selected candle open; not an asserted new selected-range purge')
     parent_leg = [b for b in sources if purge['time'] <= b['time'] and b['time'] + step <= end]
     if parent_leg:
         extreme = (max if bearish else min)(parent_leg, key=lambda b: b[extreme_key])
@@ -145,7 +145,7 @@ def blessed_thief_review(bars, anchor, anchor_tf, end, step, invalid_at=None,
                     result['objective']['status'] = 'objective_in_invalidating_bar_order_unresolved'
     if purge is None and gap_at is None:
         result['status'] = 'no_manipulation_observed'
-        result['summary'] = 'No parent-range manipulation was observed in the reviewed closed candles; Blessed Thief conditions are not established.'
+        result['summary'] = 'No selected-range manipulation was observed in the reviewed closed candles; Blessed Thief conditions are not established.'
         return result
     result.update(status=('objective_reached' if objective else 'range_invalidated' if invalid_at else
                           'unverified_after_source_gap' if gap_at is not None else

@@ -222,5 +222,5 @@ Prepared briefings cover connected feeds in rotation without AI polling. Use
 get_prepared_market_brief for a prepared overview, and review_market_session/CRT
 for exact or fresher facts. State its actual date and as-of time. Do not pretend an
 unsupported correlated feed is available or claim uninterrupted monitoring.
-Super Soup: read formation, outcome and parent-range function separately.
+Super Soup: read formation, outcome and selected-range function separately.
 '''

@@ -11,6 +11,7 @@ import time
 import threading
 import re
 import json
+import math
 import asyncio
 from typing import Literal
 from gbop_voice_web.voice_runtime import VOICE_TRUNCATION, VoiceRateLimitRecovery
@@ -320,14 +321,15 @@ def ensure_member_record(member: discord.Member):
                 stamp
             ))
         else:
+            # updated_at is the activation/revocation revision; routine profile
+            # refresh must not invalidate a verified market conversation.
             conn.execute("""
                 UPDATE members
-                SET username=?, display_name=?, updated_at=?
+                SET username=?, display_name=?
                 WHERE guild_id=? AND user_id=?
             """, (
                 str(member),
                 member.display_name,
-                now(),
                 GTOP_GUILD_ID,
                 member.id
             ))
@@ -4515,7 +4517,9 @@ def ai_open_trade(user_id: int, args: dict):
             ),
         }
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import prepare_trade_metadata, save_trade_metadata, journal_transaction
+    metadata = prepare_trade_metadata(GTOP_GUILD_ID, user_id, args)
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
         cur = conn.execute("""
             INSERT INTO theses (
                 guild_id, user_id, asset, direction, play, session,
@@ -4523,7 +4527,7 @@ def ai_open_trade(user_id: int, args: dict):
                 thesis_invalidation, status, max_r, created_at
             )
             VALUES (
-                ?, ?, ?, ?, ?, '', '', '', '', ?, ?, 'OPEN', 1.0, ?
+                ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, 'OPEN', 1.0, ?
             )
         """, (
             GTOP_GUILD_ID,
@@ -4531,6 +4535,7 @@ def ai_open_trade(user_id: int, args: dict):
             asset,
             direction,
             play,
+            metadata.get('session') or '',
             objective,
             invalidation,
             now(),
@@ -4553,6 +4558,7 @@ def ai_open_trade(user_id: int, args: dict):
             now(),
         ))
         execution_id = cur.lastrowid
+        save_trade_metadata(conn, GTOP_GUILD_ID, user_id, thesis_id, metadata)
 
     warnings = []
     profile = get_profile(db, GTOP_GUILD_ID, user_id)
@@ -4665,7 +4671,8 @@ def ai_add_entry(user_id: int, args: dict):
     used_before = thesis_used_r(row["id"])
     projected = used_before + risk_r
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
         cur = conn.execute("""
             INSERT INTO thesis_executions (
                 thesis_id, guild_id, user_id, entry_model, tier, risk_r,
@@ -4737,7 +4744,8 @@ def ai_record_trade_event(user_id: int, args: dict):
     if result_r is not None:
         result_r = float(result_r)
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
         conn.execute("""
             INSERT INTO thesis_events (
                 thesis_id, guild_id, user_id, event, details, result_r,
@@ -4772,12 +4780,26 @@ def ai_close_trade(user_id: int, args: dict):
     final_result = args.get("final_result_r")
     if final_result is not None:
         final_result = float(final_result)
+        if not math.isfinite(final_result):
+            return {'ok': False, 'error': 'Result R must be finite or unknown.'}
 
     adherence = str(args["rule_adherence"]).strip()
     summary = str(args["summary"]).strip()
     study_note = str(args["study_note"]).strip()
 
+    from gbop_voice_web.journal_context import close_metadata, save_closed_metadata, journal_transaction
     with db() as conn:
+        metadata = close_metadata(conn, GTOP_GUILD_ID, user_id, row, args)
+    if metadata:
+        from gbop_voice_web.journal_coach import init_coach
+        init_coach(db)
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+                               (row['id'], GTOP_GUILD_ID, user_id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            return {'ok': False, 'error': 'This trade has already closed or changed. Read its journal before retrying.'}
+        # Re-read after preparation, in the guarded final transaction.
+        metadata = close_metadata(conn, GTOP_GUILD_ID, user_id, row, args)
         conn.execute("""
             UPDATE theses
             SET status='CLOSED',
@@ -4811,6 +4833,7 @@ def ai_close_trade(user_id: int, args: dict):
             row["id"],
         ))
         journal_id = cur.lastrowid
+        save_closed_metadata(conn, GTOP_GUILD_ID, user_id, journal_id, metadata)
 
         flags = conn.execute("""
             SELECT COUNT(*)
@@ -4887,7 +4910,8 @@ def ai_get_journal_history(user_id: int, args: dict):
 def ai_edit_journal(user_id: int, args: dict):
     journal_id = args.get("journal_id")
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
         if journal_id is None:
             row = conn.execute("""
                 SELECT *
@@ -4913,56 +4937,12 @@ def ai_edit_journal(user_id: int, args: dict):
     if row is None:
         return {"ok": False, "error": "No matching journal was found."}
 
-    summary = args.get("summary")
-    adherence = args.get("rule_adherence")
-    result_r = args.get("result_r")
-    study_note = args.get("study_note")
-
-    new_summary = row["description"] if summary is None else str(summary).strip()
-    new_adherence = (
-        row["rule_adherence"] if adherence is None else str(adherence).strip()
-    )
-    new_result = row["result_r"] if result_r is None else float(result_r)
-    new_note = row["study_note"] if study_note is None else str(study_note).strip()
-
-    with db() as conn:
-        conn.execute("""
-            UPDATE journals
-            SET description=?, rule_adherence=?, result_r=?, study_note=?
-            WHERE id=? AND guild_id=? AND user_id=?
-        """, (
-            new_summary,
-            new_adherence,
-            new_result,
-            new_note,
-            row["id"],
-            GTOP_GUILD_ID,
-            user_id,
-        ))
-
-        if row["thesis_id"]:
-            conn.execute("""
-                UPDATE theses
-                SET final_result_r=?, close_note=?
-                WHERE id=? AND guild_id=? AND user_id=?
-            """, (
-                new_result,
-                new_summary,
-                row["thesis_id"],
-                GTOP_GUILD_ID,
-                user_id,
-            ))
-
-    return {
-        "ok": True,
-        "journal_id": row["id"],
-                "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, row["id"]),
-        "trade_id": trade_number_for_id(user_id, row["thesis_id"]),
-        "result_r": new_result,
-        "rule_adherence": new_adherence,
-        "summary": new_summary,
-        "study_note": new_note,
-    }
+    from gbop_voice_web.journal_coach import save_entry
+    from gbop_voice_web.journal_context import JournalTarget
+    return save_entry(db, GTOP_GUILD_ID, user_id, {
+        **args, '_journal_target': JournalTarget(GTOP_GUILD_ID, user_id, row['id']),
+        'description': args.get('summary'),
+    })
 
 
 GBOP_AI_TOOLS = [
@@ -5436,6 +5416,7 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
 def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None):
     from gbop_voice_web.market_conversation import TEXT_MARKET_CONTEXTS, contextual_tools
     market_context = TEXT_MARKET_CONTEXTS.get((GTOP_GUILD_ID, user_id, 'text', conversation_id))
+    market_context.auth_provider = (db, GTOP_GUILD_ID, user_id)
     market_generation = market_context.begin_turn(user_text)
     conversation_tools = contextual_tools(GBOP_AI_TOOLS)
     init_ai_db()
@@ -5495,10 +5476,11 @@ def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None)
                     "error": f"{type(exc).__name__}: {exc}",
                 }
 
+            from gbop_voice_web.voice_payload import voice_tool_payload
             input_items.append({
                 "type": "function_call_output",
                 "call_id": call.call_id,
-                "output": json.dumps(result),
+                "output": json.dumps(voice_tool_payload(call.name, result)),
             })
 
         instructions = base_instructions + market_context.prompt()
@@ -6004,7 +5986,7 @@ class GBOPRealtimeSession:
         from gbop_voice_web.voice_work import VoiceToolWork
         self.tool_work = VoiceToolWork(self)
         from gbop_voice_web.market_conversation import MarketConversation, contextual_tools
-        self.market_context = MarketConversation((GTOP_GUILD_ID, member.id, 'discord_voice'))
+        self.market_context = MarketConversation((GTOP_GUILD_ID, member.id, 'discord_voice'), auth_provider=(db, GTOP_GUILD_ID, member.id))
         self.conversation_tools = contextual_tools(GBOP_AI_TOOLS)
         self.recovery_tools = self.conversation_tools
         self.authorize_tool = lambda: asyncio.to_thread(
@@ -6248,7 +6230,7 @@ class GBOPRealtimeSession:
                 return
         self.tool_output_pending = True
         if (name == 'review_market_session' and result.get('ok')
-                and result.get('review', {}).get('shift_story')):
+                and voice_result.get('voice_view', {}).get('kind') == 'shift_overview'):
             # Audio tokens share this limit: live shift replies repeatedly hit 700.
             # Expand only this evidence-backed recap, not every reply.
             self._tool_response_options = {'max_output_tokens': max(GBOP_REALTIME_MAX_OUTPUT_TOKENS, 2200)}

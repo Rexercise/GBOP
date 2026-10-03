@@ -62,7 +62,7 @@ class BonelessTimeAlignmentTests(unittest.TestCase):
         for phrase in (
             'separate directional theses', 'not as an optional afterthought',
             'Clean formation can fail; unclean formation can still perform',
-            'nested CRT outcome and parent-range outcome',
+            'Model 1 own-range outcome and selected-range outcome',
             'the presence of SMT alone does not establish completion',
         ):
             self.assertIn(phrase, CANONICAL_KNOWLEDGE)

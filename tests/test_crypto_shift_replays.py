@@ -53,7 +53,7 @@ class CryptoShiftReplayTests(unittest.TestCase):
     def db(self):
         yield self.conn
 
-    def feed(self, db, asset):
+    def feed(self, db, asset, now=None):
         asset = market.asset_name(asset)
         return dict(ok=True, asset=asset, symbol=self.symbols[asset],
                     status='historical_replay', is_live=False, bars=[], bars_m1=[])

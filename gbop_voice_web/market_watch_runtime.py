@@ -45,7 +45,7 @@ def extract_events(result):
             csd = candle.get('csd',{})
             if csd.get('status')=='confirmed':
                 add('csd',csd['evidence']['confirmed_at_ny'],identity,
-                    f"CSD closed through Model 1 body-open level {csd['reference_level']}; Model 1 {candle['bar_open_ny']}")
+                    f"CSD closed strictly beyond Model 1 full {csd['reference_boundary']} {csd['reference_level']}; Model 1 {candle['bar_open_ny']}")
             soup = candle.get('super_soup',{})
             cls = candle.get('super_soup_structure',{})
             # Same-candle soup/CSD is preserved for discussion, not a pre-CSD alert.
