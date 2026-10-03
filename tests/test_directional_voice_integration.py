@@ -60,6 +60,18 @@ class DirectionalVoiceIntegrationTests(unittest.TestCase):
         self.assertNotIn('model1_identity_columns', wire['voice_view'])
         self.assertNotIn('model1_outcome_columns', wire['voice_view'])
 
+    def test_voice_margin_tolerates_small_live_metadata_growth(self):
+        grown = deepcopy(self.raw)
+        grown['transport_metadata'] = 'x' * 300
+        self.assertTrue(voice_tool_payload('review_market_session', grown)['ok'])
+        generation = self.context.begin_turn(QUESTION)
+        request = self.context.required_evidence_request()
+        raw = self.context.run(request['tool'], request['args'], self.run_market, generation=generation)
+        raw['transport_metadata'] = 'x' * 300
+        page = voice_tool_payload('review_market_crt', raw)
+        self.assertTrue(page['ok'], page)
+        self.assertLessEqual(len(json.dumps(page, separators=(',', ':'))), 32000)
+
     def test_prefetch_supplies_exact_evidence_before_no_tool_answer(self):
         generation = self.context.begin_turn(QUESTION)
         value = prefetch_market_evidence(self.context, self.run_market, generation)

@@ -11,6 +11,7 @@ from gbop_voice_web.voice_runtime import compact_voice_tool_result
 from gbop_voice_web.directional_evidence import directional_candidate_evidence
 
 SHIFT_OVERVIEW_TARGET_CHARS = 32000
+VOICE_COMPACTION_TARGET_CHARS = 31000
 
 
 def _encoded_size(value):
@@ -57,7 +58,7 @@ def _factor_review(out):
     seen = {}
 
     def factor(value, path, key=None):
-        if isinstance(value, (dict, list)) or key == 'response_contract':
+        if isinstance(value, (dict, list, str)):
             encoded = json.dumps(value, sort_keys=True, separators=(',', ':'))
             if len(encoded) > 180:
                 if encoded in seen:
@@ -248,13 +249,13 @@ def _budget_overview(out):
     def size():
         return len(json.dumps(out, separators=(',', ':')))
     ranges = out['review']['shift_story']['ranges']
-    if size() > SHIFT_OVERVIEW_TARGET_CHARS:
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
         # These prose summaries duplicate the structured state and are not the
         # selected-range narrative. Exact Blessed Thief detail is still queryable.
         for row in ranges:
             row.get('blessed_thief', {}).pop('summary', None)
         out['voice_view']['additional_detail_omitted'] = 'Blessed Thief prose; use each exact range detail_request.'
-    if size() > SHIFT_OVERVIEW_TARGET_CHARS:
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
         recap = out['review']['shift_recap']
         for key in ('headline', 'closing'):
             if recap.get(key) and recap[key] in recap.get('spoken_summary', ''):
@@ -267,7 +268,7 @@ def _budget_overview(out):
             'Closed OHLC only; same-bar tick order unknown. Gaps/forming means unverified. '
             'Independent ranges are not selected; incomplete hours cannot verify promotion. '
             'Model 1 identity is separate from CSD/Soup/fills. Later delivery never restores invalid CRTs.')
-    if size() > SHIFT_OVERVIEW_TARGET_CHARS:
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
         # Identical paired qualification/evidence is emitted once. References
         # resolve within this same payload, never through another API request.
         seen = {}
@@ -290,10 +291,9 @@ def _budget_overview(out):
             if key in out['review']:
                 out['review'][key] = factor(out['review'][key], '#/review/' + key)
         out['voice_view']['reference_format'] = (
-            'same_evidence_as is an exact duplicate at that JSON pointer in THIS payload. '
-            'Read the referenced object for all qualification/status/timing facts; no detail call is needed.')
+            'same_evidence_as resolves to identical evidence at its JSON pointer in this payload.')
     out['voice_view']['character_budget'] = SHIFT_OVERVIEW_TARGET_CHARS
-    if size() > SHIFT_OVERVIEW_TARGET_CHARS:
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
         recap = out['review']['shift_recap']
         named = recap.get('range_summaries', [])
         joined = ' '.join(row.get('text', '') for row in named if row.get('role') == 'selected_range')
@@ -302,7 +302,7 @@ def _budget_overview(out):
                 'where_role': 'selected_range', 'separator': ' '}
             out['voice_view']['hourly_summary_reference'] = (
                 'hourly_crt_summary joins the inline selected range_summaries text in order; no extra retrieval.')
-    if size() > SHIFT_OVERVIEW_TARGET_CHARS:
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
         # Keep the outcome-first selected-shift narrative and every structured
         # range. The second, per-range prose retelling is not new evidence.
         recap = out['review']['shift_recap']
@@ -310,19 +310,18 @@ def _budget_overview(out):
         recap.pop('range_summaries', None)
         out['voice_view'].pop('hourly_summary_reference', None)
         out['voice_view']['range_recap_prose_omitted'] = (
-            'Duplicate range prose omitted; named ranges, directions, objectives, identities and uncertainty remain. '
-            'Use exact detail_request. Later invalidation preserves prior delivery.')
-    if size() > SHIFT_OVERVIEW_TARGET_CHARS:
+            'Duplicate range prose omitted; named evidence remains. Use detail_request. Earlier delivery remains valid.')
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
         out['voice_view']['note'] = (
-            'Named Model 1 bodies remain; first original-direction lifecycle and first wick per direction supplied. Fetch other exact candle details. Own targets belong to that Model 1; parent targets belong to its range. '
-            'directional_outcome names the initial local thesis; paired_smt/paired_context retain separate paired theses. '
-            'Do not infer absence from omission. Use exact detail_request for omitted prices, touch times, wick candles or lifecycle detail. '
-            'Source intervals differ from assigned candle closes. No member fills or restored CRT validity are inferred.')
-    if size() > SHIFT_OVERVIEW_TARGET_CHARS:
+            'All Model 1 bodies, first original-direction lifecycle and first wick per direction remain. '
+            'Own targets belong to that candle; parent and paired theses remain separate. '
+            'Do not infer absence from omission: fetch exact detail_request for other prices/times/lifecycles. '
+            'Source intervals differ from assigned closes. No fills or restored CRT validity are inferred.')
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
         for row in ranges:
             row['blessed_thief'] = {**_pick(row['blessed_thief'], ('status', 'timeframe', 'source_gap_at_ny')),
                 'detail_omitted': True}
-    if size() > SHIFT_OVERVIEW_TARGET_CHARS:
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
         _factor_review(out)
     if size() > SHIFT_OVERVIEW_TARGET_CHARS:
         # Fail explicitly rather than serialize an unbounded request or pretend

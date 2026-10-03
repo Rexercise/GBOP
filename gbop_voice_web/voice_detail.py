@@ -8,6 +8,7 @@ from gbop_voice_web.voice_payload import _bounded_error, _factor_review, _paired
 from gbop_voice_web.directional_evidence import directional_candidate_evidence
 
 DETAIL_CHARACTER_BUDGET = 32000
+DETAIL_COMPACTION_TARGET_CHARS = 31000
 
 
 def _approach(value):
@@ -137,7 +138,7 @@ def crt_voice_detail(result):
             'or next_request; preserve scope/cutoff. backend_remaining_from_ny marks unavailable deeper records, '
             'not a page cursor. Raw/BT cursors are separate. Missing detail proves no absence; '
             'distances are source-bar price points, not tick order or fills.'}
-    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
+    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_COMPACTION_TARGET_CHARS:
         # Repeated pair narrative is not the requested lifecycle evidence.
         view.pop('recap', None)
         view.pop('limits', None)
@@ -146,7 +147,7 @@ def crt_voice_detail(result):
         view.get('directional_outcome', {}).pop('response_contract', None)
         view['blessed_thief'] = _pick(bt, ('status', 'timeframe', 'window_end_ny', 'next_candle_start_ny'))
         view['blessed_thief']['detail_omitted'] = True
-    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
+    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_COMPACTION_TARGET_CHARS:
         # Repeated coverage extrema are not lifecycle evidence. Keep exact
         # anchor OHLC/first extremes and all gaps/precision, not last occurrences.
         for key in ('high_last_seen', 'low_last_seen', 'high_occurrences', 'low_occurrences'):
@@ -157,7 +158,7 @@ def crt_voice_detail(result):
                     'source_resolution_seconds', 'bar_count', 'missing_bar_count', 'coverage_note'))
         out['voice_detail_page']['coverage_extrema_omitted'] = (
             'Repeated extrema omitted; anchor OHLC/first extremes, source gaps and lifecycle times retained.')
-    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
+    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_COMPACTION_TARGET_CHARS:
         # Rejected paired theses are not the selected candle's lifecycle.
         # Potential/qualified boneless evidence remains complete. Explicit
         # paired investigations have their own unmodified review tool.
@@ -171,7 +172,7 @@ def crt_voice_detail(result):
                         'asset': compact.get('asset'), 'comparison_asset': peer,
                         'context_action': 'continue', 'anchor_start_ny': anchor.get('start_ny'),
                         'anchor_timeframe': review.get('anchor_timeframe'), 'through_ny': cutoff}}
-    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
+    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_COMPACTION_TARGET_CHARS:
         _factor_review(out)
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
         failed = error('voice_detail_budget_exceeded',
