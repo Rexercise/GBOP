@@ -34,11 +34,11 @@ jobs:
           start=s.index('    def instructions(self):',s.index('class GBOPRealtimeSession:'))
           end=s.index('    def session_update(self):',start)
           s=s[:start]+'''    def instructions(self):
-              # Do not pin journal prose/history in every voice response. All current
-              # records remain available through the unchanged member-scoped tools.
-              profile = get_profile(db, GTOP_GUILD_ID, self.member.id)
-              member_state = market_clock() + "\\n" + profile_context(profile)
-              return build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, member_state)
+                  # Do not pin journal prose/history in every voice response. All current
+                  # records remain available through the unchanged member-scoped tools.
+                  profile = get_profile(db, GTOP_GUILD_ID, self.member.id)
+                  member_state = market_clock() + "\\n" + profile_context(profile)
+                  return build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, member_state)
 
           '''+s[end:]
           s=replace(s,'os.getenv("GBOP_REALTIME_MAX_OUTPUT_TOKENS", "700")','os.getenv("GBOP_REALTIME_MAX_OUTPUT_TOKENS", "1400")')
