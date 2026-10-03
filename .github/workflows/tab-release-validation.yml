@@ -22,6 +22,14 @@ jobs:
       - name: Apply exact branch-only integration patch
         run: |
           python tools/apply_tab_release.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('gbop_voice_web/market_watch.py'); t=p.read_text()
+          start=t.index('For Super Soup, use classification.formation')
+          end=t.index("'''",start)
+          t=t[:start]+'Super Soup: read formation, outcome and parent-range function separately.\n'+t[end:]
+          p.write_text(t)
+          PY
           python tools/tab_release_refinements.py
           python - <<'PY'
           from pathlib import Path
@@ -30,6 +38,42 @@ jobs:
           t=t.replace("ASSETS = {'NAS100', 'US30'", "ASSETS = {'NAS100', 'SPX', 'US30'")
           t=t.replace('not 1 <= len(symbols) <= 8', 'not 1 <= len(symbols) <= len(ASSETS)')
           t=t.replace('Configure 1–8 exact broker symbols.', 'Configure 1–9 exact broker symbols, including SPX only with its verified broker mapping.')
+          p.write_text(t)
+          p=Path('gbop_voice_web/market_watch_runtime.py'); t=p.read_text()
+          start=t.index('    jobs=[]\n',t.index('def prepare_next_shift('))
+          end=t.index("    result=market_tool(db,'review_market_session'",start)
+          replacement='''    candidates=sorted(((fingerprints.get(('rotation',a,s),0),a,s) for a in assets for s in ('day','night')),key=lambda x:x[0])
+              selected=None
+              for _,asset,shift in candidates[:3]:
+                  fingerprints[('rotation',asset,shift)]=now
+                  feed=read_feed(db,asset,now)
+                  if not feed.get('ok'):
+                      continue
+                  try:
+                      day=latest_available_shift_date(feed,shift,db)
+                  except ValueError:
+                      continue
+                  begins=datetime.fromisoformat(day).replace(hour=7 if shift=='day' else 19,tzinfo=NY)
+                  start=int(begins.timestamp()); end=int((begins+timedelta(hours=5)).timestamp())
+                  bars,step=history_bars(db,feed,start,end)
+                  if not bars:
+                      continue
+                  key=(asset,day,shift)
+                  token=(asset,day,shift,hashlib.sha256(json.dumps(bars,separators=(',',':')).encode()).hexdigest(),now//300)
+                  if fingerprints.get(key)==token:
+                      continue
+                  selected=(asset,day,shift,token)
+                  break
+              if selected is None:
+                  return None
+              asset,day,shift,token=selected
+          '''
+          import textwrap
+          replacement='    '+textwrap.dedent(replacement[4:]).replace('\n          ','\n') if False else replacement
+          # YAML block indentation leaves ten extra spaces on continuation lines.
+          lines=replacement.splitlines()
+          replacement=lines[0]+'\n'+'\n'.join(line[10:] if line.startswith('          ') else line for line in lines[1:])+'\n'
+          t=t[:start]+replacement+t[end:]
           p.write_text(t)
           with Path('gbop_voice_web/TAB_RELEASE.md').open('a') as f:
               f.write('\nSPX collector support is included in this source release, but changing the hosted bot does not update the separate Windows collector or its config.json. SPX availability must be confirmed from received broker history; no substitute symbol is invented.\n')
