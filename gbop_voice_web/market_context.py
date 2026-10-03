@@ -7,35 +7,15 @@ PAIRINGS = {'XAUUSD': 'XAGUSD', 'XAGUSD': 'XAUUSD',
             'NAS100': 'SPX', 'SPX': 'NAS100'}
 
 LIFECYCLE_PROMPT = """
-CANDLE LIFECYCLE — CURRENT BACKEND CONTRACT
-Use candle_lifecycle.purge_candles for wick/body identification and exact candle
-OHLC. A body_soup is the Model 1 candle; a wick_soup is Turtle Wick Soup, not a
-body Model 1. Name its opening interval and the close at which it was identified
-BEFORE discussing confirmation. CSD uses a later assigned-timeframe close through
-that original body's opposite edge (its open), never a silently substituted wick.
-csd, super_soup, body_reference_retest, body_disrespect_close and
-objectives_after_formation/objectives_after_csd are separate timestamped facts.
-A Super Soup requires a sweep and return inside the identified candle before CSD;
-a return on the same confirming candle has unresolved pre-CSD ordering. Do not
-upgrade it. A retest here tests the stated body-open price after CSD. The named
-body-disrespect observation is a close beyond the original body's far edge; it
-is NOT automatically a member stop or parent CRT invalidation. Also report any
-post-CSD extreme breach separately. Parent invalidation uses its own timeframe.
-Read the stated rule and price if a member asks what was disrespected; do not
-invent their personal invalidation level. Report own midpoint versus full opposing
-objective and preserve delivery before subsequent invalidation. Sequence gaps or
-same-bar ambiguity must remain unverified, not absent. entry_confirmed=false and
-legacy model1.csd_status=not_assessed cannot override the explicit lifecycle facts.
-For full shifts, fold the relevant candle_timeline chapters into the recap in
-range order; do not dump every candle or stop at the first failed range.
-Automatic pairings are gold/silver, Bitcoin/Ethereum and NAS100/SPX. paired_smt
-covers the opening 9ate8 comparison; paired_context covers later selected ranges.
-Both histories must exist. Missing SPX is a missing feed, not no SMT and not US30.
-When paired evidence is relevant, volunteer the purging asset, the boneless asset,
-and EACH asset's own objective_status. 'Boneless' is an adjective for that asset
-at that event, never a separate SMT type. Do not claim a literal local purge.
-Only use context already observable at the member's entry when evaluating that
-entry. Do not infer a deliberate trap or a guaranteed reversal from SMT.
+Use candle_lifecycle.purge_candles and recap.candle_timeline for candle identity,
+OHLC, wick/body type, separate CSD/Super Soup, reference retests, body closes and
+own objectives. Follow the canonical lifecycle rules and each evidence status;
+legacy entry_confirmed=false or model1.csd_status=not_assessed cannot negate them.
+Name the candle first. Keep identity, confirmation, execution and parent-range
+invalidation separate. Fold relevant facts into the recap without dumping tables.
+Use paired_smt plus paired_context for configured gold/silver, Bitcoin/Ethereum
+and NAS100/SPX comparisons. Volunteer boneless_asset and each own objective_status.
+Missing SPX is not no SMT or US30. Never invent context unavailable at entry.
 """.strip()
 
 
