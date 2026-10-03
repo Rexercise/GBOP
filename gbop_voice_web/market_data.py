@@ -11,12 +11,15 @@ from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.shift_review import review_shift
 from gbop_voice_web.candle_evidence import parse_time, stamp, candle_query, crt_review, summarize, next_boundary
 from gbop_voice_web.smt_evidence import compare_ranges
+from gbop_voice_web.candle_lifecycle import lifecycle_review
+from gbop_voice_web.market_context import PAIRINGS, enrich_smt, LIFECYCLE_PROMPT
 
 NY = ZoneInfo('America/New_York')
-ASSETS = {'NAS100', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
+ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
 ALIASES = {'NAS': 'NAS100', 'USTEC': 'NAS100', 'NASDAQ': 'NAS100', 'DJI': 'US30',
            'GOLD': 'XAUUSD', 'SILVER': 'XAGUSD', 'OIL': 'WTI', 'USOIL': 'WTI',
-           'BTC': 'BTCUSD', 'ETH': 'ETHUSD'}
+           'BTC': 'BTCUSD', 'ETH': 'ETHUSD', 'US500': 'SPX', 'SP500': 'SPX',
+           'SPX500': 'SPX', 'S&P500': 'SPX', 'S&P 500': 'SPX'}
 MAX_BYTES = 4_000_000
 CREATE_SQL = '''CREATE TABLE IF NOT EXISTS gbop_market_feed (
     asset TEXT PRIMARY KEY, captured_at BIGINT NOT NULL, received_at BIGINT NOT NULL,
@@ -77,7 +80,7 @@ def validate_payload(data, now=None):
         raise ValueError('Bridge clock or capture is stale. Synchronize Windows time.')
     instruments = data['instruments']
     if not isinstance(instruments, list) or not 1 <= len(instruments) <= len(ASSETS):
-        raise ValueError('Expected 1–8 instruments.')
+        raise ValueError(f'Expected 1–{len(ASSETS)} instruments.')
     clean, seen = [], set()
     for item in instruments:
         if not isinstance(item, dict) or not {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars'} <= set(item) or set(item) - {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars', 'bars_m1'}:
@@ -163,8 +166,45 @@ def read_feed(db, asset, now=None):
             'bars': payload['bars'], 'bars_m1': payload.get('bars_m1', [])}
 
 
+def attach_lifecycle(review, bars, end, step):
+    """One conversational view; retain raw sequel facts without duplicate verdicts."""
+    invalid = review.get('invalidated_at_ny')
+    view = lifecycle_review(bars, review['anchor'], review.get('assigned_timeframe', 'M5'),
+                            end, step, parse_time(invalid) if invalid else None)
+    model = review.get('model1', {})
+    sequels = {x['model1_candle_open_ny']: x for x in model.get('lifecycles', [])}
+    for fact in view.get('purge_candles', []):
+        sequel = sequels.get(fact['bar_open_ny']) if fact['purge_type'] == 'body_soup' else None
+        if not sequel:
+            continue
+        fact['next_assigned_candle'] = sequel.get('next_assigned_candle')
+        fact['next_assigned_candle_status'] = sequel.get('next_assigned_candle_status')
+        sweep = sequel.get('super_soup', {}).get('sweep')
+        if sweep:
+            # Preserve the observed wick/body sweep even if pre-CSD order/rejection
+            # is unverified. The explicit view status controls any confirmation claim.
+            fact['subsequent_extreme_sweep'] = {k: sweep[k] for k in (
+                'candle', 'purged_level', 'form', 'immediate_next_assigned_candle',
+                'close_back_inside_model1', 'close_back_through_swept_extreme') if k in sweep}
+            fact['subsequent_extreme_sweep']['ordering_status_ref'] = 'super_soup.status'
+        adverse = sequel.get('later_adverse_close_beyond_model1_extreme')
+        if adverse:
+            fact['later_close_beyond_original_extreme'] = {
+                'candle': adverse, 'not_a_member_stop_or_parent_invalidation': True}
+    review['candle_lifecycle'] = view
+    if 'model1' in review:
+        # Core crt_review retains its audit evidence. Market-tool answers get one
+        # status authority and immutable identity, not two competing lifecycle trees.
+        model.pop('lifecycles', None)
+        model.pop('wick_soups', None)
+        model['lifecycle_ref'] = 'candle_lifecycle.purge_candles'
+        model['lifecycle_contract'] = view['response_contract']
+        model['csd_status'] = model['super_soup_status'] = 'see_candle_lifecycle'
+    return review
+
+
 def session_review(bars, day, shift, step=300):
-    """Conservative H1 range observations, never inferred CSD/entry confirmation."""
+    """H1 structure plus independently timestamped assigned-candle lifecycle."""
     if shift not in ('day', 'night'):
         raise ValueError('shift must be day or night.')
     day = date.fromisoformat(day)
@@ -186,7 +226,6 @@ def session_review(bars, day, shift, step=300):
             high, low = anchor['high'], anchor['low']
             above, below = nine['high'] > high, nine['low'] < low
             outside = nine['close'] > high or nine['close'] < low
-            # Young Lefty cannot survive an intervening 8 o'clock close outside 7.
             intervening = hour(base + 8) if play == 'Young Lefty' else anchor
             if intervening is None:
                 results.append(result)
@@ -205,7 +244,6 @@ def session_review(bars, day, shift, step=300):
                           direction=('bearish' if above else 'bullish') if above != below and status == 'range_sweep_candidate' else None,
                           primary_target=(low if above else high) if above != below and status == 'range_sweep_candidate' else None,
                           nine_close=nine['close'])
-            # Follow subsequent full hours only; do not call a target hit or a confirmed entry.
             if status == 'range_sweep_candidate':
                 for h in (base + 10, base + 11):
                     later = hour(h)
@@ -221,28 +259,37 @@ def session_review(bars, day, shift, step=300):
         shift_end = int((datetime(day.year, day.month, day.day, base + 9, tzinfo=NY) + timedelta(hours=3)).timestamp())
         available_end = min(shift_end, max((b['time'] + step for b in bars), default=anchor_start + 3600))
         if available_end >= anchor_start + 3600:
-            result['evidence'] = crt_review(bars, anchor_start, available_end, 'H1', step)
+            result['evidence'] = attach_lifecycle(crt_review(bars, anchor_start, available_end, 'H1', step), bars, available_end, step)
         results.append(result)
-    # Lead with the whole-shift story. The legacy opening-play summaries are
-    # supplemental context, not the outcome of the complete session.
+    story = review_shift(bars, day.isoformat(), shift, step)
+    cutoff = parse_time(story['end_ny'])
+    for row in story['ranges']:
+        attach_lifecycle(row, bars, cutoff, step)
+    story['recap']['candle_timeline'] = [
+        {'anchor_start_ny': row['anchor_start_ny'], 'summary': row['candle_lifecycle'].get('spoken_summary', ''),
+         'evidence_ref': 'shift_story.ranges[].candle_lifecycle'}
+        for row in story['ranges'] if row['role'] == 'selected_range']
     return {'date_ny': day.isoformat(), 'shift': shift, 'timezone': 'America/New_York',
-            'shift_story': review_shift(bars, day.isoformat(), shift, step), 'observations': results,
+            'shift_story': story, 'observations': results,
             'source_resolution_seconds': step,
-            'limits': 'Closed source candles aggregated to H1. Event times identify source bars, not ticks. Use variant_evidence for supported H1 structural labels, not execution confirmation. No automatic CSD, Super Soup or Blessed Thief execution confirmation. Single-asset observations do not establish SMT; paired_smt evaluates it separately. Missing/unfinished hours are not evidence of no setup.'}
+            'limits': 'Closed source candles aggregated to H1. Event times identify source bars, not ticks. '
+                      'Use variant_evidence for H1 structure and candle_lifecycle for wick/body, CSD, Super Soup and reference retests. '
+                      'Neither proves a member execution. paired_smt and paired_context evaluate relative behavior separately. '
+                      'Missing/unfinished hours are not evidence of no setup.'}
 
 
 MARKET_TOOLS = [
-    schema('review_market_smt', 'Compare two positively correlated markets at the SAME anchor and moment. Verifies relative boundary sweeps, not trade entries. For 9ate8 use each market\'s 8 oclock H1 range; later invalidation never erases an earlier divergence.', {
+    schema('review_market_smt', 'Compare two positively correlated markets at the SAME anchor and moment. Verifies relative boundary sweeps, boneless asset and each own objective, not trade entries. For 9ate8 use each market\'s 8 oclock H1 range; later invalidation never erases an earlier divergence.', {
         'asset': {'type': 'string'}, 'comparison_asset': {'type': 'string'},
         'anchor_start_ny': {'type': 'string'}, 'anchor_timeframe': {'type': 'string'},
         'through_ny': {'type': 'string'}}),
     schema('get_market_price', 'Get latest broker bid/ask ONLY when a quote is requested. Disclose stale or absent data.', {'asset': {'type': 'string'}}),
-    schema('review_market_session', 'Review the entire GTOP shift: 9AM-noon or 9PM-midnight New York, beginning with the 8 oclock anchor. Returns sequential hourly range promotions after invalidation, later CRTs, objective outcomes, M5 body evidence, plus 9ate8/Young Lefty. Use for casual references to today’s play as well as direct questions. Dates/shifts use New York.', {
+    schema('review_market_session', 'Review the entire GTOP shift: 9AM-noon or 9PM-midnight New York, beginning with the 8 oclock anchor. Returns hourly range promotions, later CRTs, own objectives, assigned wick/body candle lifecycle, CSD/Super Soup/retests and automatic configured paired-market context. Use for casual references to today’s play as well as direct questions.', {
         'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null']},
         'shift': {'type': 'string', 'enum': ['day', 'night']}}),
     schema('inspect_market_candles', 'Read historical or current candle OHLC and when extremes formed. Explicit ISO start/end in New York (or with offset). M1-M60, H1-H24, D1, W1, MN1; custom anchors supported. Incomplete coverage is not a definitive daily/weekly extreme. Paginate next_start_ny.', {
         'asset': {'type': 'string'}, 'start_ny': {'type': 'string'}, 'end_ny': {'type': 'string'}, 'timeframe': {'type': 'string'}}),
-    schema('review_market_crt', 'Inspect ANY selected CRT anchor, subsequent purges and invalidating anchor-timeframe closes. Returns assigned timeframe candles and bar timestamps; not an automatic entry signal. Defaults: monthly->daily, weekly->H4, daily->H1, H4->M15, H1->M5. Specify exact anchor start to preserve chart/session alignment.', {
+    schema('review_market_crt', 'Inspect ANY selected CRT anchor, subsequent purges and invalidating anchor-timeframe closes. Returns assigned wick/body candles and lifecycle facts separately from execution. Defaults: monthly->daily, weekly->H4, daily->H1, H4->M15, H1->M5. Specify exact anchor start to preserve chart/session alignment.', {
         'asset': {'type': 'string'}, 'anchor_start_ny': {'type': 'string'}, 'through_ny': {'type': 'string'},
         'anchor_timeframe': {'type': 'string'}, 'confirmation_timeframe': {'type': ['string', 'null']}}),
 ]
@@ -251,10 +298,10 @@ MARKET_PROMPT = """
 # TRADING ACCOUNTABILITY BUDDY: GROUNDED MARKET CONVERSATION
 For "what did price do today/this shift?", use review_market_session and lead with
 shift_story.recap.spoken_summary (voice may expose this as shift_recap.spoken_summary),
-not only observations[0]. For gold/silver ALSO lead with paired_smt when its
-closed aligned candles verify divergence: the standalone shift_story describes
-single-asset CRTs, not the entire paired SMT story. Paraphrase
-naturally while retaining later ranges and outcomes. Its chapters provide detail.
+not only observations[0]. For configured comparison pairs ALSO include paired_smt
+and paired_context when their closed aligned candles verify divergence: the
+standalone shift_story describes single-asset CRTs, not the entire paired SMT story.
+Paraphrase naturally while retaining later ranges and outcomes. Its chapters provide detail.
 Day is 09:00-12:00 and night 21:00-00:00 NY.
 Whole-shift recaps are NOT direct terminology questions: use 4-7 concise sentences
 to cover the complete sequence. This overrides the usual 1-3 sentence default.
@@ -269,11 +316,11 @@ Start from 8; explain range_transitions and each later selected range through th
 cutoff. An initial 9ate8 failure does NOT mean the shift had no later setup.
 Use hourly_progression for candle science; independent_range_context is not an
 assertion that the range was selected. Report the objective, purge, return inside,
-M5 body evidence, observed target delivery and invalidation in chronological order.
+assigned candle lifecycle, observed target delivery and invalidation in chronological order.
 A target observed before later invalidation remains a historical fact. Never call
 it a member profit or a target after entry without actual execution evidence.
-Same-bar touches have unknown order. M5 purge-body crosses are not by themselves
-confirmed Model 1/CSD or Super Soup. Query the selected candidate candles as needed.
+Same-bar touches have unknown order. Use candle_lifecycle for candle identity and
+separate subsequent CSD/Super Soup facts, not a false legacy execution flag.
 Explain hindrances only as observed events (e.g. repeat purge, invalidating close,
 unreached objective); do not invent causation, news, or intent. State incomplete
 coverage and unresolved progression plainly. Do not say you watched the shift live.
@@ -319,21 +366,18 @@ with broker session candles. Ask the anchor boundary only if materially ambiguou
 
 SMT: use review_market_smt for synchronized anchors and boundary sweeps. One
 positively correlated market sweeping buy side while its peer leaves its own high
-untouched is bearish SMT; reverse for sell side/bullish. paired_smt is the same
-deterministic check for the gold/silver 9ate8 opening hour. A confirmed divergence
+untouched is bearish SMT; reverse for sell side/bullish. A confirmed divergence
 is NOT a confirmed entry. It does NOT require both independent CRTs to deliver,
 nor remain valid later. Respect anchors_valid_at_event and missing coverage; do not
 use later invalidations or opposite-direction outcomes to deny earlier divergence.
 When challenged, inspect matched evidence and correct the answer if warranted;
 do not repeat a previous classification instead of checking its factual basis.
-Range candidates alone are not confirmed CSD, Super Soup, Blessed Thief entries, signals,
-or evidence of an actual member execution. Examine assigned-timeframe candles and the
-member's selected Model 1 candidate before discussing a possible Super Soup/CSD; if the
-body or sequence is unclear, ask for its candle instead of asserting confirmation.
+Examine assigned-timeframe OHLC and the identified Model 1 candle; a wick-only
+purge is a Turtle Wick Soup. Identity does not wait for CSD or member execution.
 MOB is discretionary knowledge. Do not spend calls trying to detect PD arrays or claim
 an automatically verified MOB. Preserve a member-supplied MOB as their chosen level.
 These tools never place/manage/close broker orders or change member trade progress.
-""".strip()
+""".strip() + '\n\n' + LIFECYCLE_PROMPT
 
 LIVE_MARKET_PROMPT = """
 MARKET-DEPENDENT QUESTIONS MUST BE DELEGATED TO THE BACKEND, even if they contain
@@ -347,16 +391,16 @@ include later selected CRT objectives, supported variants and delivery. Do not s
 at failed 9ate8. Give the complete recap in 4-7 concise sentences; this overrides
 the short-answer default for definitions. Preserve the backend's later-range outcome.
 Preserve missing-data and same-bar uncertainty; body-cross evidence is not an entry.
-For SMT use matched paired_smt/review_market_smt evidence. A peer's later independent
-CRT failure does not erase an earlier boundary divergence; do not confuse SMT with
-entry confirmation or require identical later delivery in both markets.
+For SMT use matched paired_smt/review_market_smt and paired_context evidence. A peer's
+later independent CRT failure does not erase an earlier boundary divergence; do not
+confuse SMT with entry confirmation or require identical later delivery in both markets.
 Resolve known asset/date/shift/anchor from conversation; ask only for missing context.
 Do not lead with a price quote or a playbook definition. Quote current price only when
 asked. Speak the verified event and timestamp naturally, preserving data precision.
 Remember follow-up references to the same asset/CRT and distinguish market observations
 from the member’s actual fill/exit. MOB explanation is discretionary GTOP knowledge;
 automatic PD-array recognition is not required.
-""".strip()
+""".strip() + '\n\n' + LIFECYCLE_PROMPT
 
 
 def market_clock():
@@ -372,8 +416,6 @@ def history_bars(db, feed, start, end):
             (feed['asset'], feed['symbol'], start // 86400 * 86400, end // 86400 * 86400)).fetchall()
     for row in rows:
         by_step[row['step']].update({b['time']: b for b in json.loads(row['payload'])})
-    # A short new M1 feed must not hide older M5 history. Prefer M1 only if it
-    # spans the requested available window at least as well as M5.
     sets = {step: sorted((b for b in data.values() if start <= b['time'] < end), key=lambda b: b['time'])
             for step, data in by_step.items()}
     fine, coarse = sets[60], sets[300]
@@ -396,7 +438,7 @@ def paired_market_review(db, asset, comparison_asset, start, end, tf='H1', detec
                     'error': 'Both market histories are required; missing data does not prove no SMT.'}
         bars, step = history_bars(db, feed, start, end)
         pair.append(dict(asset=feed['asset'], symbol=feed['symbol'], bars=bars, step=step))
-    return compare_ranges(pair[0], pair[1], start, anchor_end, end, tf, detect_through)
+    return enrich_smt(compare_ranges(pair[0], pair[1], start, anchor_end, end, tf, detect_through))
 
 
 def market_tool(db, name, args):
@@ -424,23 +466,37 @@ def market_tool(db, name, args):
             raise ValueError('Request a positive window no longer than 90 days.')
         bars, step = history_bars(db, result, start, end)
         result.pop('bars', None); result.pop('bars_m1', None)
-        # Quotes are intentionally absent from structural review responses.
         result.pop('bid', None); result.pop('ask', None)
         result['available_precision_seconds'] = step
         result['available_from_ny'] = stamp(bars[0]['time']) if bars else None
         result['available_through_ny'] = stamp(bars[-1]['time'] + step) if bars else None
         if name == 'review_market_session':
             result['review'] = session_review(bars, day.isoformat(), shift, step)
-            peer = {'XAUUSD': 'XAGUSD', 'XAGUSD': 'XAUUSD'}.get(result['asset'])
+            peer = PAIRINGS.get(result['asset'])
             if peer:
-                # The first 9 oclock hour is compared directly; later shift outcomes
-                # are inspected separately and cannot override this historical fact.
-                result['review']['paired_smt'] = paired_market_review(
-                    db, result['asset'], peer, start + 3600, end, detect_through=start + 3 * 3600)
+                opening = paired_market_review(db, result['asset'], peer, start + 3600, end,
+                                               detect_through=start + 3 * 3600)
+                result['review']['paired_smt'] = opening
+                context = {'comparison_asset': peer, 'ranges': [],
+                           'status': 'available' if opening.get('ok') else 'insufficient_paired_evidence'}
+                if not opening.get('ok'):
+                    context['missing_asset'] = opening.get('missing_asset')
+                    context['message'] = opening.get('error')
+                else:
+                    for row in result['review']['shift_story']['ranges']:
+                        anchor_start = parse_time(row['anchor_start_ny'])
+                        if row['role'] == 'selected_range' and anchor_start + 3600 < end:
+                            context['ranges'].append({'anchor_start_ny': row['anchor_start_ny'],
+                                'role': row['role'], 'paired_review': paired_market_review(
+                                    db, result['asset'], peer, anchor_start, end)})
+                result['review']['paired_context'] = context
+            else:
+                result['review']['paired_context'] = {'status': 'no_configured_comparison_pair', 'asset': result['asset']}
         elif name == 'inspect_market_candles':
             result['review'] = candle_query(bars, start, end, args['timeframe'], step)
         else:
-            result['review'] = crt_review(bars, start, end, args['anchor_timeframe'], step, args.get('confirmation_timeframe'))
+            result['review'] = attach_lifecycle(crt_review(bars, start, end, args['anchor_timeframe'],
+                step, args.get('confirmation_timeframe')), bars, end, step)
         return result
     except (TypeError, ValueError, KeyError, OverflowError) as exc:
         return {'ok': False, 'error': str(exc)}
