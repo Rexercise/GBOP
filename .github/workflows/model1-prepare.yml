@@ -14,7 +14,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Apply exact market-policy corrections
+      - name: Apply exact knowledge, market-policy and voice-format corrections
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -22,22 +22,52 @@ jobs:
               assert text.count(old) == 1, f'Expected exactly one match: {old!r}'
               return text.replace(old, new, 1)
           path = Path('gbop_voice_web/gtop_knowledge.txt')
-          text = replace_once(path.read_text(), 'get_crt_review or get_candle_data', 'review_market_crt or inspect_market_candles')
+          text = path.read_text()
+          start = text.index('MODEL 1 CANDLE / BODY-CLOSE LOGIC')
+          end = text.index('\nBREAKER BLOCK\n', start)
+          block = '''MODEL 1 CANDLE / BODY-CLOSE LOGIC — CORRECTED 3 OCTOBER 2026
+          [GTOP REFINEMENT]
+          The qualifying body-purging candle on the selected range's assigned timeframe IS the Model 1 candle, not a candidate. Its real body crosses and closes through the range boundary. H1 uses M5: bearish above the high; bullish below the low. Wick-only, forming or incomplete candles do not establish that body close.
+          The candle remains Model 1 whether later CSD confirms, stays unconfirmed or the setup fails.
+
+          SUBSEQUENT EVENTS
+          [GTOP EXCLUSIVE / GTOP REFINEMENT]
+          Super Soup = Turtle Soup of this Model 1 candle on the same assigned timeframe BEFORE CSD.
+          [GTOP REFINEMENT]
+          CSD/CISD confirms when price closes through the OTHER SIDE of that candle's liquidity. This activates its confirmed function, not its identity.
+
+          MODEL 1 RESPONSE CONTRACT
+          Answer "the Model 1" with the candle first: open/close times, OHLC, purged range/side/level. Use review_market_crt or inspect_market_candles. model1.candles identifies body purges; m5_body_evidence describes a separate LATER body cross. Preserve candle precision and identify multiple qualifying candles without inventing one winner.
+          Keep formation, CSD, Super Soup occurrence and trader execution separate. entry_confirmed=false negates none of the observed candle facts. No execution record does not mean no Super Soup; inspect later assigned candles to assess its sequence.
+          Missing data means unverified, not absent. not_assessed is not a negative result. Later failure never erases prior formation. Correct obsolete mislabels directly.
+          '''
+          text = text[:start] + block + text[end:]
+          text = replace_once(text,
+              "Turtle Body Soup / Model 1 is the Tier 2 entry classification. The qualifying candle on the assigned timeframe whose real body crosses and closes through the selected range's liquidity IS the Model 1 candle. It is not a candidate.",
+              'Turtle Body Soup / Model 1 is Tier 2. The qualifying assigned-timeframe body-purging candle IS Model 1, not a candidate.')
+          text = replace_once(text,
+              'Model 1 candle identification is separate from subsequent CSD/CISD confirmation. A Model 1 candle remains the Model 1 candle whether CSD later confirms, remains unconfirmed, or the setup fails. After the purge, assess the later close back through the body / change in state of delivery separately.',
+              'Model 1 candle identity is independent of later confirmation or failure. Assess the later close back through the body / CSD separately.')
           path.write_text(text)
           path = Path('gbop_voice_web/market_data.py')
           text = path.read_text()
           text = replace_once(text,
               'Same-bar touches have unknown order. M5 purge-body crosses are not by themselves\nconfirmed Model 1/CSD or Super Soup. Query the selected candidate candles as needed.',
-              'Same-bar touches have unknown order. Use ranges[].model1 (or review.model1)\nto identify the qualifying body-purging Model 1 candle on the assigned timeframe.\nThat candle IS Model 1, regardless of later CSD confirmation or failure. It is not\na candidate. Answer its open/close time, OHLC and purged range/level first.\nThe older m5_body_evidence describes a later body cross, not initial formation.\nCSD confirmation, Super Soup occurrence and actual execution are separate questions.\nentry_confirmed=false never negates an identified Model 1 candle. Inspect later\nassigned-timeframe candles for CSD/Super Soup; not_assessed means unverified, not absent.')
+              'Same-bar touches have unknown order. model1.candles identifies the qualifying\nassigned-timeframe body-purging Model 1 candle, not a candidate.\nentry_confirmed=false never negates an identified Model 1 candle.\nCSD, Super Soup occurrence and actual execution are separate; unassessed is not absent.')
           text = replace_once(text,
               "Range candidates alone are not confirmed CSD, Super Soup, Blessed Thief entries, signals,\nor evidence of an actual member execution. Examine assigned-timeframe candles and the\nmember's selected Model 1 candidate before discussing a possible Super Soup/CSD; if the\nbody or sequence is unclear, ask for its candle instead of asserting confirmation.",
-              'A qualifying assigned-timeframe body purge identifies the Model 1 candle without\nrequiring later CSD, Super Soup, distribution or trader execution. Preserve this\nidentity even when the setup later fails. Use review_market_crt and\ninspect_market_candles to answer questions about that specific candle and its later\nprice sequence. A market pattern is not proof of a member fill. Missing source\ncandles mean unverified, not that a Model 1 or Super Soup did not occur.')
+              'Answer Model 1 candle questions with its time, OHLC and purged level first.\nUse review_market_crt/inspect_market_candles for its later CSD/Super Soup sequence.\nMissing data does not establish absence. Later failure does not erase candle identity.\nNo price pattern proves a member execution.')
           text = replace_once(text,
               'Preserve missing-data and same-bar uncertainty; body-cross evidence is not an entry.',
-              'Preserve missing-data and same-bar uncertainty; market evidence is not a member entry.\nThe qualifying body-purging candle IS the Model 1 candle, not a candidate.\nFor questions about that candle, delegate to the backend and preserve its\nmodel1.candles identification, timestamps, OHLC and purged level. Later CSD,\nSuper Soup occurrence and actual execution are independent; unassessed is not absent.')
+              'Preserve missing-data and same-bar uncertainty. Preserve backend model1.candles identification:\nthe body-purging candle IS Model 1, not a candidate, independently of later CSD,\nSuper Soup or execution. Unassessed does not mean absent.')
           text = replace_once(text,
               'Returns assigned timeframe candles and bar timestamps; not an automatic entry signal.',
-              'Returns identified body-purging Model 1 candles, assigned timeframe candles and bar timestamps; candle identity is independent of later CSD or execution.')
+              'Returns identified Model 1 body-purging candles and assigned timeframe bars; formation is independent of CSD/execution.')
+          path.write_text(text)
+          path = Path('gbop_voice_web/candle_evidence.py')
+          text = replace_once(path.read_text(),
+              "'bar_open_ny': candle['start_ny'], 'bar_close_ny': candle['end_ny'],",
+              "'start_ny': candle['start_ny'], 'end_ny': candle['end_ny'],\n                    'bar_open_ny': candle['start_ny'], 'bar_close_ny': candle['end_ny'],")
           path.write_text(text)
           PY
       - name: Install existing test dependencies
@@ -47,11 +77,10 @@ jobs:
           git diff --check
           python -m compileall -q gbop_voice_web bot.py
           python -m unittest discover -s tests
-      - name: Commit tested policy and remove one-time preparation workflow
+      - name: Commit tested corrections on isolated branch only
         run: |
-          rm .github/workflows/model1-prepare.yml
           git config user.name 'GBOP maintenance'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add gbop_voice_web/gtop_knowledge.txt gbop_voice_web/market_data.py .github/workflows/model1-prepare.yml
+          git add gbop_voice_web/gtop_knowledge.txt gbop_voice_web/market_data.py gbop_voice_web/candle_evidence.py
           git commit -m 'fix(policy): align market and voice Model 1 identity with shared canon'
           git push origin HEAD:fix/model1-identity-0740-isolated
