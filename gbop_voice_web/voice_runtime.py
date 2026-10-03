@@ -3,12 +3,14 @@ from copy import deepcopy
 import asyncio
 import re
 import json
+import math
+import random
 
 READ_ONLY_RECOVERY_NAMES = frozenset({
     'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_member_plan',
     'get_member_dashboard', 'get_shift_plans', 'get_performance_review',
     'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_trade_assist',
-    'list_trade_photos', 'get_market_price', 'review_market_session',
+    'list_trade_photos', 'get_market_price', 'list_market_shifts', 'review_market_session',
     'review_market_crt', 'inspect_market_candles', 'review_market_smt', 'get_prepared_market_brief',
 })
 PRIVATE_DELIVERY_NAMES = frozenset({'send_journal_history', 'send_trade_photos'})
@@ -22,17 +24,21 @@ def recovery_options(session):
     return {'tools': tools, 'tool_choice': 'auto'} if tools else {'tool_choice': 'none'}
 
 
-async def guarded_voice_tool(session, name, args, call_id, runner):
+async def guarded_voice_tool(session, name, args, call_id, runner, is_current=None):
     """At-most-once per call ID; private deliveries once per turn/arguments.
 
     Reads and deliveries retain the normal fresh member-access check in runner.
     Recovery cannot execute trade or journal mutations even if a model requests it.
     """
+    turn = getattr(session, '_voice_turn_count', 0)
     authorize = getattr(session, 'authorize_tool', None)
     if authorize is not None:
         denial = await authorize()
         if denial:
             return {'ok': False, 'error': denial}
+    if (turn != getattr(session, '_voice_turn_count', 0)
+            or (is_current is not None and not is_current())):
+        return {'ok': False, 'error': 'This voice request is no longer current.'}
     cache = getattr(session, '_tool_call_results', None)
     if cache is None:
         cache = session._tool_call_results = {}
@@ -54,7 +60,7 @@ async def guarded_voice_tool(session, name, args, call_id, runner):
             'journal_number', 'trade_number', 'tier', 'entry_model', 'play', 'asset', 'unlinked_only', 'offset'}}
         canonical['offset'] = max(0, int(args.get('offset') or 0))
         canonical['unlinked_only'] = bool(args.get('unlinked_only'))
-    key = (getattr(session, '_voice_turn_count', 0), name, json.dumps(canonical, sort_keys=True))
+    key = (turn, name, json.dumps(canonical, sort_keys=True))
     if name in PRIVATE_DELIVERY_NAMES and key in deliveries:
         result = deliveries[key]
     else:
@@ -167,63 +173,87 @@ VOICE_TRUNCATION = {
 
 
 class VoiceRateLimitRecovery:
-    """Bounded response-only recovery; never re-execute a tool or a stale turn."""
-    def __init__(self, session):
+    """At most two response retries per turn; no writes or stale replies."""
+    def __init__(self, session, *, jitter=None, sleep=None):
         self.session = session
+        self.jitter = jitter
+        self.sleep = sleep
         self.task = None
         self.attempts = 0
         self.notified = False
+        self.exhausted_notified = False
+        self.generation = 0
 
     def cancel(self, reset=False):
+        self.generation += 1
         if self.task is not None:
             self.task.cancel()
             self.task = None
         if reset:
             self.attempts = 0
             self.notified = False
+            self.exhausted_notified = False
 
     def failed(self, error):
         if error.get('code') != 'rate_limit_exceeded' or self.task is not None:
             return
-        if self.session.closed:
+        session = self.session
+        if session.closed or session.websocket is None or self.exhausted_notified:
             return
         match = re.search(r'try again in (\d+(?:\.\d+)?)s', str(error.get('message', '')), re.I)
-        delay = min(60.0, max(2.0, float(match.group(1)) + 1.0)) if match else 15.0
-        exhausted = self.attempts >= 2
-        self.attempts += 1
-        self.task = asyncio.create_task(self._recover(delay, exhausted))
+        minimum = max(2.0, float(match.group(1)) + 1.0) if match else 15.0 * (2 ** self.attempts)
+        # Do not shorten a provider cooldown to fit our bounded retry window.
+        exhausted = self.attempts >= 2 or minimum > 60.0
+        delay = min(60.0, minimum + max(0.0, min(1.0, (self.jitter or random.random)())))
+        if exhausted:
+            self.exhausted_notified = True
+        else:
+            self.attempts += 1
+        scope = (session._voice_turn_count, session.websocket, self.generation)
+        self.task = asyncio.create_task(self._recover(delay, exhausted, scope))
 
-    async def _recover(self, delay, exhausted):
+    def current(self, scope):
         session = self.session
-        turn, websocket = session._voice_turn_count, session.websocket
+        turn, websocket, generation = scope
+        return (not session.closed and session.websocket is websocket
+                and session._voice_turn_count == turn and self.generation == generation)
+
+    async def _recover(self, delay, exhausted, scope):
+        session = self.session
         try:
+            if not self.current(scope):
+                return
             if not self.notified or exhausted:
                 self.notified = True
-                notice = ('Voice is still rate-limited. Please wait a minute, then ask again.'
+                notice = ('Voice is still rate-limited. Automatic retries have stopped; please try again later.'
                           if exhausted else
-                          f'Voice hit a temporary rate limit. I will retry the reply in about {int(delay) + 1} seconds. '
-                          'You do not need to repeat your request.')
+                          f'Voice is temporarily rate-limited. A reply retry is queued for about {math.ceil(delay)} seconds '
+                          'from now, if this request is still current. Speaking again cancels that retry.')
                 try:
                     await asyncio.wait_for(session.member.send(notice), timeout=3)
                 except Exception as exc:
                     print('[GBOP-RT-RECOVERY] notice unavailable:', type(exc).__name__)
             if exhausted:
                 return
-            await asyncio.sleep(delay)
-            if session.closed or session.websocket is not websocket or session._voice_turn_count != turn:
+            await (self.sleep or asyncio.sleep)(delay)
+            if not self.current(scope):
                 return
             # Keep verified reads and deduplicated private delivery available;
             # never expose trade/journal mutations during a recovery turn.
             session._recovery_active = True
-            await session.send_event({'type': 'response.create', 'response': {
+            from gbop_voice_web.voice_work import create_response
+            sent = await create_response(session, {
                 **getattr(session, '_last_response_options', {}),
                 **recovery_options(session),
-            }})
+            })
+            if sent is False and self.current(scope):
+                session.last_error = 'Voice retry could not be sent. Please ask again after reconnecting.'
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            session.last_error = 'Voice recovery failed: ' + type(exc).__name__
-            print('[GBOP-RT-RECOVERY]', session.last_error)
+            if self.current(scope):
+                session.last_error = 'Voice recovery failed: ' + type(exc).__name__
+                print('[GBOP-RT-RECOVERY]', session.last_error)
         finally:
             if self.task is asyncio.current_task():
                 self.task = None

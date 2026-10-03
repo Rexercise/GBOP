@@ -18,18 +18,18 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         self.member = SimpleNamespace(id=10, guild=SimpleNamespace(id=1),
                                       voice=SimpleNamespace(channel=self.channel))
         self.vc = SimpleNamespace(channel=self.channel, guild=self.member.guild)
-        self.output = SimpleNamespace(session=None, interrupt=AsyncMock(), voice_client=self.vc)
+        self.output = SimpleNamespace(session=None, source=None, interrupt=AsyncMock(), voice_client=self.vc)
         self.created = []
 
         def make_session(member, vc, loop):
             session = SimpleNamespace(closed=False, voice_client=vc,
-                                      run=AsyncMock(), close=AsyncMock(), enqueue_audio=lambda pcm: None)
+                                      run=AsyncMock(), stop=Mock(), close=AsyncMock(), enqueue_audio=lambda pcm: None)
             self.created.append(session)
             return session
 
         node = next(n for n in ast.parse(SOURCE.read_text()).body
                     if isinstance(n, ast.ClassDef) and n.name == 'GBOPRealtimeManager')
-        self.ns = dict(asyncio=asyncio, GBOP_RT_LOCKS={}, in_voice_channel=in_voice_channel,
+        self.ns = dict(asyncio=asyncio, GBOP_RT_LOCKS={}, GBOP_RT_STOPPING=set(), in_voice_channel=in_voice_channel,
                        private_room_owner=private_room_owner, GBOP_RT_SINKS={},
                        gbop_voice_member_allowed=lambda m: (True, None),
                        GBOP_RT_OUTPUT_MANAGERS={20: self.output}, GBOPRealtimeSession=make_session)
@@ -37,8 +37,8 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         self.manager = self.ns['GBOPRealtimeManager']()
 
     async def test_pause_closes_only_requesting_member_and_blocks_new_audio(self):
-        session = SimpleNamespace(close=AsyncMock(), voice_client=self.vc)
-        other = SimpleNamespace(close=AsyncMock())
+        session = SimpleNamespace(stop=Mock(), close=AsyncMock(), voice_client=self.vc)
+        other = SimpleNamespace(stop=Mock(), close=AsyncMock())
         self.manager.sessions = {(1, 10): session, (1, 11): other}
         self.output.session = session
         await self.manager.pause_member(self.member)
@@ -50,7 +50,7 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((1, 11), self.manager.sessions)
 
     async def test_pause_does_not_interrupt_other_members_reply(self):
-        self.manager.sessions[(1, 10)] = SimpleNamespace(close=AsyncMock(), voice_client=self.vc)
+        self.manager.sessions[(1, 10)] = SimpleNamespace(stop=Mock(), close=AsyncMock(), voice_client=self.vc)
         self.output.session = SimpleNamespace()
         await self.manager.pause_member(self.member)
         self.output.interrupt.assert_not_awaited()
@@ -79,8 +79,8 @@ class DiscordControlsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.created)
 
     async def test_close_guild_keeps_other_guilds_sessions_and_pause(self):
-        first = SimpleNamespace(close=AsyncMock(), voice_client=self.vc)
-        second = SimpleNamespace(close=AsyncMock(), voice_client=SimpleNamespace(channel=SimpleNamespace(id=99)))
+        first = SimpleNamespace(stop=Mock(), close=AsyncMock(), voice_client=self.vc)
+        second = SimpleNamespace(stop=Mock(), close=AsyncMock(), voice_client=SimpleNamespace(channel=SimpleNamespace(id=99)))
         self.manager.sessions = {(1, 10): first, (2, 20): second}
         self.manager.paused = {(1, 10), (2, 20)}
         await self.manager.close_guild(1)

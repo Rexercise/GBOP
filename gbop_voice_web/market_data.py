@@ -9,12 +9,14 @@ from datetime import datetime, date, timezone, timedelta
 from zoneinfo import ZoneInfo
 from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.shift_review import review_shift
+from gbop_voice_web.shift_availability import shift_bounds, assess_shift, choice, alternative_message
 from gbop_voice_web.candle_evidence import parse_time, stamp, candle_query, crt_review, summarize, next_boundary
 from gbop_voice_web.smt_evidence import compare_ranges
 from gbop_voice_web.candle_lifecycle import lifecycle_review
 from gbop_voice_web.market_context import PAIRINGS, enrich_smt, LIFECYCLE_PROMPT
 from gbop_voice_web.market_watch import WATCH_PROMPT
 from gbop_voice_web.smt_reference import reconcile_paired_recap
+from gbop_voice_web.market_status import broker_session_status, feed_health
 
 NY = ZoneInfo('America/New_York')
 ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
@@ -155,13 +157,17 @@ def read_feed(db, asset, now=None):
     with db() as conn:
         row = conn.execute('SELECT * FROM gbop_market_feed WHERE asset=?', (asset,)).fetchone()
     if row is None:
-        return {'ok': False, 'asset': asset, 'status': 'not_connected', 'message': 'No broker data received for this asset.'}
+        return {'ok': False, 'asset': asset, 'status': 'not_connected',
+                'message': 'No broker data received for this asset.',
+                'feed_health': feed_health(), 'broker_session': broker_session_status()}
     payload = json.loads(row['payload'])
     tick_age = now - payload['tick_time']
     capture_age = now - row['captured_at']
     fresh = 0 <= tick_age <= 120 and 0 <= capture_age <= 120
     return {'ok': True, 'asset': asset, 'source': 'MT5 broker feed', 'symbol': payload['symbol'],
             'status': 'fresh' if fresh else 'stale', 'is_live': fresh,
+            'feed_health': feed_health(capture_age, tick_age),
+            'broker_session': broker_session_status(),
             'bid': payload['bid'], 'ask': payload['ask'], 'tick_time_utc': datetime.fromtimestamp(payload['tick_time'], timezone.utc).isoformat(),
             'tick_age_seconds': tick_age, 'capture_age_seconds': capture_age,
             'received_at_utc': datetime.fromtimestamp(row['received_at'], timezone.utc).isoformat(),
@@ -283,13 +289,15 @@ def session_review(bars, day, shift, step=300):
 
 
 MARKET_TOOLS = [
+    schema('list_market_shifts', 'Check actual retained candles before offering day/night reviews. Explicit NY date returns only usable choices for that date, with checked alternatives if none. Null date lists latest completed usable shifts and separates ongoing ones. Missing data never proves market closure.', {
+        'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null']}}),
     schema('review_market_smt', 'Compare two positively correlated markets at the SAME anchor and moment. Verifies relative boundary sweeps, boneless asset and each own objective, not trade entries. For 9ate8 use each market\'s 8 oclock H1 range; later invalidation never erases an earlier divergence.', {
         'asset': {'type': 'string'}, 'comparison_asset': {'type': 'string'},
         'anchor_start_ny': {'type': 'string'}, 'anchor_timeframe': {'type': 'string'},
         'through_ny': {'type': 'string'}}),
     schema('get_market_price', 'Get latest broker bid/ask ONLY when a quote is requested. Disclose stale or absent data.', {'asset': {'type': 'string'}}),
     schema('review_market_session', 'Review the entire GTOP shift: 9AM-noon or 9PM-midnight New York, beginning with the 8 oclock anchor. Returns hourly range promotions, later CRTs, own objectives, assigned wick/body candle lifecycle, CSD/Super Soup/retests and automatic configured paired-market context. Use for casual references to today’s play as well as direct questions.', {
-        'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null'], 'description': 'Explicit NY date; null selects the latest shift represented by closed feed candles.'},
+        'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null'], 'description': 'Explicit NY date; null selects the latest completed usable shift. Unavailable dates are never silently changed.'},
         'shift': {'type': 'string', 'enum': ['day', 'night']}}),
     schema('inspect_market_candles', 'Read historical or current candle OHLC and when extremes formed. Explicit ISO start/end in New York (or with offset). M1-M60, H1-H24, D1, W1, MN1; custom anchors supported. Incomplete coverage is not a definitive daily/weekly extreme. Paginate next_start_ny.', {
         'asset': {'type': 'string'}, 'start_ny': {'type': 'string'}, 'end_ny': {'type': 'string'}, 'timeframe': {'type': 'string'}}),
@@ -338,14 +346,21 @@ requests for ACTUAL candle evidence. Call review_market_session or review_market
 before answering. Do not start with a definition or a current-price quote.
 Only call get_market_price and volunteer bid/ask when a price quote is requested.
 Use inspect_market_candles for prices/times of highs/lows, including historical dates.
-Resolve asset, date, shift, anchor and timeframe from the current conversation or
-unambiguous open trade. Ask one short question only if a necessary fact is missing.
-Never silently default the asset to NAS or confuse '9ate8' with the 9 o'clock range:
-its initial anchor is 8. Carry the selected range through follow-up questions.
-Use the current New York date/time supplied in member context for relative dates.
-'Last week Wednesday' means Wednesday of the preceding Monday-Sunday NY week.
-Night shift belongs to the date its 9 PM session starts; after midnight 'tonight’s
-session' may refer to that preceding date. Clarify only if ambiguous.
+Resolve asset/date/anchor/timeframe from conversation or an unambiguous open trade;
+never default to NAS. 9ate8 anchors at 8; retain the selected range in follow-ups.
+Before offering reviews or asking day/night, call list_market_shifts for that asset/date.
+Offer only available_shifts. If shift is unspecified and only one is available, use
+it with its date/scope. For an explicitly unavailable shift, use its returned message:
+ask about the checked same-day alternate first; never silently switch date/shift.
+Partial means limited candles, ongoing is not completed. Missing data does not prove
+closure; give a closure reason only with verified calendar/session evidence.
+The current broker_session contract is unknown with source=null: no verified
+calendar is connected. feed_health separates recent snapshots from old quotes;
+neither stale quotes nor stale snapshots diagnose closure or a broken feed.
+It describes the latest snapshot only, not the cause of historical candle gaps.
+Use current NY context for relative dates; last week Wednesday is the preceding
+Monday-Sunday week's Wednesday. Night belongs to its 9 PM start date; after midnight,
+"tonight" may mean the preceding date. Clarify only genuinely ambiguous context.
 
 Lead with the observed result, then the requested time/level. Talk like a fellow
 GTOP trader, usually 1-3 sentences. Do not recite the playbook unless asked.
@@ -399,7 +414,15 @@ Preserve missing-data and same-bar uncertainty; body-cross evidence is not an en
 For SMT use matched paired_smt/review_market_smt and paired_context evidence. A peer's
 later independent CRT failure does not erase an earlier boundary divergence; do not
 confuse SMT with entry confirmation or require identical later delivery in both markets.
-Resolve known asset/date/shift/anchor from conversation; ask only for missing context.
+Resolve known asset/date/shift/anchor. Before offering reviews or asking day/night,
+delegate list_market_shifts. Offer only checked available_shifts; use a sole option
+when shift is unspecified. For an unavailable explicit shift, relay its message and
+ask about the checked same-day alternative first; never silently switch date/shift.
+Partial means limited candles; ongoing is not completed. Missing data does not prove
+closure; explain a closure only with verified calendar/session evidence.
+broker_session.status=unknown and source=null mean closure is unverified.
+Use feed_health to distinguish a recent snapshot with an old quote from a stale
+snapshot. Neither diagnoses closure, a broken feed, or historical candle gaps.
 Do not lead with a price quote or a playbook definition. Quote current price only when
 asked. Speak the verified event and timestamp naturally, preserving data precision.
 Remember follow-up references to the same asset/CRT and distinguish market observations
@@ -412,23 +435,119 @@ def market_clock():
     return 'CURRENT NEW YORK DATE/TIME: ' + datetime.now(NY).isoformat()
 
 
-def history_bars(db, feed, start, end):
+def _history_sets(db, feed, start, end):
     by_step = {300: {b['time']: b for b in feed.get('bars', [])},
                60: {b['time']: b for b in feed.get('bars_m1', [])}}
-    with db() as conn:
-        rows = conn.execute("""SELECT step,payload FROM gbop_market_history
-            WHERE asset=? AND symbol=? AND day_utc>=? AND day_utc<=? ORDER BY day_utc""",
-            (feed['asset'], feed['symbol'], start // 86400 * 86400, end // 86400 * 86400)).fetchall()
-    for row in rows:
-        by_step[row['step']].update({b['time']: b for b in json.loads(row['payload'])})
-    sets = {step: sorted((b for b in data.values() if start <= b['time'] < end), key=lambda b: b['time'])
+    if db is not None:
+        with db() as conn:
+            rows = conn.execute("""SELECT step,payload FROM gbop_market_history
+                WHERE asset=? AND symbol=? AND day_utc>=? AND day_utc<=? ORDER BY day_utc""",
+                (feed['asset'], feed['symbol'], start // 86400 * 86400, end // 86400 * 86400)).fetchall()
+        for row in rows:
+            by_step[row['step']].update({b['time']: b for b in json.loads(row['payload'])})
+    return {step: sorted((b for b in data.values() if start <= b['time'] < end), key=lambda b: b['time'])
             for step, data in by_step.items()}
+
+
+def _select_history(sets, start, end):
+    sets = {step: [b for b in bars if start <= b['time'] < end] for step, bars in sets.items()}
     fine, coarse = sets[60], sets[300]
-    covered = sum(1 for b in fine) * 60
+    covered = len(fine) * 60
     if fine and (not coarse or (fine[0]['time'] <= coarse[0]['time'] and
                 fine[-1]['time'] + 60 >= coarse[-1]['time'] + 300 and covered >= len(coarse) * 300)):
         return fine, 60
     return coarse, 300
+
+
+def _select_shift_history(sets, day, shift, now):
+    start, end = shift_bounds(day, shift)
+    candidates = []
+    for step, data in sets.items():
+        bars = [b for b in data if start - 7200 <= b['time'] and b['time'] + step <= min(end, now)]
+        availability = assess_shift(bars, day, shift, step, now)
+        score = (availability['review_scope'] == 'full', availability['reviewable'],
+                 len(availability['complete_hours_ny']), availability['anchor_complete'],
+                 availability['closed_bar_count'] * step, -step)
+        candidates.append((score, bars, step))
+    _, bars, step = max(candidates, key=lambda candidate: candidate[0])
+    return bars, step
+
+
+def history_bars(db, feed, start, end, shift_date=None, shift=None, now=None):
+    sets = _history_sets(db, feed, start, end)
+    if shift_date is not None:
+        return _select_shift_history(sets, shift_date, shift, int(time.time() if now is None else now))
+    return _select_history(sets, start, end)
+
+
+def shift_catalog(db, feed, now, requested_day=None, requested_only=False):
+    """Read retained history once, partition by NY date, then check each shift.
+
+    This is asset/symbol scoped and has no weekday or exchange-hours heuristic.
+    It scans the actual 90-day retention rather than only the latest four days.
+    """
+    first, last = now - 90 * 86400, now
+    if requested_only:
+        local = datetime.combine(date.fromisoformat(requested_day), datetime.min.time(), NY)
+        first, last = int(local.timestamp()), min(now, int((local + timedelta(days=1)).timestamp()))
+    sets = _history_sets(db, feed, first, last)
+    daily = {}
+    for step, bars in sets.items():
+        for bar in bars:
+            if bar['time'] + step <= now:
+                day = datetime.fromtimestamp(bar['time'], NY).date().isoformat()
+                daily.setdefault(day, {60: [], 300: []})[step].append(bar)
+    if requested_day:
+        requested_day = date.fromisoformat(requested_day).isoformat()
+        daily.setdefault(requested_day, {60: [], 300: []})
+    rows = []
+    for day, sources in sorted(daily.items(), reverse=True):
+        for shift in ('night', 'day'):
+            bars, step = _select_shift_history(sources, day, shift, now)
+            rows.append(dict(asset=feed['asset'], **assess_shift(bars, day, shift, step, now)))
+    return rows
+
+
+def shift_choices(db, feed, day=None, now=None):
+    now = int(time.time() if now is None else now)
+    rows = shift_catalog(db, feed, now, day, requested_only=bool(day))
+    if day and not any(row['reviewable'] for row in rows):
+        rows = shift_catalog(db, feed, now, day)
+    supported = [r for r in rows if r['reviewable']]
+    completed = [r for r in supported if r['temporal_status'] == 'completed']
+    requested = [r for r in rows if day and r['date_ny'] == day]
+    current = [r for r in supported if r['temporal_status'] == 'in_progress']
+    if day:
+        available = [r for r in requested if r['reviewable']]
+        alternatives = [] if available else sorted(completed, key=lambda r: (
+            abs((date.fromisoformat(r['date_ny']) - date.fromisoformat(day)).days),
+            r['date_ny'] > day, -parse_time(r['start_ny'])))[:2]
+    else:
+        available = [next((r for r in completed if r['shift'] == shift), None) for shift in ('day', 'night')]
+        available = [r for r in available if r]
+        alternatives = []
+    return {'ok': True, 'asset': feed['asset'], 'date_ny': day, 'checked_at_ny': stamp(now),
+            'broker_session': broker_session_status(),
+            'status': 'available' if available else 'no_supported_shifts',
+            'shifts': requested, 'available_shifts': [choice(r) for r in available],
+            'ongoing_shifts': [choice(r) for r in current if not day or r['date_ny'] == day],
+            'alternatives': [choice(r) for r in alternatives],
+            'limits': 'Choices use closed retained candles, not weekday assumptions. Partial reviews are limited to observed candles. '
+                      'No broker session calendar is available: absent data cannot confirm closure. Do not silently change a requested date.'}
+
+
+def unavailable_shift(db, feed, availability, now):
+    options = shift_choices(db, feed, availability['date_ny'], now)
+    return unavailable_response(availability, options)
+
+
+def unavailable_response(availability, options):
+    alternatives = [r for r in options['available_shifts'] if r['shift'] != availability['shift']]
+    alternatives = alternatives or options['alternatives']
+    return {'ok': False, 'asset': options['asset'], 'status': 'shift_unavailable',
+            'broker_session': broker_session_status(),
+            'availability': availability, 'alternatives': alternatives,
+            'message': alternative_message(availability, alternatives)}
 
 
 def paired_market_review(db, asset, comparison_asset, start, end, tf='H1', detect_through=None):
@@ -446,29 +565,35 @@ def paired_market_review(db, asset, comparison_asset, start, end, tf='H1', detec
     return enrich_smt(compare_ranges(pair[0], pair[1], start, anchor_end, end, tf, detect_through))
 
 
-def latest_available_shift_date(feed, shift, db=None):
-    """Find the latest actual shift in snapshots plus retained broker history."""
-    if shift not in ('day','night'):
+def latest_available_shift_date(feed, shift, db=None, now=None):
+    """Latest completed, usable shift; ongoing/empty windows cannot displace it."""
+    if shift not in ('day', 'night'):
         raise ValueError('shift must be day or night.')
-    first,last=(9,12) if shift=='day' else (21,24)
-    now=int(time.time()); dates=[]
-    sets=[(feed.get('bars',[]),300),(feed.get('bars_m1',[]),60)]
+    now = int(time.time() if now is None else now)
+    # Preparation runs every 30 seconds: inspect newest candidate dates first,
+    # loading older payloads only when needed, instead of decoding 90 days each tick.
+    dates = set()
+    for step, bars in ((300, feed.get('bars', [])), (60, feed.get('bars_m1', []))):
+        dates.update(datetime.fromtimestamp(b['time'], NY).date()
+                     for b in bars if now-90*86400 <= b['time'] and b['time']+step <= now)
     if db is not None:
         with db() as conn:
-            rows=conn.execute('SELECT step,payload FROM gbop_market_history WHERE asset=? AND symbol=? ORDER BY day_utc DESC,step DESC LIMIT 8',
-                              (feed['asset'],feed['symbol'])).fetchall()
-        sets += [(json.loads(r['payload']),r['step']) for r in rows]
-    for bars,step in sets:
-        for bar in bars:
-            moment=datetime.fromtimestamp(bar['time'],NY)
-            if bar['time']+step<=now and first<=moment.hour<last:
-                dates.append(moment.date())
-    if not dates:
-        raise ValueError('No retained closed candles identify the requested shift. Specify a historical date to inspect its coverage.')
-    return max(dates).isoformat()
+            buckets = conn.execute('SELECT DISTINCT day_utc FROM gbop_market_history WHERE asset=? AND symbol=? AND day_utc>=?',
+                                   (feed['asset'], feed['symbol'], (now-90*86400)//86400*86400)).fetchall()
+        for bucket in buckets:
+            dates.update(datetime.fromtimestamp(bucket['day_utc'] + offset, NY).date() for offset in (0, 86399))
+    for day in sorted(dates, reverse=True):
+        start, end = shift_bounds(day, shift)
+        if end > now:
+            continue
+        bars, step = history_bars(db, feed, start-7200, end, day.isoformat(), shift, now)
+        if assess_shift(bars, day, shift, step, now)['reviewable']:
+            return day.isoformat()
+    raise ValueError('No completed usable shift was found in retained candles.')
 
 
-def market_tool(db, name, args):
+def market_tool(db, name, args, now=None):
+    now = int(time.time() if now is None else now)
     try:
         if name not in MARKET_NAMES:
             return {'ok': False, 'error': 'Unknown market tool.'}
@@ -478,27 +603,48 @@ def market_tool(db, name, args):
         result = read_feed(db, args.get('asset'))
         if not result['ok']:
             return result
+        if name == 'list_market_shifts':
+            return shift_choices(db, result, args.get('date_ny'), now)
         if name == 'get_market_price':
             result.pop('bars', None); result.pop('bars_m1', None)
             return result
         if name == 'review_market_session':
             shift = args.get('shift', 'day')
-            day = date.fromisoformat(args.get('date_ny') or latest_available_shift_date(result, shift, db))
-            start = int(datetime(day.year, day.month, day.day, 7 if shift == 'day' else 19, tzinfo=NY).timestamp())
-            end = start + 5 * 3600
+            if args.get('date_ny'):
+                day = date.fromisoformat(args['date_ny'])
+            else:
+                options = shift_choices(db, result, now=now)
+                selected = next((r for r in options['available_shifts'] if r['shift'] == shift), None)
+                if selected is None:
+                    return {'ok': False, 'asset': result['asset'], 'status': 'no_completed_shift',
+                            'broker_session': broker_session_status(),
+                            'message': 'No completed usable requested shift is retained. Choose only from the checked alternatives.',
+                            'alternatives': options['available_shifts'], 'ongoing_shifts': options['ongoing_shifts']}
+                day = date.fromisoformat(selected['date_ny'])
+            opening, end = shift_bounds(day, shift)
+            start = opening - 7200
         else:
             start = parse_time(args.get('start_ny') or args['anchor_start_ny'])
             end = parse_time(args.get('end_ny') or args['through_ny'])
         if not 0 < end - start <= 90 * 86400 + 3600:
             raise ValueError('Request a positive window no longer than 90 days.')
-        bars, step = history_bars(db, result, start, end)
+        source_feed = dict(result)
+        bars, step = (history_bars(db, result, start, end, day.isoformat(), shift, now)
+                      if name == 'review_market_session' else history_bars(db, result, start, end))
+        if name == 'review_market_session':
+            bars = [b for b in bars if b['time'] + step <= now]
         result.pop('bars', None); result.pop('bars_m1', None)
         result.pop('bid', None); result.pop('ask', None)
         result['available_precision_seconds'] = step
         result['available_from_ny'] = stamp(bars[0]['time']) if bars else None
         result['available_through_ny'] = stamp(bars[-1]['time'] + step) if bars else None
         if name == 'review_market_session':
+            availability = dict(asset=result['asset'], **assess_shift(bars, day.isoformat(), shift, step, now))
+            if not availability['reviewable']:
+                return unavailable_shift(db, source_feed, availability, now)
+            result['availability'] = availability
             result['review'] = session_review(bars, day.isoformat(), shift, step)
+            result['review']['availability'] = availability
             peer = PAIRINGS.get(result['asset'])
             if peer:
                 opening = paired_market_review(db, result['asset'], peer, start + 3600, end,

@@ -18,6 +18,7 @@ from gbop_voice_web.discord_controls import (
     VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild, voice_readiness,
     private_room_autojoin_allowed,
 )
+from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
 from db_compat import db
 from gbop_voice_web.member_access import member_access_error
 from gbop_voice_web.voice_policy import build_voice_instructions
@@ -5524,6 +5525,7 @@ AI_TEXT_LOCKS = {}
 
 @client.event
 async def on_message(message: discord.Message):
+    GBOP_PRIVATE_ROOMS.message_seen(message.channel.id)
     if message.author.bot:
         return
 
@@ -5669,6 +5671,9 @@ GBOP_RT_SINKS = {}
 GBOP_RT_LOCKS = {}
 GBOP_VOICE_CONTROL_LOCKS = {}
 GBOP_MEETING_LOCKS = {}
+GBOP_PRIVATE_ROOMS = PrivateRoomCleanup()
+GBOP_RT_STOPPING = set()
+GBOP_RT_CLEANUP_TASKS = set()
 
 
 def gbop_voice_control_lock(guild_id):
@@ -5980,6 +5985,8 @@ class GBOPRealtimeSession:
         self._voice_turn_count = 0
         self._logged_audio_items = set()
         self.rate_limit_recovery = VoiceRateLimitRecovery(self)
+        from gbop_voice_web.voice_work import VoiceToolWork
+        self.tool_work = VoiceToolWork(self)
         self.recovery_tools = GBOP_AI_TOOLS
         self.authorize_tool = lambda: asyncio.to_thread(
             member_access_error, db, GTOP_GUILD_ID, self.member.id, GTOP_OWNER_USER_ID)
@@ -6157,21 +6164,30 @@ class GBOPRealtimeSession:
             args = {}
 
         started_at = time.monotonic()
+        work = getattr(self, 'tool_work', None)
+        scope = work.scope() if work is not None else None
         print("[GBOP-RT] tool call:", name)
 
         try:
             from gbop_voice_web.voice_runtime import guarded_voice_tool
-            result = await guarded_voice_tool(self, name, args, call_id,
-                lambda: asyncio.to_thread(ai_execute_tool, self.member.id, name, args))
+            async def run_current_tool():
+                if work is not None and not work.current(scope):
+                    return {'ok': False, 'error': 'This voice request is no longer current.'}
+                return await asyncio.to_thread(ai_execute_tool, self.member.id, name, args)
+            runner = lambda: guarded_voice_tool(self, name, args, call_id, run_current_tool,
+                is_current=(lambda: work.current(scope)) if work is not None else None)
+            result = await work.run_tool(scope, runner) if work is not None else await runner()
         except Exception as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+        if work is not None and not work.current(scope):
+            return
         original_chars = len(json.dumps(result))
         output = json.dumps(compact_voice_tool_result(name, result), separators=(",", ":"))
         print("[GBOP-RT-TOOL]", name, "duration_ms=", round((time.monotonic() - started_at) * 1000),
               "result_chars=", original_chars, "voice_chars=", len(output))
 
-        await self.send_event(
+        sent = await self.send_event(
             {
                 "type": "conversation.item.create",
                 "item": {
@@ -6181,6 +6197,8 @@ class GBOPRealtimeSession:
                 },
             }
         )
+        if sent is False or (work is not None and not work.current(scope)):
+            return
 
         self.tool_output_pending = True
         if (name == 'review_market_session' and result.get('ok')
@@ -6199,6 +6217,13 @@ class GBOPRealtimeSession:
                 continue
 
             event_type = event.get("type", "")
+            work = getattr(self, 'tool_work', None)
+            if work is not None and not work.accepts(event):
+                response = event.get('response') or {}
+                if (event_type == 'response.created' and response.get('id')
+                        and work.stale_request(response)):
+                    await self.send_event({'type': 'response.cancel', 'response_id': response['id']}, quiet=True)
+                continue
 
             if event_type == "session.updated":
                 self.ready.set()
@@ -6213,6 +6238,8 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "input_audio_buffer.speech_started":
+                if work is not None:
+                    work.cancel()
                 self.rate_limit_recovery.cancel(reset=True)
                 self._recovery_active = False
                 self.tool_output_pending = False
@@ -6274,6 +6301,8 @@ class GBOPRealtimeSession:
             if event_type == "response.created":
                 self.rate_limit_recovery.cancel()
                 response = event.get("response") or {}
+                if work is not None:
+                    work.response_created(response)
                 print(
                     "[GBOP-RT-EVENT] response.created:",
                     self.member,
@@ -6348,12 +6377,17 @@ class GBOPRealtimeSession:
             if event_type == "response.output_item.done":
                 item = event.get("item") or {}
                 if item.get("type") == "function_call":
-                    await self.execute_tool(item)
+                    if work is not None:
+                        work.start(item)
+                    else:
+                        await self.execute_tool(item)
                 continue
 
             if event_type == "response.done":
                 response = event.get("response") or {}
                 status = response.get("status")
+                if work is not None:
+                    work.response_done(response)
                 usage = response.get("usage") or {}
                 print("[GBOP-RT-USAGE] input_tokens=", usage.get("input_tokens"),
                       "output_tokens=", usage.get("output_tokens"))
@@ -6366,7 +6400,10 @@ class GBOPRealtimeSession:
                     self.rate_limit_recovery.failed(error)
                 elif status == "completed":
                     self.last_error = None
-                    self.rate_limit_recovery.cancel(reset=True)
+                    # A tool-only response is not the recovered answer yet.
+                    # Keep the turn's retry budget across its tool continuations.
+                    self.rate_limit_recovery.cancel(reset=not (
+                        self.tool_output_pending or (work is not None and work.pending)))
                 elif status == "cancelled":
                     self.tool_output_pending = False
                     self.rate_limit_recovery.cancel()
@@ -6383,15 +6420,10 @@ class GBOPRealtimeSession:
                     response.get("status_details"),
                 )
 
-                if self.tool_output_pending and status not in ("cancelled", "failed"):
-                    self.tool_output_pending = False
-                    options = getattr(self, '_tool_response_options', {})
-                    self._tool_response_options = {}
-                    if getattr(self, '_recovery_active', False):
-                        from gbop_voice_web.voice_runtime import recovery_options
-                        options = {**options, **recovery_options(self)}
-                    self._last_response_options = options
-                    await self.send_event({"type": "response.create", 'response': options})
+                if (self.tool_output_pending and status not in ("cancelled", "failed")
+                        and (work is None or not work.pending)):
+                    from gbop_voice_web.voice_work import continue_tool_response
+                    await continue_tool_response(self)
 
     async def run(self):
         backoff = 1.0
@@ -6452,6 +6484,7 @@ class GBOPRealtimeSession:
 
             finally:
                 self.rate_limit_recovery.cancel(reset=True)
+                self.tool_work.cancel()
                 children = [task for task in (receiver, sender) if task is not None]
                 for task in children:
                     task.cancel()
@@ -6467,9 +6500,11 @@ class GBOPRealtimeSession:
                     except Exception:
                         pass
 
-    async def close(self):
+    def stop(self):
+        """Stop model work and audio synchronously, before any network cleanup."""
         self.closed = True
         self.rate_limit_recovery.cancel(reset=True)
+        self.tool_work.cancel()
 
         if self.runner is not None:
             self.runner.cancel()
@@ -6477,6 +6512,8 @@ class GBOPRealtimeSession:
         if self.output_source is not None:
             self.output_source.abort()
 
+    async def close(self):
+        self.stop()
         ws = self.websocket
         self.websocket = None
 
@@ -6497,7 +6534,8 @@ class GBOPRealtimeManager:
 
     async def get_session(self, member, voice_client, loop):
         key = self.key(member)
-        if key in self.paused or not in_voice_channel(member, voice_client):
+        if (key in self.paused or voice_client.channel.id in GBOP_RT_STOPPING
+                or not in_voice_channel(member, voice_client)):
             return None
         owner = private_room_owner(voice_client.channel)
         if owner is not None and owner != member.id:
@@ -6518,7 +6556,8 @@ class GBOPRealtimeManager:
             GBOP_RT_LOCKS[key] = lock
 
         async with lock:
-            if key in self.paused or not in_voice_channel(member, voice_client):
+            if (key in self.paused or voice_client.channel.id in GBOP_RT_STOPPING
+                or not in_voice_channel(member, voice_client)):
                 return None
             session = self.sessions.get(key)
 
@@ -6561,10 +6600,14 @@ class GBOPRealtimeManager:
         key = self.key(member)
         session = self.sessions.pop(key, None)
         if session is not None:
+            session.stop()
             manager = GBOP_RT_OUTPUT_MANAGERS.get(session.voice_client.channel.id)
+            work = [session.close()]
             if manager is not None and manager.session is session:
-                await manager.interrupt()
-            await session.close()
+                if manager.source is not None:
+                    manager.source.abort()
+                work.append(manager.interrupt(cancel_response=False))
+            await asyncio.wait_for(asyncio.gather(*work, return_exceptions=True), timeout=4)
 
     async def pause_member(self, member):
         self.paused.add(self.key(member))
@@ -6584,19 +6627,31 @@ class GBOPRealtimeManager:
         for channel_id in channels:
             await self.close_channel(channel_id)
 
-    async def close_channel(self, channel_id):
+    def detach_channel(self, channel_id):
+        """Release state and silence every session before awaiting a websocket."""
         keys = [key for key, session in self.sessions.items()
                 if session.voice_client.channel.id == channel_id]
-        for key in keys:
-            session = self.sessions.pop(key, None)
-            if session:
-                await session.close()
+        sessions = [self.sessions.pop(key) for key in keys]
+        for session in sessions:
+            session.stop()
         manager = GBOP_RT_OUTPUT_MANAGERS.pop(channel_id, None)
-        if manager is not None:
-            await manager.interrupt()
+        if manager is not None and manager.source is not None:
+            manager.source.abort()
         sink = GBOP_RT_SINKS.pop(channel_id, None)
         if sink is not None:
             sink.cleanup()
+        return sessions, manager
+
+    async def close_detached(self, state):
+        sessions, manager = state
+        work = [session.close() for session in sessions]
+        if manager is not None:
+            work.append(manager.interrupt(cancel_response=False))
+        if work:
+            await asyncio.wait_for(asyncio.gather(*work, return_exceptions=True), timeout=4)
+
+    async def close_channel(self, channel_id):
+        await self.close_detached(self.detach_channel(channel_id))
 
 
 GBOP_REALTIME_MANAGER = GBOPRealtimeManager()
@@ -6719,6 +6774,61 @@ async def gbop_voice_health_text(interaction):
             ),
         ]
     )
+
+
+async def gbop_disconnect_idle_voice(vc):
+    """Stop costly work now; disconnect independently of room/history cleanup."""
+    channel_id = vc.channel.id
+    GBOP_RT_STOPPING.add(channel_id)
+    try:
+        try:
+            if vc.is_listening():
+                vc.stop_listening()
+            if hasattr(vc, "stop_playing"):
+                vc.stop_playing()
+            else:
+                discord.VoiceClient.stop(vc)
+        except Exception as exc:
+            print("[GBOP-HANGUP] Audio stop:", type(exc).__name__, flush=True)
+        state = GBOP_REALTIME_MANAGER.detach_channel(channel_id)
+
+        async def finish_realtime():
+            try:
+                await GBOP_REALTIME_MANAGER.close_detached(state)
+            except Exception as exc:
+                print("[GBOP-HANGUP] Realtime cleanup:", type(exc).__name__, flush=True)
+        task = asyncio.create_task(finish_realtime())
+        GBOP_RT_CLEANUP_TASKS.add(task)
+        task.add_done_callback(GBOP_RT_CLEANUP_TASKS.discard)
+        try:
+            await asyncio.wait_for(vc.disconnect(force=True), timeout=5)
+        except Exception as exc:
+            # Keep a still-connected slot reserved, rather than handing an active
+            # Discord connection to another member. All AI work is already off.
+            print("[GBOP-HANGUP] Discord disconnect:", type(exc).__name__, flush=True)
+        if not vc.is_connected() and vc.guild.voice_client is vc:
+            vc.cleanup()
+    finally:
+        GBOP_RT_STOPPING.discard(channel_id)
+
+
+async def gbop_cleanup_private_room(guild, channel_id, token):
+    if token is None:
+        room = guild.get_channel(channel_id)
+        owner = private_room_owner(room) if room else None
+        if owner is not None and not any(not person.bot for person in room.members):
+            GBOP_PRIVATE_ROOMS.notices[(guild.id, owner)] = (
+                "Room kept: this existing room's ownership and history need review before deletion.")
+        return
+    async with gbop_voice_control_lock(guild.id):
+        try:
+            await asyncio.wait_for(GBOP_PRIVATE_ROOMS.remove_if_empty(
+                guild, channel_id, token,
+                lambda room_id: any(vc.channel.id == room_id
+                                    for vc in gbop_voice_connections(guild.id))), timeout=4)
+        except Exception as exc:
+            GBOP_PRIVATE_ROOMS.keep(token[0], "Discord could not safely remove it. Run `/meet` to reuse it.")
+            print("[GBOP-HANGUP] Room retained:", type(exc).__name__, flush=True)
 
 
 async def gbop_connect_member_voice(member, channel):
@@ -6981,11 +7091,32 @@ def gbop_private_voice_view(room=None):
     return view
 
 
-async def gbop_private_room(interaction, *, announce=True):
+async def gbop_private_room(interaction, *, announce=True, prefer_temporary=False):
     guild, member = interaction.guild, interaction.user
     async with gbop_voice_control_lock(guild.id):
-        room = next((channel for channel in guild.voice_channels
-                     if private_room_owner(channel) == member.id), None)
+        candidates = [channel for channel in guild.voice_channels
+                      if private_room_owner(channel) == member.id
+                      and channel.id not in GBOP_PRIVATE_ROOMS.deleted]
+        tracked = [channel for channel in candidates
+                   if (record := GBOP_PRIVATE_ROOMS.rooms.get(channel.id)) is not None
+                   and record.guild_id == guild.id and record.owner_id == member.id]
+        room = next(iter(candidates), None)
+        legacy_fallback = False
+        if prefer_temporary:
+            GBOP_PRIVATE_ROOMS.preserved_rooms[(guild.id, member.id)] = {
+                channel.id for channel in candidates if channel not in tracked}
+            if tracked:
+                room = tracked[0]
+            elif guild.me.guild_permissions.manage_channels:
+                # A fresh voice-only room allows hang-up cleanup without ever
+                # deleting, hiding or changing an older room's message history.
+                room = None
+            else:
+                legacy_fallback = room is not None
+                if legacy_fallback:
+                    GBOP_PRIVATE_ROOMS.notices[(guild.id, member.id)] = (
+                        "Using your existing room because GBOP needs **Manage Channels** "
+                        "to create a temporary one. This room stays after hang-up.")
         if room is None and not guild.me.guild_permissions.manage_channels:
             await interaction.followup.send(
                 "Creating a private Discord room needs the GBOP bot role to have **Manage Channels**. "
@@ -7021,6 +7152,13 @@ async def gbop_private_room(interaction, *, announce=True):
             for target, expected in overwrites.items()
             for field in ('view_channel', 'connect', 'speak', 'use_voice_activation')
         ))
+        if needs_update and legacy_fallback:
+            await interaction.followup.send(
+                "GBOP needs **Manage Channels** to create a temporary meeting room. "
+                "Your existing room also needs bot access restored, so it was kept unchanged. "
+                "Ask the server owner to check its permissions, then run `/meet` again.",
+                ephemeral=True)
+            return
         if needs_update and not room.permissions_for(guild.me).manage_roles:
             await interaction.followup.send(
                 f"Your room {room.mention} exists, but GBOP needs **Manage Permissions** in that room "
@@ -7030,11 +7168,31 @@ async def gbop_private_room(interaction, *, announce=True):
             return
         try:
             if room is None:
+                # Temporary rooms are voice-only: member records/photos stay in
+                # DMs and the database, never in disposable channel text.
+                for overwrite in overwrites.values():
+                    overwrite.send_messages = False
+                    overwrite.send_messages_in_threads = False
+                    overwrite.create_public_threads = False
+                    overwrite.create_private_threads = False
+                for target, overwrite in overwrites.items():
+                    if getattr(target, 'bot', False):
+                        overwrite.read_message_history = True
                 name = "gbop-private-" + re.sub(r"\s+", "-", member.display_name.lower())[:65]
                 room = await guild.create_voice_channel(
                     name=name, overwrites=overwrites, reason="Member requested a private GBOP room")
+                GBOP_PRIVATE_ROOMS.created(room, member)
             elif needs_update:
-                room = await room.edit(overwrites=overwrites, reason="Member refreshed their private GBOP room")
+                # Preserve text/history and unrelated settings in existing rooms.
+                updates = dict(room.overwrites)
+                for target, expected in overwrites.items():
+                    current = room.overwrites_for(target)
+                    for field in ('view_channel', 'connect', 'speak', 'use_voice_activation'):
+                        value = getattr(expected, field, None)
+                        if value is not None:
+                            setattr(current, field, value)
+                    updates[target] = current
+                room = await room.edit(overwrites=updates, reason="Member refreshed their private GBOP room")
             else:
                 print("[GBOP-PRIVATE-ROOM] Reused existing private room without editing permissions.", flush=True)
         except discord.Forbidden:
@@ -7046,11 +7204,13 @@ async def gbop_private_room(interaction, *, announce=True):
                 "**Manage Permissions** on that room. Then run `/gbop action:room` again.",
                 view=gbop_private_voice_view(room), ephemeral=True)
             return
+        GBOP_PRIVATE_ROOMS.reserve(room, member)
     if not announce:
         return room
     await interaction.followup.send(
         f"Your room is {room.mention}. **Open it below and join voice—GBOP joins you automatically.** "
-        "The room stays available for your next session. Server administrators can still access it.\n"
+        "New temporary rooms clear after hang-up when empty; use `/meet` next time. "
+        "Existing rooms or rooms with messages are kept. Server administrators can still access them.\n"
         "Entering your private room starts GBOP listening and sends your speech to OpenAI. "
         "Use `/gbop action:pause` to pause or leave the room to end your session.\n"
         "Discord and browser voice use your same member profile, saved trades and journals. "
@@ -7061,15 +7221,20 @@ async def gbop_private_room(interaction, *, announce=True):
 
 async def gbop_start_private_meeting(interaction):
     member = interaction.user
-    room = await gbop_private_room(interaction, announce=False)
+    room = await gbop_private_room(interaction, announce=False, prefer_temporary=True)
     if room is None:
         return
     view = gbop_private_voice_view(room)
     notice = (
         "Server administrators can still access the room. Your speech is sent to OpenAI "
         "while GBOP is listening; normal API usage charges apply. "
-        "Use `/gbop action:pause` to pause or leave voice to end your session."
+        "Use `/gbop action:pause` to pause or leave voice to end your session. "
+        "Empty temporary rooms clear after hang-up; saved journals/photos stay. "
+        "Existing rooms and rooms with messages are preserved."
     )
+    room_notice = GBOP_PRIVATE_ROOMS.notice(interaction.guild.id, member.id)
+    if room_notice:
+        notice += " " + room_notice
     if not private_room_autojoin_allowed(member, room):
         await interaction.followup.send(
             "Your room's private permissions changed. Ask the server owner to restore them, "
@@ -7198,7 +7363,8 @@ async def gbop_control(
             f"GBOP: {where}. Your voice session: **{status}**.\n"
             f"Discord slots connected: **{len(gbop_voice_connections(interaction.guild.id))}**. "
             f"Bot identities ready here: **{sum(bot.is_ready() and bot.get_guild(interaction.guild.id) is not None for bot in GBOP_VOICE_CLIENTS)}**.\n"
-            "Use `/gbop` to connect, or `/gbop action:help` for examples.", ephemeral=True)
+            "Use `/gbop` to connect, or `/gbop action:help` for examples.\n"
+            + GBOP_PRIVATE_ROOMS.notice(interaction.guild.id, interaction.user.id), ephemeral=True)
 
 
 @client.event
@@ -7208,20 +7374,41 @@ async def on_voice_state_update(member, before, after):
     if member.bot:
         own_bot = any(bot.user and member.id == bot.user.id for bot in GBOP_VOICE_CLIENTS)
         if own_bot and before.channel and after.channel is None:
-            await GBOP_REALTIME_MANAGER.close_channel(before.channel.id)
+            async with gbop_voice_control_lock(member.guild.id):
+                # Delayed disconnect events must not close a newer connection.
+                if not any(vc.channel.id == before.channel.id
+                           for vc in gbop_voice_connections(member.guild.id)):
+                    await GBOP_REALTIME_MANAGER.close_channel(before.channel.id)
+            await gbop_cleanup_private_room(
+                member.guild, before.channel.id, GBOP_PRIVATE_ROOMS.token(before.channel.id))
         return
-    async with gbop_voice_control_lock(member.guild.id):
-        session = GBOP_REALTIME_MANAGER.sessions.get((member.guild.id, member.id))
-        if session and before.channel and session.voice_client.channel.id == before.channel.id:
-            await GBOP_REALTIME_MANAGER.close_member(member)
-        for vc in gbop_voice_connections(member.guild.id):
-            channel = member.guild.get_channel(vc.channel.id)
-            if channel and not any(not person.bot for person in channel.members):
-                channel_id = channel.id
-                await asyncio.wait_for(vc.disconnect(force=True), timeout=5)
-                await GBOP_REALTIME_MANAGER.close_channel(channel_id)
-
     if after.channel is not None:
+        GBOP_PRIVATE_ROOMS.entered(after.channel, member)
+    previous = before.channel
+    token = GBOP_PRIVATE_ROOMS.token(previous.id) if previous else None
+    async with gbop_voice_control_lock(member.guild.id):
+        current = getattr(getattr(member, 'voice', None), 'channel', None)
+        # A queued leave event can run after the member has already rejoined.
+        if previous and (current is None or current.id != previous.id):
+            owner_left = private_room_owner(previous) == member.id
+            disconnected = False
+            for vc in gbop_voice_connections(member.guild.id):
+                if vc.channel.id != previous.id:
+                    continue
+                channel = member.guild.get_channel(previous.id)
+                if channel and (owner_left or not any(not person.bot for person in channel.members)):
+                    await gbop_disconnect_idle_voice(vc)
+                    disconnected = True
+            session = GBOP_REALTIME_MANAGER.sessions.get((member.guild.id, member.id))
+            if not disconnected and session and session.voice_client.channel.id == previous.id:
+                try:
+                    await GBOP_REALTIME_MANAGER.close_member(member)
+                except Exception as exc:
+                    print("[GBOP-HANGUP] Member cleanup:", type(exc).__name__, flush=True)
+    if previous:
+        await gbop_cleanup_private_room(member.guild, previous.id, token)
+    current = getattr(getattr(member, 'voice', None), 'channel', None)
+    if after.channel is not None and current is not None and current.id == after.channel.id:
         await gbop_autojoin_private_room(member, after.channel)
 
 

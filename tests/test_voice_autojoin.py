@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 from test_private_voice import code, Entity
+from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
 from gbop_voice_web.discord_controls import private_room_autojoin_allowed, private_room_owner, pick_voice_guild, in_voice_channel
 
 
@@ -61,7 +62,8 @@ class AutoJoinTests(unittest.IsolatedAsyncioTestCase):
         async def joined(*args):
             self.assertFalse(lock.locked())
         auto = AsyncMock(side_effect=joined)
-        ns = dict(asyncio=asyncio, gbop_voice_control_lock=lambda _: lock,
+        ns = dict(asyncio=asyncio, GBOP_PRIVATE_ROOMS=PrivateRoomCleanup(),
+                  gbop_voice_control_lock=lambda _: lock,
                   GBOP_REALTIME_MANAGER=NS(sessions={}), gbop_voice_connections=lambda _: [],
                   gbop_autojoin_private_room=auto)
         event = code('on_voice_state_update', ns)

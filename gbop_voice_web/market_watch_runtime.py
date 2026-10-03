@@ -166,7 +166,7 @@ async def deliver_alerts(db,guild_id,owner_id,sender,role_check,now=None):
 def prepare_next_shift(db,fingerprints,now=None):
     """One changed asset/shift per tick; bounded retention and no model calls."""
     from gbop_voice_web.market_data import read_feed, market_tool, latest_available_shift_date, history_bars
-    from datetime import timedelta
+    from gbop_voice_web.shift_availability import assess_shift, shift_bounds
     now=int(time.time() if now is None else now)
     with db() as conn:
         assets=[r['asset'] for r in conn.execute('SELECT asset FROM gbop_market_feed ORDER BY asset').fetchall()]
@@ -178,29 +178,30 @@ def prepare_next_shift(db,fingerprints,now=None):
         if not feed.get('ok'):
             continue
         try:
-            day=latest_available_shift_date(feed,shift,db)
+            day=latest_available_shift_date(feed,shift,db,now)
         except ValueError:
             continue
-        begins=datetime.fromisoformat(day).replace(hour=7 if shift=='day' else 19,tzinfo=NY)
-        start=int(begins.timestamp()); end=int((begins+timedelta(hours=5)).timestamp())
-        bars,step=history_bars(db,feed,start,end)
-        if not bars:
+        opening,end=shift_bounds(day,shift)
+        start=opening-7200
+        bars,step=history_bars(db,feed,start,end,day,shift,now)
+        availability=dict(asset=asset,**assess_shift(bars,day,shift,step,now))
+        if not availability['reviewable'] or availability['temporal_status'] != 'completed':
             continue
         key=(asset,day,shift)
         token=(asset,day,shift,hashlib.sha256(json.dumps(bars,separators=(',',':')).encode()).hexdigest(),now//300)
         if fingerprints.get(key)==token:
             continue
-        selected=(asset,day,shift,token)
+        selected=(asset,day,shift,token,availability)
         break
     if selected is None:
         return None
-    asset,day,shift,token=selected
-    result=market_tool(db,'review_market_session',{'asset':asset,'date_ny':day,'shift':shift})
+    asset,day,shift,token,availability=selected
+    result=market_tool(db,'review_market_session',{'asset':asset,'date_ny':day,'shift':shift},now=now)
     if not result.get('ok'):
         return None
     review=result['review']; story=review.get('shift_story',{})
     # Keep the prepared copy small; full evidence remains available on demand.
-    brief={'as_of_ny':result.get('available_through_ny'),'recap':story.get('recap'),
+    brief={'as_of_ny':result.get('available_through_ny'),'availability':availability,'recap':story.get('recap'),
            'range_transitions':story.get('range_transitions',[]),'paired_smt':review.get('paired_smt'),
            'paired_context':review.get('paired_context'),
            'selected_ranges':[{'anchor_start_ny':r.get('anchor_start_ny'),'variant_evidence':r.get('variant_evidence'),

@@ -7,7 +7,9 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 from gbop_voice_web.discord_controls import in_voice_channel, private_room_autojoin_allowed
-from test_private_voice import code
+from test_private_voice import code, Entity
+from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
+from gbop_voice_web.discord_controls import private_room_owner
 
 
 class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
@@ -28,7 +30,7 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
                   private_room_autojoin_allowed=Mock(return_value=True),
                   gbop_connect_member_voice=AsyncMock(return_value=(room, session)),
                   in_voice_channel=in_voice_channel,
-                  GBOP_MEETING_LOCKS={}, require_member=AsyncMock(return_value=True))
+                  GBOP_PRIVATE_ROOMS=PrivateRoomCleanup(), GBOP_MEETING_LOCKS={}, require_member=AsyncMock(return_value=True))
         start = code('gbop_start_private_meeting', ns)
         command = code('meet', ns)
         return interaction, room, session, ns, start, command
@@ -52,7 +54,7 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
         await command(interaction)
         ns['require_member'].assert_awaited_once_with(interaction)
         interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
-        ns['gbop_private_room'].assert_awaited_once_with(interaction, announce=False)
+        ns['gbop_private_room'].assert_awaited_once_with(interaction, announce=False, prefer_temporary=True)
         interaction.user.move_to.assert_awaited_once_with(room, reason='Member requested /meet with GBOP')
         ns['gbop_connect_member_voice'].assert_awaited_once_with(interaction.user, room)
         self.assertIn('You and GBOP are ready', self.message(interaction))
@@ -68,6 +70,15 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('No second command', message)
         self.assertIn('speech is sent to OpenAI', message)
         self.assertEqual(interaction.followup.send.await_args.kwargs['view'], 'room-view')
+
+    async def test_meeting_reply_explains_preserved_legacy_room(self):
+        interaction, _, _, ns, _, command = self.fixture(connected=False)
+        ns['GBOP_PRIVATE_ROOMS'].preserved_rooms[(123, 42)] = {77}
+        await command(interaction)
+        message = self.message(interaction)
+        self.assertIn('temporary rooms clear after hang-up', message)
+        self.assertIn('<#77>', message)
+        self.assertIn('protect their message history', message)
 
     async def test_already_in_room_reuses_connection_without_move(self):
         interaction, room, _, ns, _, command = self.fixture(already_here=True)
@@ -227,6 +238,115 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
             await auto(member, NS(id=10))
         ns['gbop_voice_member_allowed'].assert_not_called()
         ns['gbop_connect_member_voice'].assert_not_awaited()
+
+
+class PrivateMeetMigrationTests(unittest.IsolatedAsyncioTestCase):
+    def fixture(self, *, manage=True, missing_access=False):
+        everyone = Entity(id=1)
+        member = Entity(id=42, bot=False, display_name='Rexercise', voice=None)
+        bot = Entity(id=99, bot=True, guild_permissions=NS(manage_channels=manage))
+        acl = {everyone: NS(view_channel=False, connect=False),
+               member: NS(view_channel=True, connect=True, speak=True, use_voice_activation=True),
+               bot: NS(view_channel=True, connect=not missing_access, speak=True, use_voice_activation=True)}
+        def room(channel_id, overwrites):
+            result = NS(id=channel_id, name='gbop-private-rexercise', mention=f'<#{channel_id}>',
+                        overwrites=overwrites, edit=AsyncMock(), members=[], last_message_id=999)
+            result.overwrites_for = lambda person: overwrites.get(person, NS())
+            result.permissions_for = lambda person: NS(manage_roles=True)
+            return result
+        old = room(10, acl)
+        guild = NS(id=123, me=bot, default_role=everyone, voice_channels=[old],
+                   get_member=lambda member_id: bot if member_id == bot.id else member)
+        member.guild = guild
+        async def create(**kwargs):
+            await asyncio.sleep(0)
+            new = room(10 + len(guild.voice_channels), kwargs['overwrites'])
+            guild.voice_channels.append(new)
+            return new
+        guild.create_voice_channel = AsyncMock(side_effect=create)
+        interaction = NS(guild=guild, user=member, followup=NS(send=AsyncMock()))
+        registry = PrivateRoomCleanup()
+        lock = asyncio.Lock()
+        ns = dict(asyncio=asyncio, re=__import__('re'), private_room_owner=private_room_owner,
+                  GBOP_PRIVATE_ROOMS=registry, GBOP_VOICE_CLIENTS=[NS(user=bot)],
+                  gbop_voice_control_lock=lambda _: lock, gbop_private_voice_view=lambda *args: None,
+                  discord=NS(PermissionOverwrite=lambda **kwargs: NS(**kwargs), Forbidden=PermissionError))
+        setup = code('gbop_private_room', ns)
+        return setup, interaction, old, registry
+
+    async def test_meet_creates_temporary_room_without_changing_legacy(self):
+        setup, interaction, old, registry = self.fixture()
+        old_acl = dict(old.overwrites)
+        new = await setup(interaction, announce=False, prefer_temporary=True)
+        self.assertNotEqual(old.id, new.id)
+        old.edit.assert_not_awaited()
+        self.assertEqual(old.overwrites, old_acl)
+        self.assertEqual(old.last_message_id, 999)
+        self.assertIn(new.id, registry.rooms)
+        self.assertNotIn(old.id, registry.rooms)
+        self.assertTrue(all(acl.send_messages is False for acl in new.overwrites.values()))
+        self.assertIn('<#10>', registry.notice(123, 42))
+        self.assertIn('protect their message history', registry.notice(123, 42))
+
+    async def test_repeated_and_concurrent_meet_reuses_one_tracked_room(self):
+        setup, interaction, old, registry = self.fixture()
+        first, second = await asyncio.gather(*[
+            setup(interaction, announce=False, prefer_temporary=True) for _ in range(2)])
+        self.assertIs(first, second)
+        interaction.guild.create_voice_channel.assert_awaited_once()
+        old.edit.assert_not_awaited()
+        self.assertEqual(len(registry.rooms), 1)
+
+    async def test_room_command_preserves_legacy_reuse_behavior(self):
+        setup, interaction, old, registry = self.fixture()
+        result = await setup(interaction, announce=False)
+        self.assertIs(result, old)
+        interaction.guild.create_voice_channel.assert_not_awaited()
+        old.edit.assert_not_awaited()
+        self.assertNotIn(old.id, registry.rooms)
+
+    async def test_missing_manage_channels_reuses_safe_legacy_with_retention_notice(self):
+        setup, interaction, old, registry = self.fixture(manage=False)
+        result = await setup(interaction, announce=False, prefer_temporary=True)
+        self.assertIs(result, old)
+        interaction.guild.create_voice_channel.assert_not_awaited()
+        old.edit.assert_not_awaited()
+        self.assertIn('Manage Channels', registry.notice(123, 42))
+        self.assertIn('stays after hang-up', registry.notice(123, 42))
+
+    async def test_legacy_fallback_with_missing_bot_access_is_never_modified(self):
+        setup, interaction, old, registry = self.fixture(manage=False, missing_access=True)
+        self.assertIsNone(await setup(interaction, announce=False, prefer_temporary=True))
+        old.edit.assert_not_awaited()
+        interaction.guild.create_voice_channel.assert_not_awaited()
+        self.assertIn('kept unchanged', interaction.followup.send.await_args.args[0])
+
+    async def test_tracked_room_privacy_change_does_not_create_duplicate_or_bypass_checks(self):
+        setup, interaction, old, registry = self.fixture()
+        room = await setup(interaction, announce=False, prefer_temporary=True)
+        room.overwrites[Entity(id=88)] = NS(view_channel=True, connect=True)
+        self.assertIsNone(await setup(interaction, announce=False, prefer_temporary=True))
+        interaction.guild.create_voice_channel.assert_awaited_once()
+        room.edit.assert_not_awaited()
+        self.assertIn('shared access', interaction.followup.send.await_args.args[0])
+
+    async def test_restart_preserves_previous_room_and_creates_new_tracked_room(self):
+        setup, interaction, old, registry = self.fixture()
+        first = await setup(interaction, announce=False, prefer_temporary=True)
+        registry.rooms.clear()  # Process restart loses only transient provenance.
+        second = await setup(interaction, announce=False, prefer_temporary=True)
+        self.assertNotEqual(first.id, second.id)
+        first.edit.assert_not_awaited()
+        old.edit.assert_not_awaited()
+        self.assertEqual(registry.preserved_rooms[(123, 42)], {old.id, first.id})
+
+    async def test_preserved_room_notice_survives_temporary_cleanup_notice_clear(self):
+        setup, interaction, old, registry = self.fixture()
+        await setup(interaction, announce=False, prefer_temporary=True)
+        registry.notices[(123, 42)] = 'Room kept: transient previous failure'
+        registry.notices.pop((123, 42))  # Successful remove_if_empty clears this map only.
+        self.assertIn('<#10>', registry.notice(123, 42))
+        self.assertIn('protect their message history', registry.notice(123, 42))
 
 
 if __name__ == '__main__':
