@@ -1,4 +1,3 @@
-from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches
 
 import asyncio
 import math
@@ -13,6 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches
 from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT
 from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, LIVE_MARKET_PROMPT, market_clock, market_tool, init_market
 from gbop_voice_web.market_routes import market_router
