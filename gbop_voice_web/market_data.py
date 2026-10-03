@@ -222,10 +222,12 @@ def session_review(bars, day, shift, step=300):
         if available_end >= anchor_start + 3600:
             result['evidence'] = crt_review(bars, anchor_start, available_end, 'H1', step)
         results.append(result)
-    return {'date_ny': day.isoformat(), 'shift': shift, 'timezone': 'America/New_York', 'observations': results,
-            'shift_story': review_shift(bars, day.isoformat(), shift, step),
+    # Lead with the whole-shift story. The legacy opening-play summaries are
+    # supplemental context, not the outcome of the complete session.
+    return {'date_ny': day.isoformat(), 'shift': shift, 'timezone': 'America/New_York',
+            'shift_story': review_shift(bars, day.isoformat(), shift, step), 'observations': results,
             'source_resolution_seconds': step,
-            'limits': 'Closed source candles aggregated to H1. Event times identify source bars, not ticks. Range observations only: no CSD, Super Soup, Blessed Thief execution, SMT, or CRT variant confirmation. Missing/unfinished hours are not evidence of no setup.'}
+            'limits': 'Closed source candles aggregated to H1. Event times identify source bars, not ticks. Use variant_evidence for supported H1 structural labels, not execution confirmation. No automatic CSD, Super Soup, Blessed Thief execution or SMT confirmation. Missing/unfinished hours are not evidence of no setup.'}
 
 
 MARKET_TOOLS = [
@@ -243,7 +245,19 @@ MARKET_NAMES = {t['name'] for t in MARKET_TOOLS}
 MARKET_PROMPT = """
 # TRADING ACCOUNTABILITY BUDDY: GROUNDED MARKET CONVERSATION
 For "what did price do today/this shift?", use review_market_session and lead with
-shift_story, not only observations[0]. Day is 09:00-12:00 and night 21:00-00:00 NY.
+shift_story.recap.spoken_summary (voice may expose this as shift_recap.spoken_summary),
+not only observations[0]. It is an evidence-built complete answer: paraphrase
+naturally while retaining later ranges and outcomes. Its chapters provide detail.
+Day is 09:00-12:00 and night 21:00-00:00 NY.
+Whole-shift recaps are NOT direct terminology questions: use 4-7 concise sentences
+to cover the complete sequence. This overrides the usual 1-3 sentence default.
+Explain what price actually did, which range took over, its supported variant,
+and whether the midpoint/opposing objective delivered or remained unresolved.
+Use ranges[].variant_evidence for structural classifications and their reasons.
+V1/V2/V3 labels use opposing-liquidity delivery, not just a midpoint touch.
+V4/V5 may establish the inside-bar structure while distribution remains unresolved.
+Repeated touches of the original boundary alone are not V6. Do not force a label
+when variant_evidence is unresolved. Structure labels do not prove a member entry.
 Start from 8; explain range_transitions and each later selected range through the
 cutoff. An initial 9ate8 failure does NOT mean the shift had no later setup.
 Use hourly_progression for candle science; independent_range_context is not an
@@ -311,9 +325,11 @@ familiar GTOP terminology. Examples: 'did 988 happen today?', 'you seen today’
 'I took the Super Soup on NAS today', 'when was that high purged?', 'when did it
 invalidate?', 'last Wednesday’s low', or a timeframe-specific CRT review. These are
 not definition questions. Delegate first; never invent today’s candle behavior.
-'What did price do this shift/today?' requires the whole shift_story: start at 8,
+'What did price do this shift/today?' requires shift_story.recap: start at 8,
 follow hourly range transitions after invalidation through noon/midnight NY, and
-include later selected CRT objectives and delivery. Do not stop at failed 9ate8.
+include later selected CRT objectives, supported variants and delivery. Do not stop
+at failed 9ate8. Give the complete recap in 4-7 concise sentences; this overrides
+the short-answer default for definitions. Preserve the backend's later-range outcome.
 Preserve missing-data and same-bar uncertainty; body-cross evidence is not an entry.
 Resolve known asset/date/shift/anchor from conversation; ask only for missing context.
 Do not lead with a price quote or a playbook definition. Quote current price only when

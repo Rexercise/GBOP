@@ -64,6 +64,37 @@ class VoiceLatencyTests(unittest.IsolatedAsyncioTestCase):
         session.refresh_context.assert_not_awaited()
         self.assertTrue(session.tool_output_pending)
 
+    async def test_full_shift_reply_gets_scoped_audio_budget(self):
+        result = {'ok': True, 'review': {'shift_story': {'ranges': [], 'recap': {'headline': 'Later setup delivered'}}}}
+        async def run_tool(fn, *args):
+            return fn(*args)
+        ns = dict(asyncio=NS(to_thread=run_tool), json=json, time=time,
+                  ai_execute_tool=Mock(return_value=result), GBOP_REALTIME_MAX_OUTPUT_TOKENS=700,
+                  compact_voice_tool_result=compact_voice_tool_result)
+        session = NS(member=NS(id=42), send_event=AsyncMock(), _tool_response_options={})
+        await method('execute_tool', ns)(session, {'name': 'review_market_session', 'call_id': 'shift', 'arguments': '{}'})
+        self.assertEqual(session._tool_response_options, {'max_output_tokens': 2200})
+        async def events():
+            yield json.dumps({'type': 'response.done', 'response': {'status': 'completed'}})
+        session.websocket = events()
+        session.rate_limit_recovery = Mock()
+        session._voice_turn_count = 1
+        await method('receiver_loop', dict(json=json))(session)
+        self.assertEqual(session.send_event.await_args.args[0],
+                         {'type': 'response.create', 'response': {'max_output_tokens': 2200}})
+        self.assertEqual(session._tool_response_options, {})
+        self.assertEqual(session._last_response_options, {'max_output_tokens': 2200})
+
+    async def test_market_error_does_not_expand_reply_budget(self):
+        async def run_tool(fn, *args):
+            return fn(*args)
+        ns = dict(asyncio=NS(to_thread=run_tool), json=json, time=time,
+                  ai_execute_tool=Mock(return_value={'ok': False, 'error': 'missing data'}),
+                  compact_voice_tool_result=compact_voice_tool_result)
+        session = NS(member=NS(id=42), send_event=AsyncMock(), _tool_response_options={})
+        await method('execute_tool', ns)(session, {'name': 'review_market_session', 'call_id': 'shift', 'arguments': '{}'})
+        self.assertEqual(session._tool_response_options, {})
+
     def test_bounded_history_keeps_all_function_definitions(self):
         tool = {'type': 'function', 'name': 'test', 'strict': True, 'parameters': {'type': 'object'}}
         ns = dict(VOICE_TRUNCATION=VOICE_TRUNCATION, GBOP_REALTIME_MODEL='existing-model',

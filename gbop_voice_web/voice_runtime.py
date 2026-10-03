@@ -24,6 +24,11 @@ def compact_voice_tool_result(name, result):
             if observation.get('play') == '9ate8' and any(r.get('label') == '9ate8' for r in ranges):
                 observation.pop('evidence', None)
                 observation['evidence_ref'] = 'shift_story.ranges: label=9ate8'
+            elif 'evidence' in observation:
+                evidence = observation.pop('evidence')
+                observation['evidence_summary'] = {k: evidence[k] for k in (
+                    'status', 'observed_direction', 'invalidated_at_ny', 'events') if k in evidence}
+                observation['detail_tool'] = 'review_market_crt for this play anchor; assigned candles omitted'
         for row in ranges:
             # Keep OHLC, first extreme times, precision, all events/objectives,
             # body evidence and progression. Repeated coverage extrema and last
@@ -40,6 +45,11 @@ def compact_voice_tool_result(name, result):
             'Whole hourly shift sequence and range events retained. Duplicate 9ate8 evidence '
             'is in shift_story. Per-range coverage extrema and last extreme occurrences '
             'are omitted; use inspect_market_candles for those details. Never infer omitted values.')
+
+        # The narrative is first so the voice reply is grounded in the later
+        # outcome before it encounters the opening-play failure and raw evidence.
+        if 'recap' in story:
+            result['review'] = {'shift_recap': story.pop('recap'), **review}
 
     def page(value):
         if isinstance(value, dict):
@@ -118,6 +128,7 @@ class VoiceRateLimitRecovery:
             # Existing function outputs are in the conversation. Disable tools
             # during recovery so saves/deletes and other actions cannot repeat.
             await session.send_event({'type': 'response.create', 'response': {
+                **getattr(session, '_last_response_options', {}),
                 'tool_choice': 'none',
             }})
         except asyncio.CancelledError:

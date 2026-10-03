@@ -32,6 +32,14 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.member.send.await_count, 2)
         self.assertIn('ask again', self.session.member.send.await_args.args[0])
 
+    async def test_shift_retry_preserves_audio_budget_with_tools_disabled(self):
+        self.session._last_response_options = {'max_output_tokens': 2200}
+        with patch('gbop_voice_web.voice_runtime.asyncio.sleep', new_callable=AsyncMock):
+            self.recovery.failed(self.error)
+            await self.recovery.task
+        self.session.send_event.assert_awaited_once_with({'type': 'response.create',
+            'response': {'max_output_tokens': 2200, 'tool_choice': 'none'}})
+
     async def test_interruption_cancels_retry(self):
         self.recovery.failed(self.error)
         pending = self.recovery.task
