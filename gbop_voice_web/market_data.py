@@ -9,7 +9,8 @@ from datetime import datetime, date, timezone, timedelta
 from zoneinfo import ZoneInfo
 from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.shift_review import review_shift
-from gbop_voice_web.candle_evidence import parse_time, stamp, candle_query, crt_review, summarize
+from gbop_voice_web.candle_evidence import parse_time, stamp, candle_query, crt_review, summarize, next_boundary
+from gbop_voice_web.smt_evidence import compare_ranges
 
 NY = ZoneInfo('America/New_York')
 ASSETS = {'NAS100', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
@@ -227,10 +228,14 @@ def session_review(bars, day, shift, step=300):
     return {'date_ny': day.isoformat(), 'shift': shift, 'timezone': 'America/New_York',
             'shift_story': review_shift(bars, day.isoformat(), shift, step), 'observations': results,
             'source_resolution_seconds': step,
-            'limits': 'Closed source candles aggregated to H1. Event times identify source bars, not ticks. Use variant_evidence for supported H1 structural labels, not execution confirmation. No automatic CSD, Super Soup, Blessed Thief execution or SMT confirmation. Missing/unfinished hours are not evidence of no setup.'}
+            'limits': 'Closed source candles aggregated to H1. Event times identify source bars, not ticks. Use variant_evidence for supported H1 structural labels, not execution confirmation. No automatic CSD, Super Soup or Blessed Thief execution confirmation. Single-asset observations do not establish SMT; paired_smt evaluates it separately. Missing/unfinished hours are not evidence of no setup.'}
 
 
 MARKET_TOOLS = [
+    schema('review_market_smt', 'Compare two positively correlated markets at the SAME anchor and moment. Verifies relative boundary sweeps, not trade entries. For 9ate8 use each market\'s 8 oclock H1 range; later invalidation never erases an earlier divergence.', {
+        'asset': {'type': 'string'}, 'comparison_asset': {'type': 'string'},
+        'anchor_start_ny': {'type': 'string'}, 'anchor_timeframe': {'type': 'string'},
+        'through_ny': {'type': 'string'}}),
     schema('get_market_price', 'Get latest broker bid/ask ONLY when a quote is requested. Disclose stale or absent data.', {'asset': {'type': 'string'}}),
     schema('review_market_session', 'Review the entire GTOP shift: 9AM-noon or 9PM-midnight New York, beginning with the 8 oclock anchor. Returns sequential hourly range promotions after invalidation, later CRTs, objective outcomes, M5 body evidence, plus 9ate8/Young Lefty. Use for casual references to today’s play as well as direct questions. Dates/shifts use New York.', {
         'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null']},
@@ -246,7 +251,9 @@ MARKET_PROMPT = """
 # TRADING ACCOUNTABILITY BUDDY: GROUNDED MARKET CONVERSATION
 For "what did price do today/this shift?", use review_market_session and lead with
 shift_story.recap.spoken_summary (voice may expose this as shift_recap.spoken_summary),
-not only observations[0]. It is an evidence-built complete answer: paraphrase
+not only observations[0]. For gold/silver ALSO lead with paired_smt when its
+closed aligned candles verify divergence: the standalone shift_story describes
+single-asset CRTs, not the entire paired SMT story. Paraphrase
 naturally while retaining later ranges and outcomes. Its chapters provide detail.
 Day is 09:00-12:00 and night 21:00-00:00 NY.
 Whole-shift recaps are NOT direct terminology questions: use 4-7 concise sentences
@@ -310,7 +317,16 @@ available; never reconstruct fine bars from coarse OHLC. Daily/week/month and cu
 CRT anchors use the specified chart start; do not silently equate NY midnight candles
 with broker session candles. Ask the anchor boundary only if materially ambiguous.
 
-Range candidates are not confirmed CSD, Super Soup, SMT, Blessed Thief entries, signals,
+SMT: use review_market_smt for synchronized anchors and boundary sweeps. One
+positively correlated market sweeping buy side while its peer leaves its own high
+untouched is bearish SMT; reverse for sell side/bullish. paired_smt is the same
+deterministic check for the gold/silver 9ate8 opening hour. A confirmed divergence
+is NOT a confirmed entry. It does NOT require both independent CRTs to deliver,
+nor remain valid later. Respect anchors_valid_at_event and missing coverage; do not
+use later invalidations or opposite-direction outcomes to deny earlier divergence.
+When challenged, inspect matched evidence and correct the answer if warranted;
+do not repeat a previous classification instead of checking its factual basis.
+Range candidates alone are not confirmed CSD, Super Soup, Blessed Thief entries, signals,
 or evidence of an actual member execution. Examine assigned-timeframe candles and the
 member's selected Model 1 candidate before discussing a possible Super Soup/CSD; if the
 body or sequence is unclear, ask for its candle instead of asserting confirmation.
@@ -331,6 +347,9 @@ include later selected CRT objectives, supported variants and delivery. Do not s
 at failed 9ate8. Give the complete recap in 4-7 concise sentences; this overrides
 the short-answer default for definitions. Preserve the backend's later-range outcome.
 Preserve missing-data and same-bar uncertainty; body-cross evidence is not an entry.
+For SMT use matched paired_smt/review_market_smt evidence. A peer's later independent
+CRT failure does not erase an earlier boundary divergence; do not confuse SMT with
+entry confirmation or require identical later delivery in both markets.
 Resolve known asset/date/shift/anchor from conversation; ask only for missing context.
 Do not lead with a price quote or a playbook definition. Quote current price only when
 asked. Speak the verified event and timestamp naturally, preserving data precision.
@@ -365,10 +384,28 @@ def history_bars(db, feed, start, end):
     return coarse, 300
 
 
+def paired_market_review(db, asset, comparison_asset, start, end, tf='H1', detect_through=None):
+    anchor_end = next_boundary(start, tf)
+    if not 0 < end - start <= 90 * 86400 + 3600 or end <= anchor_end:
+        raise ValueError('Use a completed anchor and subsequent evidence window within 90 days.')
+    pair = []
+    for value in (asset, comparison_asset):
+        feed = read_feed(db, value)
+        if not feed['ok']:
+            return {'ok': False, 'status': 'insufficient_paired_evidence', 'missing_asset': value,
+                    'error': 'Both market histories are required; missing data does not prove no SMT.'}
+        bars, step = history_bars(db, feed, start, end)
+        pair.append(dict(asset=feed['asset'], symbol=feed['symbol'], bars=bars, step=step))
+    return compare_ranges(pair[0], pair[1], start, anchor_end, end, tf, detect_through)
+
+
 def market_tool(db, name, args):
     try:
         if name not in MARKET_NAMES:
             return {'ok': False, 'error': 'Unknown market tool.'}
+        if name == 'review_market_smt':
+            return paired_market_review(db, args['asset'], args['comparison_asset'],
+                parse_time(args['anchor_start_ny']), parse_time(args['through_ny']), args['anchor_timeframe'])
         result = read_feed(db, args.get('asset'))
         if not result['ok']:
             return result
@@ -394,6 +431,12 @@ def market_tool(db, name, args):
         result['available_through_ny'] = stamp(bars[-1]['time'] + step) if bars else None
         if name == 'review_market_session':
             result['review'] = session_review(bars, day.isoformat(), shift, step)
+            peer = {'XAUUSD': 'XAGUSD', 'XAGUSD': 'XAUUSD'}.get(result['asset'])
+            if peer:
+                # The first 9 oclock hour is compared directly; later shift outcomes
+                # are inspected separately and cannot override this historical fact.
+                result['review']['paired_smt'] = paired_market_review(
+                    db, result['asset'], peer, start + 3600, end, detect_through=start + 3 * 3600)
         elif name == 'inspect_market_candles':
             result['review'] = candle_query(bars, start, end, args['timeframe'], step)
         else:

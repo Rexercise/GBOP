@@ -12,6 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT
 from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, LIVE_MARKET_PROMPT, market_clock, market_tool, init_market
 from gbop_voice_web.market_routes import market_router
 from db_compat import db
@@ -443,34 +444,7 @@ def tool_get_trade_state(user_id: int, args: dict):
 
 
 def tool_get_journal_history(user_id: int, args: dict):
-    limit = max(1, min(int(args.get("limit") or 5), 20))
-    with db() as conn:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM journals
-            WHERE guild_id=? AND user_id=?
-            ORDER BY id DESC LIMIT ?
-            """,
-            (GTOP_GUILD_ID, user_id, limit),
-        ).fetchall()
-
-    return {
-        "ok": True,
-        "journals": [
-            {
-                "journal_id": r["id"],
-                "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, r["id"]),
-                "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, r["thesis_id"]) if "thesis_id" in r.keys() else None,
-                "result_r": r["result_r"],
-                "rule_adherence": r["rule_adherence"],
-                "summary": r["description"],
-                "study_note": r["study_note"],
-                "created_at": r["created_at"],
-            }
-            for r in rows
-        ],
-    }
+    return recall_journal_history(db, GTOP_GUILD_ID, user_id, args)
 
 
 def tool_open_trade(user_id: int, args: dict):
@@ -975,6 +949,13 @@ TOOLS.extend(COACH_TOOLS)
 TOOLS.extend(INTELLIGENCE_TOOLS)
 TOOLS.extend(TRADE_ASSIST_TOOLS)
 TOOLS.extend(MARKET_TOOLS)
+TOOLS.extend(JOURNAL_RECALL_TOOLS)
+for _recall_tool in TOOLS:
+    if _recall_tool.get('name') == 'get_journal_history':
+        _recall_tool['description'] = 'Read this member\'s saved journals, all-trade counts and next page. Empty OPEN trades does not mean no saved trades.'
+        _recall_tool['parameters']['properties']['offset'] = {'type': ['integer', 'null']}
+        _recall_tool['parameters']['required'].append('offset')
+
 
 
 def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
@@ -983,6 +964,8 @@ def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
     denial = member_access_error(db, GTOP_GUILD_ID, user_id, OWNER_USER_ID)
     if denial:
         return {"ok": False, "error": denial}
+    if name == 'send_journal_history':
+        return send_journal_history(db, GTOP_GUILD_ID, user_id, args)
     if name in MARKET_NAMES:
         return market_tool(db, name, args)
     if name in TRADE_ASSIST_NAMES:
@@ -1078,6 +1061,7 @@ BACKEND_PROMPT += (
     + "\n\n" + INTELLIGENCE_PROMPT
     + "\n\n" + TRADE_ASSIST_PROMPT
     + "\n\n" + MARKET_PROMPT
+    + "\n\n" + JOURNAL_RECALL_PROMPT
 )
 
 

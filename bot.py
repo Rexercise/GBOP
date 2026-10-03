@@ -1,3 +1,4 @@
+from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT
 import os
 import logging
 from array import array
@@ -4874,36 +4875,7 @@ def ai_get_trade_state(user_id: int, args: dict):
 
 
 def ai_get_journal_history(user_id: int, args: dict):
-    limit = max(1, min(int(args.get("limit") or 5), 10))
-
-    with db() as conn:
-        rows = conn.execute("""
-            SELECT *
-            FROM journals
-            WHERE guild_id=? AND user_id=?
-            ORDER BY id DESC
-            LIMIT ?
-        """, (
-            GTOP_GUILD_ID,
-            user_id,
-            limit,
-        )).fetchall()
-
-    return {
-        "ok": True,
-        "journals": [
-            {
-                "journal_id": row["id"],
-                "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, row["id"]),
-                "trade_id": trade_number_for_id(user_id, row["thesis_id"]),
-                "result_r": row["result_r"],
-                "rule_adherence": row["rule_adherence"],
-                "summary": row["description"],
-                "study_note": row["study_note"],
-            }
-            for row in rows
-        ],
-    }
+    return recall_journal_history(db, GTOP_GUILD_ID, user_id, args)
 
 
 def ai_edit_journal(user_id: int, args: dict):
@@ -5390,6 +5362,13 @@ GBOP_AI_TOOLS.extend(COACH_TOOLS)
 GBOP_AI_TOOLS.extend(INTELLIGENCE_TOOLS)
 GBOP_AI_TOOLS.extend(TRADE_ASSIST_TOOLS)
 GBOP_AI_TOOLS.extend(MARKET_TOOLS)
+GBOP_AI_TOOLS.extend(JOURNAL_RECALL_TOOLS)
+for _recall_tool in GBOP_AI_TOOLS:
+    if _recall_tool.get('name') == 'get_journal_history':
+        _recall_tool['description'] = 'Read this member\'s saved journals, all-trade counts and next page. Empty OPEN trades does not mean no saved trades.'
+        _recall_tool['parameters']['properties']['offset'] = {'type': ['integer', 'null']}
+        _recall_tool['parameters']['required'].append('offset')
+
 GTOP_AI_PROMPT += (
     "\n\n" + TRADE_NUMBERING_PROMPT
     + "\n\n" + PHOTO_PROMPT
@@ -5397,6 +5376,7 @@ GTOP_AI_PROMPT += (
     + "\n\n" + INTELLIGENCE_PROMPT
     + "\n\n" + TRADE_ASSIST_PROMPT
     + "\n\n" + MARKET_PROMPT
+    + "\n\n" + JOURNAL_RECALL_PROMPT
 )
 
 
@@ -5404,6 +5384,8 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
     denial = member_access_error(db, GTOP_GUILD_ID, user_id, GTOP_OWNER_USER_ID)
     if denial:
         return {"ok": False, "error": denial}
+    if name == 'send_journal_history':
+        return send_journal_history(db, GTOP_GUILD_ID, user_id, args)
     if name in MARKET_NAMES:
         return market_tool(db, name, args)
     if name in TRADE_ASSIST_NAMES:
@@ -5990,6 +5972,10 @@ class GBOPRealtimeSession:
         self._voice_turn_count = 0
         self._logged_audio_items = set()
         self.rate_limit_recovery = VoiceRateLimitRecovery(self)
+        self.recovery_tools = GBOP_AI_TOOLS
+        self.authorize_tool = lambda: asyncio.to_thread(
+            member_access_error, db, GTOP_GUILD_ID, self.member.id, GTOP_OWNER_USER_ID)
+        self._recovery_active = False
 
     def instructions(self):
         # Do not pin journal prose/history in every voice response. All current
@@ -6166,12 +6152,9 @@ class GBOPRealtimeSession:
         print("[GBOP-RT] tool call:", name)
 
         try:
-            result = await asyncio.to_thread(
-                ai_execute_tool,
-                self.member.id,
-                name,
-                args,
-            )
+            from gbop_voice_web.voice_runtime import guarded_voice_tool
+            result = await guarded_voice_tool(self, name, args, call_id,
+                lambda: asyncio.to_thread(ai_execute_tool, self.member.id, name, args))
         except Exception as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -6223,6 +6206,7 @@ class GBOPRealtimeSession:
 
             if event_type == "input_audio_buffer.speech_started":
                 self.rate_limit_recovery.cancel(reset=True)
+                self._recovery_active = False
                 self.tool_output_pending = False
                 self._tool_response_options = {}
                 self._last_response_options = {}
@@ -6395,6 +6379,9 @@ class GBOPRealtimeSession:
                     self.tool_output_pending = False
                     options = getattr(self, '_tool_response_options', {})
                     self._tool_response_options = {}
+                    if getattr(self, '_recovery_active', False):
+                        from gbop_voice_web.voice_runtime import recovery_options
+                        options = {**options, **recovery_options(self)}
                     self._last_response_options = options
                     await self.send_event({"type": "response.create", 'response': options})
 
@@ -6412,6 +6399,7 @@ class GBOPRealtimeSession:
 
                 receiver = asyncio.create_task(self.receiver_loop())
 
+                self._recovery_active = False
                 update = await asyncio.to_thread(self.session_update)
                 print("[GBOP-VOICE-POLICY] compact-v1 instructions_chars=",
                       len(update["session"]["instructions"]), "tools=", len(update["session"]["tools"]),
