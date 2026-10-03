@@ -1,5 +1,6 @@
 from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches
 from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT
+from gbop_voice_web.delivery_receipts import DELIVERY_TOOLS, DELIVERY_PROMPT, delivery_status
 import os
 import logging
 from array import array
@@ -5350,6 +5351,7 @@ GBOP_AI_TOOLS.extend(TRADE_ASSIST_TOOLS)
 GBOP_AI_TOOLS.extend(MARKET_TOOLS)
 GBOP_AI_TOOLS.extend(WATCH_TOOLS)
 GBOP_AI_TOOLS.extend(JOURNAL_RECALL_TOOLS)
+GBOP_AI_TOOLS.extend(DELIVERY_TOOLS)
 for _recall_tool in GBOP_AI_TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
         _recall_tool['description'] = 'Read this member\'s saved journals, all-trade counts and next page. Empty OPEN trades does not mean no saved trades.'
@@ -5364,6 +5366,7 @@ GTOP_AI_PROMPT += (
     + "\n\n" + TRADE_ASSIST_PROMPT
     + "\n\n" + MARKET_PROMPT
     + "\n\n" + JOURNAL_RECALL_PROMPT
+    + "\n\n" + DELIVERY_PROMPT
 )
 
 
@@ -5371,6 +5374,8 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
     denial = member_access_error(db, GTOP_GUILD_ID, user_id, GTOP_OWNER_USER_ID)
     if denial:
         return {"ok": False, "error": denial}
+    if name == 'get_delivery_status':
+        return delivery_status(db, GTOP_GUILD_ID, user_id, args)
     if name == 'send_journal_history':
         return send_journal_history(db, GTOP_GUILD_ID, user_id, args)
     if name in WATCH_NAMES:
@@ -5625,15 +5630,24 @@ async def on_message(message: discord.Message):
             "\nSaved photo IDs: " + ", ".join(p["photo_id"] for p in photos) if photos else ""))
         ai_save_message(member.id, "assistant", answer)
 
+        # A generated answer is not yet a delivered answer. Keep this exact
+        # conversation/generation ticket until Discord accepts every chunk.
+        from gbop_voice_web.market_conversation import TEXT_MARKET_CONTEXTS
+        delivered_context = TEXT_MARKET_CONTEXTS.get(
+            (GTOP_GUILD_ID, member.id, 'text', message.channel.id))
+        delivered_generation = delivered_context.generation
 
-    if len(answer) <= 1900:
-        await message.reply(answer)
-    else:
-        await message.reply(answer[:1900])
-        await ai_send_chunks(
-            message.channel,
-            answer[1900:].lstrip(),
-        )
+
+        if len(answer) <= 1900:
+            await message.reply(answer)
+        else:
+            await message.reply(answer[:1900])
+            await ai_send_chunks(
+                message.channel,
+                answer[1900:].lstrip(),
+            )
+        delivered_context.complete_response(answer, generation=delivered_generation,
+            response_id=str(message.id), completed=True)
 
 
 
@@ -5812,6 +5826,7 @@ class GBOPRealtimeAudioSource(discord.AudioSource):
         self.condition = threading.Condition()
         self.finished = False
         self.aborted = False
+        self.drained = False
         self.played_bytes = 0
 
     def is_opus(self):
@@ -5869,6 +5884,7 @@ class GBOPRealtimeAudioSource(discord.AudioSource):
                 self.played_bytes += len(chunk)
                 return chunk
 
+            self.drained = self.finished and not self.aborted
             return b""
 
     def cleanup(self):
@@ -5950,6 +5966,10 @@ class GBOPOutputManager:
             print("[GBOP-RT] Discord playback error:", repr(error))
 
         if self.source is source:
+            delivery = getattr(self.session, 'market_delivery', None)
+            if delivery is not None:
+                delivery.playback_done(self.item_id, completed=bool(
+                    not error and source.drained))
             self.source = None
             self.session = None
             self.voice_client = None
@@ -5987,11 +6007,26 @@ class GBOPRealtimeSession:
         self.tool_work = VoiceToolWork(self)
         from gbop_voice_web.market_conversation import MarketConversation, contextual_tools
         self.market_context = MarketConversation((GTOP_GUILD_ID, member.id, 'discord_voice'), auth_provider=(db, GTOP_GUILD_ID, member.id))
+        from gbop_voice_web.response_delivery import MarketResponseDelivery
+        self.market_delivery = MarketResponseDelivery(self.market_context,
+            self._market_response_delivered)
         self.conversation_tools = contextual_tools(GBOP_AI_TOOLS)
         self.recovery_tools = self.conversation_tools
         self.authorize_tool = lambda: asyncio.to_thread(
             member_access_error, db, GTOP_GUILD_ID, self.member.id, GTOP_OWNER_USER_ID)
         self._recovery_active = False
+
+    def _market_response_delivered(self, generation):
+        # Update retained evidence instructions without starting another reply.
+        async def update():
+            if (self.closed or self.websocket is None
+                    or not self.market_context.current(generation)):
+                return
+            await self.send_event({'type': 'session.update', 'session': {
+                'type': 'realtime',
+                'instructions': self._market_base_instructions + self.market_context.prompt(),
+            }}, quiet=True)
+        asyncio.create_task(update())
 
     def instructions(self):
         # Do not pin journal prose/history in every voice response. All current
@@ -6229,8 +6264,11 @@ class GBOPRealtimeSession:
             if work is not None and not work.current(scope):
                 return
         self.tool_output_pending = True
-        if (name == 'review_market_session' and result.get('ok')
-                and voice_result.get('voice_view', {}).get('kind') == 'shift_overview'):
+        if (result.get('ok') and (
+                name == 'review_market_session'
+                and voice_result.get('voice_view', {}).get('kind') == 'shift_overview'
+                or name == 'review_other_market_ranges'
+                and voice_result.get('voice_view', {}).get('kind') == 'other_range_followup')):
             # Audio tokens share this limit: live shift replies repeatedly hit 700.
             # Expand only this evidence-backed recap, not every reply.
             self._tool_response_options = {'max_output_tokens': max(GBOP_REALTIME_MAX_OUTPUT_TOKENS, 2200)}
@@ -6266,6 +6304,9 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "input_audio_buffer.speech_started":
+                delivery = getattr(self, 'market_delivery', None)
+                if delivery is not None:
+                    delivery.cancel()
                 if work is not None:
                     work.cancel()
                 self.rate_limit_recovery.cancel(reset=True)
@@ -6357,6 +6398,9 @@ class GBOPRealtimeSession:
                     continue
 
                 item_id = event.get("item_id")
+                delivery = getattr(self, 'market_delivery', None)
+                if delivery is not None:
+                    delivery.started(item_id, event.get('response_id'))
                 manager = gbop_output_manager(self.voice_client.channel.id)
 
                 if item_id not in self._logged_audio_items:
@@ -6401,6 +6445,9 @@ class GBOPRealtimeSession:
 
             if event_type == "response.output_audio_transcript.done":
                 transcript = (event.get("transcript", "") or "").strip()
+                delivery = getattr(self, 'market_delivery', None)
+                if delivery is not None:
+                    delivery.transcript(event.get('item_id'), transcript, event.get('response_id'))
                 if transcript:
                     await asyncio.to_thread(ai_save_message, self.member.id, "assistant", transcript)
                 continue
@@ -6417,6 +6464,9 @@ class GBOPRealtimeSession:
             if event_type == "response.done":
                 response = event.get("response") or {}
                 status = response.get("status")
+                delivery = getattr(self, 'market_delivery', None)
+                if delivery is not None:
+                    delivery.response_done(response)
                 if work is not None:
                     work.response_done(response)
                 usage = response.get("usage") or {}
@@ -6514,6 +6564,7 @@ class GBOPRealtimeSession:
                 backoff = min(8.0, backoff * 2)
 
             finally:
+                self.market_delivery.cancel()
                 self.rate_limit_recovery.cancel(reset=True)
                 self.tool_work.cancel()
                 children = [task for task in (receiver, sender) if task is not None]

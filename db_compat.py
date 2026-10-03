@@ -73,6 +73,7 @@ class ConnectionCompat:
             SUPABASE_DB_URL,
             sslmode="require",
             prepare_threshold=None,
+            connect_timeout=10,
         )
 
     def __enter__(self):

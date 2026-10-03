@@ -22,7 +22,8 @@ from gbop_voice_web.current_market import is_current_request, current_request_ar
 NY = ZoneInfo('America/New_York')
 SHIFT_TOOLS = {'review_market_session', 'get_prepared_market_brief'}
 SCOPED_TOOLS = SHIFT_TOOLS | {'list_market_shifts', 'review_market_crt',
-                              'review_market_smt', 'inspect_market_candles', 'review_current_market'}
+                              'review_market_smt', 'inspect_market_candles', 'review_current_market',
+                              'review_other_market_ranges'}
 DETAIL_SCOPE_KEYS = ('asset', 'anchor_start_ny', 'anchor_timeframe', 'through_ny')
 DETAIL_NULL_ARGS = ('confirmation_timeframe', 'blessed_thief_timeframe',
                     'blessed_thief_from_ny', 'detail_candle_start_ny', 'detail_from_ny')
@@ -70,10 +71,25 @@ def contextual_tools(tools):
             'set detail_candle_start_ny for a named candle.')
         params = tool['parameters']
         params['properties']['context_action'] = {
-            'type': 'string', 'enum': ['continue', 'switch', 'latest', 'last_night']}
+            'type': 'string', 'enum': ['continue', 'switch', 'latest', 'last_night', 'reset']}
         params['required'].append('context_action')
         if tool['name'] in SHIFT_TOOLS:
             params['properties']['shift'] = {'type': ['string', 'null'], 'enum': ['day', 'night', None]}
+    if not any(tool.get('name') == 'review_other_market_ranges' for tool in result):
+        result.append({
+            'type': 'function', 'name': 'review_other_market_ranges', 'strict': True,
+            'description': 'For an explicit member request for other/remaining GTOP plays or ranges in '
+                'the reviewed shift. Server excludes actually discussed ranges, including failed named '
+                'setups, and returns remaining hourly CRTs chronologically even without a branded play. '
+                'Use continue in the selected scope; switch only for an explicit asset/date/shift '
+                'change, reset only when the member explicitly asks to start this review over. '
+                'Say each actual range opening. A tool result is retrieved evidence, not proof it was spoken.',
+            'parameters': {'type': 'object', 'additionalProperties': False,
+                'properties': {'asset': {'type': ['string', 'null']},
+                    'date_ny': {'type': ['string', 'null']},
+                    'shift': {'type': ['string', 'null'], 'enum': ['day', 'night', None]},
+                    'context_action': {'type': 'string', 'enum': ['continue', 'switch', 'reset']}},
+                'required': ['asset', 'date_ny', 'shift', 'context_action']}})
     return result
 
 
@@ -220,9 +236,66 @@ def _text_intent(text, selected, now):
     latest = bool(re.search(r'\b(?:last|latest|most recent)\s+(?:(?:completed|available|usable|bitcoin|btc|btcusd|ethereum|eth|ethusd|nas|nas100|nasdaq|spx|us30|gold|silver|oil|wti|day|night)\s+)*shift\b', text))
     if latest:
         return {'action': 'latest', 'fields': fields}
+    if re.search(r'\b(?:start (?:the |this |our )?(?:review |recap )?over|reset (?:the |this |our )?(?:review|recap)|restart (?:the |this |our )?(?:review|recap))\b', text):
+        return {'action': 'reset', 'fields': fields}
     whole_shift = re.search(r'\b(?:whole|entire) shift\b', text)
     changed = any((selected or {}).get(key) != value for key, value in fields.items())
     return {'action': 'switch' if changed or whole_shift else 'continue', 'fields': fields}
+
+
+def _other_ranges_intent(text):
+    """A range-level follow-up, never 'another Model 1' within one range."""
+    if not text:
+        return False
+    text = text.lower()
+    if re.search(r'\b(?:definition|define|in general|model\s*(?:1|one)|super\s*soup|ci?sd)\b', text):
+        return False
+    return bool(re.search(r'\b(?:other|another|remaining|more|next)\b.{0,60}\b(?:gtop\s+)?(?:plays?|setups?|ranges?|crts?)\b', text)
+                or re.search(r'\bwhat else\b', text) and re.search(r'\b(?:shift|gtop|ranges?|plays?)\b', text))
+
+
+def _discussion_scope(target):
+    if (not target or target.get('review_mode') or target.get('anchor_timeframe', 'H1') != 'H1'
+            or not all(target.get(k) for k in ('asset', 'date_ny', 'shift'))):
+        return None
+    return tuple(target[k] for k in ('asset', 'date_ny', 'shift'))
+
+
+def _spoken_range(text, row):
+    """Conservative transcript identity: source-bar clocks alone are not anchors."""
+    text = text.lower()
+    opening = datetime.fromisoformat(row['anchor_start_ny'])
+    hour = opening.hour % 12 or 12
+    word = ('twelve one two three four five six seven eight nine ten eleven'.split())[hour % 12]
+    meridiem = r'a\.?\s*m\.?' if opening.hour < 12 else r'p\.?\s*m\.?'
+    bare = rf'(?:{hour}(?::00)?|{word})'
+    clock = rf'{bare}(?:\s*{meridiem}|\s*o[\x27’]?clock(?:\s*{meridiem})?)'
+    patterns = [rf'\b{clock}\s*(?:h\s*1\s*|hourly\s*)?(?:range|crt)\b',
+                rf'\b(?:range|crt)\s+(?:at\s+|from\s+)?{clock}\b',
+                rf'\b{bare}\s*(?:h\s*1|hourly)\s*(?:range|crt)\b',
+                rf'\bh\s*1\s*(?:range|crt)\s+(?:at\s+|from\s+)?{bare}\b']
+    if row.get('play') == '9ate8':
+        patterns.append(r'\b(?:9|nine)\s*(?:ate|eight|8)\s*(?:8|eight)\b')
+    if row.get('play') == 'Young Lefty':
+        patterns.append(r'\byoung\s+lefty\b')
+    explanation = (r'\b(?:bullish|bearish|failed|invalidat\w*|deliver\w*|reach\w*|midpoint|'
+                   r'objectives?|liquidity|purg\w*|pending|unverified|uninitiated|'
+                   r'no (?:directional )?setup|closes? at|cutoff|v[1-6]|boneless|clean setup)\b|50%')
+    meta = (r"\b(?:haven[\x27’]?t|have not|hasn[\x27’]?t|has not|not yet|never|will|would|"
+            r"going to|need to|want to|can|could|should|let[\x27’]?s)\s+(?:been\s+)?"
+            r'(?:discuss\w*|cover\w*|review\w*|explain\w*|mention\w*)\b')
+    # A completed response can still only promise an explanation. Match an
+    # explicit factual clause, not that promise or a comparison to another play.
+    for clause in re.split(r'(?<=[.!?])\s+|[;\n]|\bbut\b', text):
+        if re.search(meta, clause):
+            continue
+        for pattern in patterns:
+            for match in re.finditer(pattern, clause):
+                after = clause[match.end():]
+                before = ' '.join(clause[:match.start()].split()[-4:])
+                if re.search(explanation, after) or re.search(explanation, before):
+                    return True
+    return False
 
 
 def _detail_intent(text, previous=None):
@@ -342,6 +415,11 @@ class MarketConversation:
         self._turn_now = None
         self._detail_retrieved_generation = -1
         self._detail_index = []
+        self._required_other = False
+        self._other_result = None
+        self._retrieved_discussion = OrderedDict()
+        self._discussed = OrderedDict()
+        self._completed_responses = OrderedDict()
         self._lock = threading.RLock()
         self._journal_write_lock = threading.Lock()
         self._journal_review = None
@@ -361,6 +439,9 @@ class MarketConversation:
                 self.invalidate()
                 self.selected = self.requested = self.evidence = self._journal_review = None
                 self._detail_index = []
+                self._discussed.clear()
+                self._retrieved_discussion.clear()
+                self._completed_responses.clear()
                 self.session_id = uuid4().hex
             self._auth_revision = revision
 
@@ -379,6 +460,8 @@ class MarketConversation:
             self._turn_now = time.time() if now is None else now
             self.generation += 1
             self._current_result = None
+            self._other_result = None
+            self._retrieved_discussion.clear()
             self._journal_results = {}
             self.pending = None
             previous_scope = self.requested or self.selected or {}
@@ -387,6 +470,8 @@ class MarketConversation:
                            _text_intent(text, self.requested or self.selected, self._turn_now)
                            if text is not None else None)
             self._required_current = not correction and is_current_request(text)
+            self._required_other = (not correction and not self._required_current and _other_ranges_intent(text)
+                                    and bool(self.selected or self.requested or (self.intent or {}).get('fields')))
             if (not correction and text is not None and (self.selected or {}).get('review_mode') == 'current_market'
                     and re.search(r'\b(?:recap|(?:whole|entire|completed) shift)\b', text.lower())):
                 self.intent['action'] = 'switch'
@@ -404,7 +489,9 @@ class MarketConversation:
             self._journal_reference = False if correction else reference_intent(text)
             self._journal_candle_reference = bool(text and re.search(r'\b(?:this|that|the|same) candle\b', text.lower()))
             self._required_detail = (_detail_intent(text, previous_focus)
-                if text is not None and not correction and not self._journal_reference and not self._required_current else None)
+                if text is not None and not correction and not self._journal_reference and not self._required_current and not self._required_other else None)
+            if (self.intent or {}).get('action') == 'reset':
+                self.reset_discussion(self.requested or self.selected)
             if self._required_current:
                 # A fresh current request must not bind a still-selected old
                 # snapshot if its new read fails or has not returned yet.
@@ -429,6 +516,15 @@ class MarketConversation:
                 except (ValueError, TypeError, KeyError):
                     return {**base, 'args': None, 'status': 'current_market_scope_required',
                             'error': 'Specify one market and, for a custom/higher-timeframe range, its chart opening and timeframe.'}
+            if not self.closed and self._required_other:
+                target = self.requested or self.selected or {}
+                args = {k: target.get(k) for k in ('asset', 'date_ny', 'shift')}
+                if not _discussion_scope(target):
+                    return {'tool': 'review_other_market_ranges', 'query_purpose': 'other_ranges',
+                            'args': None, 'status': 'market_other_scope_required',
+                            'error': 'Choose one asset, New York date and shift before reviewing other ranges.'}
+                return {'tool': 'review_other_market_ranges', 'query_purpose': 'other_ranges',
+                        'status': 'ready', 'args': {**args, 'context_action': 'continue'}}
             if self.closed or self._required_detail is None:
                 return None
             focus = deepcopy(self._required_detail)
@@ -521,6 +617,9 @@ class MarketConversation:
             self.intent = None
             self._required_detail = None
             self._required_current = False
+            self._required_other = False
+            self._other_result = None
+            self._retrieved_discussion.clear()
             self._current_result = None
             self.detail_focus = None
 
@@ -542,13 +641,82 @@ class MarketConversation:
         with self._lock:
             return not self.closed and generation == self.generation
 
+    def reset_discussion(self, target=None):
+        """Explicit review restart only; switching away and back preserves history."""
+        with self._lock:
+            scope = _discussion_scope(target or self.requested or self.selected)
+            if scope:
+                self._discussed.pop(scope, None)
+
+    def _register_discussion(self, result, target):
+        scope = _discussion_scope(target)
+        if not scope:
+            return
+        review = result.get('review') or {}
+        if isinstance(review.get('review'), dict):
+            review = review['review']
+        rows = list((review.get('shift_story') or {}).get('ranges', []))
+        rows += [item['evidence'] for item in review.get('observations', []) if item.get('evidence')]
+        if review.get('anchor'):
+            rows.append(review)
+        for row in rows:
+            anchor = row.get('anchor_start_ny') or (row.get('anchor') or {}).get('start_ny')
+            if not anchor:
+                continue
+            hour = datetime.fromisoformat(anchor).hour
+            play = 'Young Lefty' if hour in (7, 19) else '9ate8' if hour in (8, 20) else None
+            self._retrieved_discussion[(scope, anchor)] = {'anchor_start_ny': anchor, 'play': play}
+        while len(self._retrieved_discussion) > 80:
+            self._retrieved_discussion.popitem(last=False)
+
+    def discussion_context(self, target=None):
+        with self._lock:
+            scope = _discussion_scope(target or self.requested or self.selected)
+            return {'discussed_anchors': sorted(self._discussed.get(scope, set())),
+                    'retrieval_is_not_discussion': True,
+                    'other_ranges_tool': 'review_other_market_ranges',
+                    'response_contract': 'Only completed delivered responses mark explicitly spoken plays/H1 ranges. '
+                        'For other plays/ranges, call review_other_market_ranges and exclude its discussed anchors. '
+                        'Switching asset/date/shift retains separate history; explicit reset starts that scope over.'}
+
+    def complete_response(self, text, *, generation=None, response_id=None, completed=True):
+        """Transport-only receipt after successful text delivery or voice playback.
+
+        No tool can invoke this hook. Partial/cancelled responses, stale turns,
+        generated defaults and retrieval alone cannot advance discussion.
+        """
+        with self._lock:
+            ticket = self.generation if generation is None else generation
+            if not completed or not text or not self.current(ticket):
+                return 0
+            scope = _discussion_scope(self.selected)
+            if not scope or scope != _discussion_scope(self.requested):
+                return 0
+            receipt = (ticket, str(response_id) if response_id is not None else _digest(text))
+            if receipt in self._completed_responses:
+                return 0
+            # The bounded evidence cache belongs to this generation. A successful
+            # read of five ranges does not imply that any one was actually said.
+            anchors = {anchor for (row_scope, anchor), row in self._retrieved_discussion.items()
+                       if row_scope == scope and _spoken_range(text, row)}
+            seen = self._discussed.pop(scope, set())
+            count = len(anchors - seen)
+            self._discussed[scope] = seen | anchors
+            self._completed_responses[receipt] = True
+            while len(self._discussed) > 24:
+                self._discussed.popitem(last=False)
+            while len(self._completed_responses) > 128:
+                self._completed_responses.popitem(last=False)
+            return count
+
     def prompt(self):
         with self._lock:
             if not self.selected and not self.requested:
                 return ''
             snapshot = {'requested_context': self.requested, 'selection': self.selected,
-                        'verified_evidence': self.evidence}
-            if self._required_detail is not None or self._required_current:
+                        'verified_evidence': self.evidence,
+                        'discussion_context': self.discussion_context()}
+            if self._required_detail is not None or self._required_current or self._required_other:
                 snapshot['required_evidence_request'] = self.required_evidence_request()
             if self.requested and self.requested != self.selected:
                 snapshot['warning'] = ('Requested context has no matching verified evidence yet. '
@@ -563,6 +731,8 @@ class MarketConversation:
                 'Focused Model 1, wick/body identity, CSD, Super Soup and objective-distance '
                 'follow-ups require review_market_crt, with the exact named candle when given. '
                 'A coarse overview or remembered answer does not satisfy a focused evidence request. '
+                'For other or remaining GTOP plays/ranges use review_other_market_ranges; '
+                'failed known plays are still discussed and must not repeat. Unbranded H1 CRTs count. '
                 'Do not replace midpoint-only delivery with full opposing-objective delivery. '
                 'Use these scope/evidence IDs; if detail is missing, retrieve it in this same scope. '
                 'For an explicit member change outside this scope use context_action=switch. For a NEW last/latest '
@@ -570,6 +740,77 @@ class MarketConversation:
                 'Last night means context_action=last_night (yesterday New York), even if that '
                 'night is unavailable; never silently substitute an earlier date. '
                 'Do not apply this review to a different instrument or shift.')
+
+    def _run_other_ranges(self, arguments, runner, ticket):
+        from gbop_voice_web.shift_synopsis import build_other_ranges
+        with self._lock:
+            if not self.current(ticket):
+                return self._stale()
+            target = deepcopy(self.requested or self.selected or {})
+            action = (self.intent or {}).get('action', arguments.get('context_action', 'continue'))
+            if action not in {'continue', 'switch', 'reset'}:
+                return {'ok': False, 'status': 'market_other_scope_required',
+                        'error': 'Other ranges require one explicit existing shift, or an explicit switch/reset.'}
+            if self.intent is None and (action == 'switch' or not target):
+                target.update({k: arguments[k] for k in ('asset', 'date_ny', 'shift') if arguments.get(k)})
+            if action in {'switch', 'reset'} and target.get('review_mode'):
+                target = {k: target.get(k) for k in ('asset', 'date_ny', 'shift')}
+            if self.intent is None and action == 'continue' and target:
+                try:
+                    if any(arguments.get(k) is not None and
+                           (_asset(arguments[k]) if k == 'asset' else arguments[k]) != target.get(k)
+                           for k in ('asset', 'date_ny', 'shift')):
+                        return {'ok': False, 'status': 'market_context_mismatch',
+                                'error': 'Continue other ranges within the selected asset/date/shift; use switch for an explicit change.'}
+                except ValueError as exc:
+                    return {'ok': False, 'status': 'market_context_mismatch', 'error': str(exc)}
+            if not _discussion_scope(target):
+                return {'ok': False, 'status': 'market_other_scope_required',
+                        'error': 'Choose one asset, New York date and shift before reviewing other ranges.'}
+            try:
+                canonical = _selection(_asset(target['asset']), target['date_ny'], target['shift'])
+                from gbop_voice_web.candle_evidence import parse_time
+                if (action == 'continue' and target.get('through_ny')
+                        and parse_time(target['through_ny']) != parse_time(canonical['through_ny'])):
+                    return {'ok': False, 'status': 'market_context_mismatch',
+                            'error': 'The selected cutoff differs from the full shift. Explicitly request the whole shift before expanding it.'}
+                target = canonical
+            except (ValueError, TypeError, KeyError) as exc:
+                return {'ok': False, 'status': 'market_other_scope_required', 'error': str(exc)}
+            if action == 'reset':
+                self.reset_discussion(target)
+            args = {k: target[k] for k in ('asset', 'date_ny', 'shift')}
+            self.pending = deepcopy(target)
+        result = runner('review_market_session', args)
+        with self._lock:
+            if not self.current(ticket):
+                return self._stale()
+            if not result.get('ok'):
+                return result
+            review = result.get('review') or {}
+            if (result.get('asset') != target['asset'] or
+                    any(review.get(k) != target[k] for k in ('date_ny', 'shift')) or
+                    not isinstance(review.get('shift_story'), dict) or
+                    (review.get('shift_story') or {}).get('end_ny') != target['through_ny']):
+                return {'ok': False, 'status': 'market_context_mismatch',
+                        'error': 'Other-range evidence did not match the selected asset/date/shift.'}
+            try:
+                followup = build_other_ranges(review, target['asset'], self._discussed.get(_discussion_scope(target), ()))
+            except (ValueError, TypeError, KeyError) as exc:
+                return {'ok': False, 'status': 'market_other_evidence_incomplete', 'error': str(exc)}
+            self.selected = self.requested = deepcopy(target)
+            self.detail_focus = None
+            self._detail_index = _detail_index(result)
+            self.evidence = self._evidence('review_other_market_ranges', result, target)
+            self.evidence['recap'] = {'spoken_summary': followup['spoken_summary']}
+            self._register_discussion(result, target)
+            self._journal_review = review_snapshot(result, target, self.evidence, None, self.session_id, ticket)
+            self._other_result = {'ok': True, 'asset': target['asset'],
+                'review': {**{k: review[k] for k in ('date_ny', 'shift', 'timezone', 'source_resolution_seconds') if k in review},
+                           'other_range_followup': followup},
+                'market_context': {'selection': deepcopy(target), **self.evidence,
+                                   'discussion_context': self.discussion_context(target)}}
+            return deepcopy(self._other_result)
 
     @staticmethod
     def _stale():
@@ -692,6 +933,16 @@ class MarketConversation:
             intent = deepcopy(self.intent)
         if name in WRITE_TOOLS:
             return self._run_journal(name, arguments, runner, ticket)
+        from gbop_voice_web.delivery_receipts import PRIVATE_DELIVERY_NAMES, run_delivery
+        if name in PRIVATE_DELIVERY_NAMES:
+            return run_delivery(self, name, arguments, runner, generation=ticket)
+        if name == 'review_other_market_ranges':
+            return self._run_other_ranges(arguments, runner, ticket)
+        if self._required_other and name in SCOPED_TOOLS:
+            request = self.required_evidence_request()
+            return {'ok': False, 'status': 'market_other_ranges_required',
+                    'next_tool': request['tool'], 'next_arguments': request['args'],
+                    'error': 'Retrieve the remaining ranges; repeating a default recap does not answer this follow-up.'}
         if name == 'review_current_market':
             return self._run_current(arguments, runner, ticket)
         if name not in SCOPED_TOOLS:
@@ -716,10 +967,13 @@ class MarketConversation:
                         'error': 'Retrieve the exact focused evidence before answering. A coarse overview cannot establish this fact.'}
             args.update(required['args'])
         action = args.pop('context_action', 'continue')
-        if action not in {'continue', 'switch', 'latest', 'last_night'}:
-            return {'ok': False, 'error': 'Use context_action continue, switch, latest, or last_night.'}
+        if action not in {'continue', 'switch', 'latest', 'last_night', 'reset'}:
+            return {'ok': False, 'error': 'Use context_action continue, switch, latest, last_night, or reset.'}
         if intent is not None:
             action = intent['action']
+        if action == 'reset':
+            self.reset_discussion(active)
+            action = 'switch'
         fields = (intent or {}).get('fields', {})
         if action == 'last_night':
             action = 'switch'
@@ -911,12 +1165,14 @@ class MarketConversation:
                     self.selected = deepcopy(target)
                     self.requested = deepcopy(target)
                     self.evidence = self._evidence(name, result, target)
+                    self._register_discussion(result, target)
                     if previous_evidence and not self.evidence['range_outcomes']:
                         self.evidence['recap'] = deepcopy(previous_evidence['recap'])
                         self.evidence['range_outcomes'] = deepcopy(previous_evidence['range_outcomes'])
                     self._journal_review = review_snapshot(result, target, self.evidence,
                         self.detail_focus, self.session_id, ticket)
-                    return {**result, 'market_context': {'selection': deepcopy(target), **self.evidence}}
+                    return {**result, 'market_context': {'selection': deepcopy(target), **self.evidence,
+                            'discussion_context': self.discussion_context(target)}}
                 return {**result, 'market_context': {'selection': deepcopy(target)}}
         except (ValueError, KeyError, TypeError) as exc:
             return {'ok': False, 'error': str(exc)}

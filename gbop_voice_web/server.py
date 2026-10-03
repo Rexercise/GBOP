@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches
 from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT
+from gbop_voice_web.delivery_receipts import DELIVERY_TOOLS, DELIVERY_PROMPT, delivery_status
 from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, LIVE_MARKET_PROMPT, market_clock, market_tool, init_market
 from gbop_voice_web.market_routes import market_router
 from db_compat import db
@@ -992,6 +993,7 @@ TOOLS.extend(TRADE_ASSIST_TOOLS)
 TOOLS.extend(MARKET_TOOLS)
 TOOLS.extend(WATCH_TOOLS)
 TOOLS.extend(JOURNAL_RECALL_TOOLS)
+TOOLS.extend(DELIVERY_TOOLS)
 for _recall_tool in TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
         _recall_tool['description'] = 'Read this member\'s saved journals, all-trade counts and next page. Empty OPEN trades does not mean no saved trades.'
@@ -1006,6 +1008,8 @@ def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
     denial = member_access_error(db, GTOP_GUILD_ID, user_id, OWNER_USER_ID)
     if denial:
         return {"ok": False, "error": denial}
+    if name == 'get_delivery_status':
+        return delivery_status(db, GTOP_GUILD_ID, user_id, args)
     if name == 'send_journal_history':
         return send_journal_history(db, GTOP_GUILD_ID, user_id, args)
     if name in WATCH_NAMES:
@@ -1106,6 +1110,7 @@ BACKEND_PROMPT += (
     + "\n\n" + TRADE_ASSIST_PROMPT
     + "\n\n" + MARKET_PROMPT
     + "\n\n" + JOURNAL_RECALL_PROMPT
+    + "\n\n" + DELIVERY_PROMPT
 )
 
 
@@ -1181,12 +1186,9 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
             args = {}
             try:
                 args = json.loads(call.arguments)
-                if call.name in SCOPED_TOOLS | WRITE_TOOLS:
-                    result = market_context.run(call.name, args,
-                        lambda name, values: run_tool(user_id, name, values, confirmation_token),
-                        generation=market_generation)
-                else:
-                    result = run_tool(user_id, call.name, args, confirmation_token)
+                result = market_context.run(call.name, args,
+                    lambda name, values: run_tool(user_id, name, values, confirmation_token),
+                    generation=market_generation)
             except Exception as exc:
                 result = {
                     "ok": False,
@@ -1228,6 +1230,9 @@ tables, or long lists aloud. Preserve GTOP terminology such as 9ate8, Model 1,
 CSD, CRT, Turtle Soup, Super Soup, Blessed Thief, GCT, CBDR, SMT, and 88.7.
 
 For photo searches or requests to send trade pictures by DM, delegate to the backend.\nYou may answer ordinary conversation and general GTOP concepts directly.
+Questions about whether a journal or photo request finished, including after an
+interruption or reconnect, also require backend delivery receipts. Never say it
+is still running from memory, and never automatically repeat the send.
 For ANY request that depends on the member's private records or stored state
 (trades, journals, risk used, history, profile) OR asks to create/update/close/delete a
 trade or journal, delegate the task to the client backend. Never guess private
@@ -1285,6 +1290,13 @@ class LiveContextRequest(BaseModel):
     session_id: str
     turn_id: int
     closed: bool = False
+
+
+class LiveDeliveryRequest(BaseModel):
+    session_id: str
+    turn_id: int
+    response_id: str
+    text: str
 
 
 @app.get("/")
@@ -1611,6 +1623,23 @@ async def delegate(request: Request, body: DelegateRequest):
         "delegation_id": body.delegation_id,
         "result": result,
     }
+
+
+@app.post("/api/live/context/delivered")
+async def delivered_live_context(request: Request, body: LiveDeliveryRequest):
+    session = await require_authenticated_user(request)
+    context = session.get('market_context')
+    if (body.session_id != session.get('live_session_id') or context is None
+            or context.closed or body.turn_id != context.client_turn):
+        return {'ok': False, 'recorded': 0}
+    if len(body.text) > 12000 or len(body.response_id) > 128:
+        raise HTTPException(status_code=400, detail='Response acknowledgement is too large.')
+    # Client speech completion is a navigation receipt, never authorization for
+    # an action or proof of an unheard tool result. Only named verified ranges
+    # in this exact authenticated context can be marked as discussed.
+    recorded = context.complete_response(body.text, generation=context.generation,
+        response_id=body.response_id, completed=True)
+    return {'ok': True, 'recorded': recorded}
 
 
 

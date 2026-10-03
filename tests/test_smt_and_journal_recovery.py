@@ -183,6 +183,11 @@ class JournalRecallTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(':memory:'); self.conn.row_factory = sqlite3.Row
         self.addCleanup(self.conn.close)
+        self.conn.executescript("""
+            CREATE TABLE gbop_watch_runtime(id TEXT PRIMARY KEY,owner TEXT,lease_until BIGINT,last_tick BIGINT,state TEXT);
+            CREATE TABLE members(guild_id INT,user_id INT,activated INT,revoked INT);
+            INSERT INTO members VALUES (1,100,1,0),(1,200,1,0);
+        """)
         self.conn.execute('CREATE TABLE theses (id INT,guild_id INT,user_id INT,status TEXT)')
         self.conn.execute('CREATE TABLE journals (id INT,guild_id INT,user_id INT,thesis_id INT,description TEXT,result_r REAL,rule_adherence TEXT,study_note TEXT,created_at INT)')
         self.conn.executemany('INSERT INTO theses VALUES (?,?,?,?)', [(10,1,100,'CLOSED'),(20,1,200,'CLOSED'),(30,1,100,'OPEN'),(40,2,100,'OPEN'),(50,1,300,'CLOSED')])
@@ -264,7 +269,7 @@ class JournalRecallTests(unittest.TestCase):
 
     def test_new_tool_has_no_recipient_or_owner_override(self):
         props=JOURNAL_RECALL_TOOLS[0]['parameters']['properties']
-        self.assertEqual(set(props),{'limit','offset'})
+        self.assertEqual(set(props),{'limit','offset','delivery_action'})
 
     def test_both_platforms_use_shared_member_scoped_recall(self):
         for path,name in [('bot.py','ai_get_journal_history'),('gbop_voice_web/server.py','tool_get_journal_history')]:

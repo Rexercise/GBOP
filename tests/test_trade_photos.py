@@ -13,6 +13,7 @@ class PhotoTests(unittest.TestCase):
         self.conn.row_factory = sqlite3.Row
         self.conn.execute('PRAGMA foreign_keys=ON')
         self.conn.executescript('''
+        CREATE TABLE gbop_watch_runtime(id TEXT PRIMARY KEY,owner TEXT,lease_until BIGINT,last_tick BIGINT,state TEXT);
         CREATE TABLE theses(id INTEGER PRIMARY KEY,guild_id INTEGER,user_id INTEGER,asset TEXT,play TEXT,status TEXT);
         INSERT INTO theses VALUES(41,10,20,'XAUUSD','9ate8','CLOSED'),(42,10,30,'NAS100','GCT','OPEN'),(43,11,20,'BTCUSD','Other','OPEN');
         CREATE TABLE journals(id INTEGER PRIMARY KEY,thesis_id INTEGER,guild_id INTEGER,user_id INTEGER,description TEXT,rule_adherence TEXT,result_r REAL,study_note TEXT);
@@ -83,7 +84,7 @@ class PhotoTests(unittest.TestCase):
             self.assertIn('**Final R:** +3R',payload['embeds'][0]['description'])
             self.assertNotIn('result_r',payload['embeds'][0]['description'])
             client.post.side_effect=[channel,MagicMock(status_code=403)]
-            result=photos.send_photos(self.db,10,20,{})
+            result=photos.send_photos(self.db,10,20,{'delivery_action':'resend'})
             self.assertFalse(result['ok']); self.assertEqual(result['sent_count'],0)
     @patch.dict('os.environ',{'DISCORD_TOKEN':'test'})
     def test_grouped_delivery_keeps_requester_bytes_and_partial_count(self):
@@ -109,7 +110,7 @@ class PhotoTests(unittest.TestCase):
                 descriptions.append(payload['embeds'][0]['description'])
             self.assertEqual(sum('**Final R:**' in value for value in descriptions),1)
             client.post.side_effect=[channel,MagicMock(status_code=200),MagicMock(status_code=429)]
-            result=photos.send_photos(self.db,10,20,{'trade_number':1})
+            result=photos.send_photos(self.db,10,20,{'trade_number':1,'delivery_action':'resend'})
             self.assertFalse(result['ok'])
             self.assertEqual(result['sent_count'],1)
     def test_pagination(self):

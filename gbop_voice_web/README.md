@@ -75,9 +75,43 @@ historical shift or infers instantaneous tick action. Explicit chart anchors can
 use the existing supported timeframe mappings. Default shift recaps are short,
 with independent relevant Young Lefty context and named-range details on request.
 
+“Other relevant plays/ranges” uses `review_other_market_ranges`, retaining the
+verified asset, date, shift and cutoff. It includes unbranded hourly CRTs and
+independent failed ranges, and states when the last range has no post-close
+evidence. Completed response delivery marks only ranges actually explained;
+retrieving evidence alone does not mean every range was discussed. Interrupted
+or incomplete replies do not advance that history. Switching away and returning
+keeps a separate history per scope; an explicit restart resets it. Discord voice
+requires completed response, transcript and drained playback together. Browser
+receipts require uninterrupted output and active local playback. Neither proves
+the person heard their device. Text follow-up routing is deterministic; audio-only
+tool intent remains model-classified, with no added transcription service.
+
 `journal_coach.init_coach` installs additive, idempotent tables. New tables have
 RLS enabled and no anon/authenticated grants: only the trusted backend accesses
 them, enforcing the guild/user identity supplied by the authenticated session.
 Import retries use `(guild,user,photo,entry_index)` to update the same journal.
 Deleting a journal removes its metadata; its source image remains in the member's
 photo library. No new execution is created by a handwritten journal import.
+
+## Private journal and photo delivery receipts
+
+Photo and journal requests save small delivery receipts in the existing
+backend-only runtime metadata table; no new schema or permissions are installed.
+A successful empty photo lookup sends one private notice: “No saved photos match
+this request (0 photos).” It does not count that notice as a delivered photo.
+Confirmed messages, partial delivery and uncertain transport outcomes remain
+available through `get_delivery_status` after voice interruption or reconnect.
+The status tool never sends anything.
+
+Matching requests recover their receipt for 15 minutes after a clean terminal
+outcome. Pending, partial and uncertain deliveries are never automatically
+repeated, regardless of age. An explicit request to send again uses
+`delivery_action=resend`; text clients verify that instruction in the current
+member message. Audio-only clients rely on the model identifying that explicit
+spoken intent. Repeated tool calls for the same resend turn remain deduplicated.
+Receipt admission fails closed if storage is unavailable. An HTTP timeout can
+still mean Discord accepted the last message; that uncertainty is preserved.
+Per-transaction SQL has a 15-second statement timeout. Connection establishment
+has a 10-second connection timeout; pending receipts older than two
+minutes are reported as uncertain rather than promised as still progressing.

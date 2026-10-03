@@ -21,6 +21,15 @@ SYNOPSIS_CONTRACT = (
     'Omitted candidates are not absent. Model 1, CISD, Soup and detailed candle questions '
     'require the exact range detail_request; never infer fills from delivery.')
 
+OTHER_RANGES_CONTRACT = (
+    'Answer the other-ranges follow-up using spoken_summary and ranges in chronology. '
+    'Previously discussed anchors are excluded even when they failed; do not repeat them. '
+    'An unbranded H1 CRT is still relevant: play=null never means absent. '
+    'Keep each range\'s own direction, variant, objectives, invalidation and selection role. '
+    'Independent context is not a selected-range transition. A range closing at the cutoff '
+    'has no later delivery evidence. Say the explicit H1 range opening for each range '
+    'actually discussed; retrieval alone is not a completed spoken response.')
+
 
 def _pick(value, keys):
     return {key: deepcopy(value[key]) for key in keys if key in value}
@@ -219,3 +228,45 @@ def build_shift_synopsis(review, asset=None):
             'young_lefty_evaluated': True, 'young_lefty_relevant': young_relevant,
             'coverage_complete': story.get('coverage', {}).get('complete', False),
             'through_ny': story['end_ny'], 'response_contract': SYNOPSIS_CONTRACT}
+
+
+def build_other_ranges(review, asset=None, discussed=()):
+    """Remaining evidence in hourly order, not just named or winning setups.
+
+    This is an explicit follow-up view; the short default synopsis remains
+    unchanged. A final closed range without observation bars is included with
+    an explicit cutoff limit, never presented as another completed setup.
+    """
+    story = review['shift_story']
+    excluded = set(discussed)
+    records = story.get('recap', {}).get('paired_interpretation', [])
+    synopsis = build_shift_synopsis(review, asset)
+    facts = [deepcopy(row) for row in synopsis['ranges'] if row.get('play') == 'Young Lefty']
+    for row in story.get('ranges', []):
+        play = row.get('label') if row.get('label') in {'9ate8', 'Young Lefty'} else None
+        facts.append(_paired_fact(row, records, _local_fact(row, play)))
+    index = {row['anchor_start_ny']: row for row in synopsis['range_index']}
+    remaining, sentences = [], []
+    for fact in sorted(facts, key=lambda row: row['anchor_start_ny']):
+        anchor = fact['anchor_start_ny']
+        if anchor in excluded:
+            continue
+        fact['detail_request'] = deepcopy(index[anchor]['detail_request'])
+        closes = parse_time(anchor) + 3600
+        if closes >= parse_time(story['end_ny']):
+            fact['observation_status'] = 'no_post_close_evidence_at_cutoff'
+            text = (f"The {_clock(anchor)} H1 range closes at the {_clock(story['end_ny'])} "
+                    'review cutoff; no later setup or delivery evidence is available.')
+        else:
+            fact['observation_status'] = 'observed' if fact['coverage_complete'] else 'incomplete'
+            text = _sentence(fact, young=fact.get('play') == 'Young Lefty')
+        remaining.append(fact)
+        sentences.append(text)
+    if not remaining:
+        sentences.append('All retained ranges in this shift have already been discussed. '
+                         'Name a range to revisit it, or explicitly start the review over.')
+    return {'spoken_summary': ' '.join(sentences), 'ranges': remaining,
+            'excluded_discussed_anchors': sorted(excluded),
+            'all_ranges_discussed': not remaining,
+            'through_ny': story['end_ny'], 'coverage_complete': story.get('coverage', {}).get('complete', False),
+            'response_contract': OTHER_RANGES_CONTRACT}
