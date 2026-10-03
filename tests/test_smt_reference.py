@@ -93,7 +93,7 @@ class ReferenceTests(unittest.TestCase):
         session = {'paired_smt':r,'shift_story':{'recap':{'spoken_summary':original,'headline':'Failed'},'ranges':[]}}
         reconcile_paired_recap(session,'XAUUSD')
         recap = session['shift_story']['recap']
-        self.assertIn('completed its sell-side of the 8:00 AM H1 range',recap['headline'])
+        self.assertIn("The 8:00 AM H1 range (9ate8) delivered XAUUSD's bearish sell-side objective",recap['headline'])
         self.assertEqual(recap['local_only_spoken_summary'],original)
         self.assertIn('SMT-inherited Model 1',recap['spoken_summary'])
     def test_direct_crt_path_includes_paired_identity(self):

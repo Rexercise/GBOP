@@ -5,6 +5,7 @@ import unittest
 
 from gbop_voice_web.voice_payload import voice_tool_payload, SHIFT_OVERVIEW_TARGET_CHARS
 from gbop_voice_web.voice_runtime import compact_voice_tool_result
+from gbop_voice_web.market_conversation import MarketConversation
 import test_retained_market_replays as retained
 import test_crypto_shift_replays as crypto
 
@@ -48,25 +49,33 @@ class VoicePayloadBudgetTests(unittest.TestCase):
         self.addCleanup(replay.doCleanups)
         return replay
 
-    def assert_overview(self, source, *, context_size=0):
-        if context_size:
-            source['market_context'] = {
-                'selection': {'asset': source['asset'], 'date_ny': source['review']['date_ny'],
-                              'shift': source['review']['shift']},
-                'evidence': {'scope_id': 'fixture-scope', 'evidence_id': 'fixture-evidence',
-                             'verified_snapshot': 'x' * context_size}}
+    def assert_overview(self, source, *, with_context=False):
+        if with_context:
+            context = MarketConversation()
+            context.begin_turn()
+            source = context.run('review_market_session', {
+                'asset': source['asset'], 'date_ny': source['review']['date_ny'],
+                'shift': source['review']['shift']}, lambda name, args: source)
         saved = deepcopy(source)
         overview = voice_tool_payload('review_market_session', source)
         self.assertEqual(source, saved)
         self.assertTrue(overview['ok'], overview)
         self.assertLessEqual(encoded_size(overview), SHIFT_OVERVIEW_TARGET_CHARS)
-        self.assertEqual(overview.get('market_context'), source.get('market_context'))
-        review, original = overview['review'], source['review']
+        if with_context:
+            for key in ('selection', 'scope_id', 'evidence_id', 'source_tool', 'limits'):
+                self.assertEqual(overview['market_context'][key], source['market_context'][key])
+            self.assertEqual(overview['market_context']['evidence_ref'], '#/review')
+        else:
+            self.assertEqual(overview.get('market_context'), source.get('market_context'))
+        review, original = expanded(overview, overview['review']), source['review']
         self.assertEqual((review['date_ny'], review['shift']), (original['date_ny'], original['shift']))
         self.assertEqual(review['shift_recap']['spoken_summary'], original['shift_story']['recap']['spoken_summary'])
         self.assertEqual(review['shift_recap'].get('evidence_precedence'), original['shift_story']['recap'].get('evidence_precedence'))
         for key in ('hourly_crt_summary', 'range_summaries'):
-            self.assertEqual(expanded(overview, review['shift_recap'][key]), original['shift_story']['recap'][key])
+            if key in review['shift_recap']:
+                self.assertEqual(review['shift_recap'][key], original['shift_story']['recap'][key])
+            else:
+                self.assertIn('range_recap_prose_omitted', overview['voice_view'])
         def assert_pair(actual, raw):
             actual = expanded(overview, actual)
             self.assertEqual(actual.get('recap_eligible'), raw.get('recap_eligible'))
@@ -101,7 +110,7 @@ class VoicePayloadBudgetTests(unittest.TestCase):
                             'purged_side', 'purged_level', 'purge_source_interval'):
                     self.assertEqual(actual.get(key), candle.get(key))
             self.assertEqual(row['detail_request'], {'tool': 'review_market_crt', 'args': {
-                'asset': source['asset'], 'anchor_start_ny': raw['anchor_start_ny'],
+                'asset': source['asset'], 'context_action': 'continue', 'anchor_start_ny': raw['anchor_start_ny'],
                 'anchor_timeframe': 'H1', 'through_ny': story['end_ny']}})
         self.assertTrue(overview['voice_view']['detail_omitted'])
         self.assertIn('Do not infer absence', overview['voice_view']['note'])
@@ -113,7 +122,7 @@ class VoicePayloadBudgetTests(unittest.TestCase):
             with self.subTest(asset=asset):
                 source = replay.tool(asset)
                 old_size = encoded_size(compact_voice_tool_result('review_market_session', source))
-                overview = self.assert_overview(source, context_size=2900)
+                overview = self.assert_overview(source, with_context=True)
                 self.assertLess(encoded_size(overview), old_size * .25)
 
     def test_actual_night_assets_keep_pair_scope_h1_truth_and_inherited_identity(self):
@@ -121,8 +130,9 @@ class VoicePayloadBudgetTests(unittest.TestCase):
         for asset in ('BTCUSD', 'ETHUSD'):
             with self.subTest(asset=asset):
                 source = replay.tool(asset)
-                overview = self.assert_overview(source, context_size=2900)
-                for actual, raw in zip(overview['review']['paired_smt']['events'], source['review']['paired_smt']['events']):
+                overview = self.assert_overview(source, with_context=True)
+                pair = expanded(overview, overview['review']['paired_smt'])
+                for actual, raw in zip(pair['events'], source['review']['paired_smt']['events']):
                     self.assertEqual(actual['scope'], {k:v for k,v in raw['scope'].items() if k != 'response_contract'})
                     self.assertEqual(actual['paired_model1']['status'], raw['paired_model1']['status'])
                     if 'boneless_reference' in raw['paired_model1']:
@@ -139,7 +149,7 @@ class VoicePayloadBudgetTests(unittest.TestCase):
         replay = self.replay(retained.RetainedMarketReplayTests)
         source = replay.tool('NAS100')
         overview = self.assert_overview(source)
-        later = overview['review']['shift_story']['ranges'][1]
+        later = expanded(overview, overview['review']['shift_story']['ranges'][1])
         columns = overview['voice_view']['model1_outcome_columns']
         outcomes = [dict(zip(columns, row)) for row in later['candle_lifecycle']['model1_outcome_rows']]
         for clock, quality, price, touch in [('10:00', 'clean', 30930.59, '10:59'),

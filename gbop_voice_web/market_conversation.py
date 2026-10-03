@@ -29,13 +29,17 @@ def contextual_tools(tools):
     for tool in result:
         if tool.get('name') not in SCOPED_TOOLS:
             continue
-        tool['description'] += (' Keep the verified conversation scope on follow-ups: '
-            'context_action=continue. Use switch only for an explicit member change of '
-            'asset/date/shift/range. Use last_night for the member saying last night; '
+        tool['description'] += (' Keep the verified asset/date/shift on follow-ups: '
+            'context_action=continue. An explicit H1 anchor or returned detail_request '
+            'can select another range within that same shift, including its 7 oclock context. '
+            'Elliptical follow-ups keep the selected range. Use switch only for an explicit '
+            'member change outside that scope. In an existing review, "what about Young Lefty?" '
+            'requires review_market_crt for the same asset/date at 7AM (day) or 7PM (night); '
+            'do not substitute a definition or ask for a chart. Use last_night for the member saying last night; '
             'it means yesterday New York, never the latest retained night. '
             'Use latest only for a NEW generic last/latest available shift request; '
             'set shift=null unless the member explicitly names day or night. '
-            'A continued review cannot change the saved scope through other arguments.')
+            'A continued detail request cannot change asset, date, shift, timeframe or cutoff.')
         params = tool['parameters']
         params['properties']['context_action'] = {
             'type': 'string', 'enum': ['continue', 'switch', 'latest', 'last_night']}
@@ -65,6 +69,47 @@ def _selection(asset, day, shift):
     return {'asset': asset, 'date_ny': day, 'shift': shift,
             'anchor_start_ny': _stamp(opening - 3600), 'anchor_timeframe': 'H1',
             'through_ny': _stamp(end)}
+
+
+def _continued_range(target, args):
+    """Permit an explicit same-shift H1 drill-down, never a silent scope rewrite.
+
+    Audio-only clients have no server-side transcript, so the requested anchor
+    is the navigation intent. Text clients use their parsed utterance instead.
+    Standalone/custom CRTs and pagination retain their original scope.
+    """
+    from gbop_voice_web.candle_evidence import parse_time, timeframe
+    from gbop_voice_web.shift_availability import shift_bounds
+    for key in ('asset', 'date_ny', 'shift'):
+        requested = args.get(key)
+        if key == 'asset' and requested is not None:
+            requested = _asset(requested)
+        if requested is not None and requested != target.get(key):
+            raise ValueError('Range navigation must retain the selected asset, date and shift. '
+                             'Use switch only for an explicit member change.')
+    for key in ('through_ny', 'anchor_timeframe'):
+        normalize = parse_time if key == 'through_ny' else timeframe
+        if (args.get(key) and target.get(key)
+                and normalize(args[key]) != normalize(target[key])):
+            raise ValueError('Range navigation must retain the selected timeframe and cutoff. '
+                             'Use switch only for an explicit member change.')
+    if not args.get('anchor_start_ny') or not target.get('anchor_start_ny'):
+        return target
+    anchor = parse_time(args['anchor_start_ny'])
+    if anchor == parse_time(target['anchor_start_ny']):
+        return target
+    if not (target.get('date_ny') and target.get('shift')
+            and timeframe(target.get('anchor_timeframe')) == 'H1'):
+        raise ValueError('A standalone CRT retains its selected anchor; use switch for an explicit new range.')
+    opening, end = shift_bounds(target['date_ny'], target['shift'])
+    cutoff = min(end, parse_time(target['through_ny']))
+    # 7 oclock is optional same-shift Young Lefty context. The final range must
+    # close by the existing cutoff; future, other-day and other-shift anchors fail.
+    if not (opening - 7200 <= anchor and anchor + 3600 <= cutoff
+            and (anchor - opening) % 3600 == 0):
+        raise ValueError('Requested H1 range is outside the selected date/shift or is not an hourly anchor. '
+                         'Use switch only for an explicit member change.')
+    return {**target, 'anchor_start_ny': _stamp(anchor)}
 
 
 def _text_intent(text, selected, now):
@@ -128,6 +173,20 @@ def _text_intent(text, selected, now):
             hour = int(anchor[1]) % 12 + (12 if anchor[3].startswith('p') else 0)
             fields['anchor_start_ny'] = datetime.fromisoformat(day_value).replace(
                 hour=hour, minute=int(anchor[2] or 0), tzinfo=NY).isoformat()
+    # A named play in an established review is a historical range follow-up.
+    # Concept-only questions must not change the currently selected evidence.
+    definition = re.search(
+        r'\b(?:what is (?:the )?young\s+lefty|what does young\s+lefty mean|'
+        r'define|definition|meaning of|explain (?:what|the (?:concept|meaning)))\b', text)
+    if selected and re.search(r'\byoung\s+lefty\b', text) and not definition:
+        day_value = fields.get('date_ny') or selected.get('date_ny')
+        shift = fields.get('shift') or selected.get('shift')
+        if day_value and shift in {'day', 'night'}:
+            named_anchor = datetime.fromisoformat(day_value).replace(
+                hour=7 if shift == 'day' else 19, tzinfo=NY).isoformat()
+            if fields.get('anchor_start_ny') not in (None, named_anchor):
+                return {'action': 'ambiguous', 'fields': {}}
+            fields.update(anchor_start_ny=named_anchor, anchor_timeframe='H1')
     latest = bool(re.search(r'\b(?:last|latest|most recent)\s+(?:(?:completed|available|usable|bitcoin|btc|btcusd|ethereum|eth|ethusd|nas|nas100|nasdaq|spx|us30|gold|silver|oil|wti|day|night)\s+)*shift\b', text))
     if latest:
         return {'action': 'latest', 'fields': fields}
@@ -211,10 +270,14 @@ class MarketConversation:
                                        'Do not answer it from the previous selection; retrieve the exact requested scope.')
         return ('\nCURRENT VERIFIED MARKET REVIEW (this conversation only)\n' +
                 json.dumps(snapshot, separators=(',', ':')) +
-                '\nElliptical follow-ups keep this asset, NY date, shift and original range. '
+                '\nElliptical follow-ups keep this asset, NY date, shift and selected range. '
+                'A named H1 range or returned detail_request may navigate within the same shift '
+                'with context_action=continue, preserving asset/date/shift and cutoff. '
+                'In this review, "what about Young Lefty?" means retrieve review_market_crt '
+                'for this asset/date at 7AM (day) or 7PM (night), not a definition or chart request. '
                 'Do not replace midpoint-only delivery with full opposing-objective delivery. '
                 'Use these scope/evidence IDs; if detail is missing, retrieve it in this same scope. '
-                'For an explicit member change use context_action=switch. For a NEW last/latest '
+                'For an explicit member change outside this scope use context_action=switch. For a NEW last/latest '
                 'shift request use context_action=latest to recheck completed retained candles. '
                 'Last night means context_action=last_night (yesterday New York), even if that '
                 'night is unavailable; never silently substitute an earlier date. '
@@ -251,7 +314,7 @@ class MarketConversation:
             fields = {**fields, 'date_ny': (datetime.now(NY).date() - timedelta(days=1)).isoformat(),
                       'shift': 'night'}
         if action == 'ambiguous':
-            return {'ok': False, 'error': 'Please clarify the requested market date or shift.'}
+            return {'ok': False, 'error': 'Please clarify the requested market date, shift or range.'}
         # A resolved request stays stable throughout one tool chain. A second
         # catalogue/review call must not re-resolve "latest" midway through it.
         with self._lock:
@@ -323,6 +386,13 @@ class MarketConversation:
             elif name not in SHIFT_TOOLS:
                 for key in ('anchor_start_ny', 'anchor_timeframe', 'through_ny'):
                     target[key] = target.get(key) or args.get(key)
+            if (action == 'continue' and active and intent is None
+                    and name in {'review_market_crt', 'review_market_smt'}):
+                try:
+                    target = _continued_range(target, args)
+                except (ValueError, KeyError, TypeError) as exc:
+                    return {'ok': False, 'status': 'market_context_mismatch',
+                            'expected_context': target, 'error': str(exc)}
             args['asset'] = asset
             if name in SHIFT_TOOLS:
                 original = _selection(asset, target['date_ny'], target['shift'])

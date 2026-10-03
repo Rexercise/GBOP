@@ -30,7 +30,7 @@ Ideal structure: 9 o'clock purges one side of 8's range and distributes toward o
 Opposite side of 8 is the primary target.
 50% of 8 and 50% of GCT are also acceptable draws.
 A closure outside the selected range invalidates that range.
-If 9 closes outside 8, 8 failed for 9ate8; continue chronologically with 9/10/11 using candle science.
+If 9 closes outside 8, 8 invalidates; preserve earlier delivery, then review 9/10/11 chronologically.
 Stalling alone is not invalidation.
 
 MODEL 1 / CSD ASSIGNED TIMEFRAMES
@@ -234,6 +234,7 @@ TURTLE WICK SOUP
 [GTOP REFINEMENT]
 A Turtle Wick Soup is a purge where liquidity is taken by the wick without the assigned-timeframe body establishing a close through that liquidity level.
 GTOP commonly gives this lower probability and often manages it toward 50% of the range.
+The verified wick-purge path remains a setup without a body Model 1. A wick origin alone does not establish Model 1 or Super Soup. Separate midpoint/full delivery and missing evidence; later opposite-direction body candles do not replace this setup.
 
 MODEL 1 CANDLE / BODY-CLOSE LOGIC — CORRECTED 3 OCTOBER 2026
 [GTOP REFINEMENT]
@@ -321,6 +322,8 @@ TARGETS
 - 50% of the 7 o'clock range.
 - Opposing high/low of the 7 o'clock range.
 Do not add 50% of 9 as a canonical target.
+Candle 2 can purge and deliver before its later outside H1 close. Preserve that earlier V2 delivery. Historical delivery alone does not authorize pre-9 execution or prove HTF narrative.
+Contextual "what about Young Lefty?" retrieves the same asset/date's 7 AM/PM evidence; lead with its directional outcome.
 
 CREATOR / IDENTITY
 [GTOP EXCLUSIVE]

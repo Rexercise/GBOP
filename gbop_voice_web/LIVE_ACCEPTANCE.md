@@ -58,6 +58,37 @@ Check semantic facts, not identical wording. For any disagreement, record asset,
 broker symbol, date, anchor, timeframe, through-time and the relevant source
 candles. Do not patch the expected answer just to match a voice reply.
 
+### Named-range follow-ups and wick/paired chronology
+
+- [ ] After the October 2 NAS100 day-shift overview, ask about the **9 AM range's
+  Model 1**. It names **10:00 AM M5**, distinguishes the **10:02 M1** source purge,
+  and, when asked, gives CSD on the **10:50 M5** candle's closure at **10:55**.
+  A continued tool request must not silently return the 8 AM range.
+- [ ] Continue the October 2 gold review with “what about Young Lefty?” It retrieves
+  that same asset/date's **7 AM range**, preserving **8:10 M5 Turtle Wick Soup**,
+  the **8:11 M1 sell-side purge**, **8:19 midpoint**, and **8:30 bullish buy-side
+  delivery**. V2 delivery stays recorded before the 8 AM H1 closes outside at 9.
+  The separate bearish 8:30 M5 Model 1 must not replace that earlier wick path.
+- [ ] Ask about gold's **8 AM 9ate8**. It leads with the **bearish sell-side delivery
+  at 10:28**, then explains the nonpurging gold/visible-purge silver mechanism.
+  Gold's later **bullish** local attempt targets buy-side and is a separate outcome.
+- [ ] Ask about a qualifying nonpurging leg before full delivery. Potential/pending
+  boneless and completion are separate. An unfinished hour is provisional;
+  corresponding same-hour dual purges prohibit the label. A purge alone is not CSD.
+- [ ] Ask for a different asset/date/shift, then an elliptical follow-up. The new
+  explicit selection is retained without using the previous selection's evidence.
+
+The offline retained-price tests verify tool scope, market facts and the composed
+conversation-to-voice payload under 32,000 characters. They do not verify exact
+model wording, pronunciation, audio delivery or human trade execution. Complete
+these spoken checks separately; historical delivery does not establish permission
+for a pre-9 execution or the required higher-timeframe narrative.
+
+Market diagnostics log only allowlisted requested/resolved scope, status and candle
+identity timestamps. They deliberately exclude transcripts, account/member IDs,
+journals, prices, credentials and free-form errors. A voice budget error is not a
+successful review; follow its scoped detail route without inferring omitted facts.
+
 ## 3. Journals, photos and cross-interface continuity
 
 - [ ] Each person asks for their own latest journal and an explicitly chosen photo.

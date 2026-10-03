@@ -7,6 +7,8 @@ from gbop_voice_web import market_data as market
 from gbop_voice_web.voice_payload import voice_tool_payload
 from gbop_voice_web.voice_detail import DETAIL_CHARACTER_BUDGET
 from gbop_voice_web.voice_runtime import compact_voice_tool_result
+from gbop_voice_web.market_conversation import MarketConversation
+from test_voice_payload_budget import expanded
 import test_retained_market_replays as retained
 import test_crypto_shift_replays as crypto
 
@@ -23,16 +25,18 @@ class VoiceDetailBudgetTests(unittest.TestCase):
         return replay
 
     def request(self, replay, args):
-        raw = market.market_tool(replay.db, 'review_market_crt', args)
+        context = MarketConversation()
+        context.begin_turn()
+        raw = context.run('review_market_crt', args,
+                          lambda name, resolved: market.market_tool(replay.db, name, resolved))
         self.assertTrue(raw['ok'], raw)
-        raw['market_context'] = {'selection': {'asset': raw['asset'], 'anchor_start_ny': args['anchor_start_ny'],
-            'through_ny': args['through_ny']}, 'evidence': {'scope_id': 'same-scope', 'padding': 'x' * 3000}}
         saved = deepcopy(raw)
         page = voice_tool_payload('review_market_crt', raw)
         self.assertEqual(raw, saved)
-        self.assertEqual(page['market_context'], raw['market_context'])
+        for key in ('selection', 'scope_id', 'evidence_id', 'source_tool', 'limits'):
+            self.assertEqual(page['market_context'][key], raw['market_context'][key])
         self.assertLessEqual(size(page), DETAIL_CHARACTER_BUDGET)
-        return raw, page
+        return raw, expanded(page, page)
 
     def args(self, asset='NAS100', **overrides):
         return {'asset': asset, 'anchor_start_ny': '2026-10-02T09:00:00-04:00',
@@ -60,7 +64,11 @@ class VoiceDetailBudgetTests(unittest.TestCase):
                                              if (x['bar_open_ny'], x['purged_side']) == key)
                         self.assertEqual(actual, expected_card)
                     self.assertEqual(page['review']['events'], full['review']['events'])
-                    self.assertEqual(page['review']['anchor'], full['review']['anchor'])
+                    for key, value in page['review']['anchor'].items():
+                        self.assertEqual(value, full['review']['anchor'][key])
+                    if page['voice_detail_page'].get('coverage_extrema_omitted'):
+                        for key in ('open', 'high', 'low', 'close', 'high_first_seen', 'low_first_seen'):
+                            self.assertEqual(page['review']['anchor'][key], full['review']['anchor'][key])
                     following = page['voice_detail_page']['next_request']
                     args = following['args'] if following else None
                     if args:

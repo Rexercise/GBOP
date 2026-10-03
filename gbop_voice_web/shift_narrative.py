@@ -5,7 +5,7 @@ Distribution timing uses the opposing-liquidity objective; midpoint-only deliver
 is reported separately. Unordered source bars cannot prove a completed variant.
 """
 from datetime import datetime
-from gbop_voice_web.candle_evidence import parse_time, summarize
+from gbop_voice_web.candle_evidence import parse_time, summarize, interval
 from gbop_voice_web.smt_reference import closing_candle
 from gbop_voice_web.candle_naming import candle_label, source_timeframe, objective_identity, range_label
 
@@ -25,9 +25,128 @@ def invalidating_label(row):
                           event.get('candle_open_ny'))['spoken_label']
 
 
+def range_objectives(review):
+    """Use one directional outcome vocabulary for raw CRT and shift rows."""
+    if 'objectives' in review:
+        objectives = [dict(o) for o in review['objectives']]
+        invalid = review.get('invalidated_at_ny')
+        for objective in objectives:
+            hit = objective.get('evidence')
+            if hit and invalid and parse_time(hit['bar_close_ny']) >= parse_time(invalid):
+                objective['status'] = 'touch_in_invalidating_bar_order_unresolved'
+        return objectives
+    anchor = review['anchor']
+    direction = review.get('observed_direction')
+    coverage = review.get('range_observation_coverage', review.get('observation_coverage', {}))
+    invalid = review.get('invalidated_at_ny')
+    objectives = []
+    for name in ('midpoint', 'opposing_liquidity'):
+        hit = next((e for e in review['events'] if e['kind'] == name + '_observed'), None)
+        status = ('observed_after_purge' if hit and hit['order_after_purge_known'] else
+                  'same_bar_order_unknown' if hit else
+                  'direction_unresolved' if not direction else
+                  'not_observed_before_invalidation' if invalid and coverage.get('complete') else
+                  'not_observed_by_shift_end' if coverage.get('complete') else
+                  'unresolved_incomplete_coverage')
+        if hit and invalid and parse_time(hit['bar_close_ny']) >= parse_time(invalid):
+            status = 'touch_in_invalidating_bar_order_unresolved'
+        objectives.append({'objective': name, 'status': status, 'evidence': hit,
+                           **objective_identity(name, direction, anchor)})
+    return objectives
+
+
+def directional_outcome(review):
+    """Outcome of the initiating direction, never a later opposite Model 1."""
+    anchor = review['anchor']
+    direction = review.get('direction_observed', review.get('observed_direction'))
+    objectives = {o['objective']: o for o in range_objectives(review)}
+    full, mid = objectives['opposing_liquidity'], objectives['midpoint']
+    invalid = review.get('invalidated_at_ny')
+    valid_full = full['status'] == 'observed_after_purge' and (
+        not invalid or parse_time(full['evidence']['bar_close_ny']) < parse_time(invalid))
+    valid_mid = mid['status'] == 'observed_after_purge' and (
+        not invalid or parse_time(mid['evidence']['bar_close_ny']) < parse_time(invalid))
+    status = ('opposing_liquidity_delivered' if valid_full else
+              'midpoint_only' if valid_mid else
+              'unverified' if not anchor.get('complete') or not direction or
+              any('unresolved' in o['status'] or 'unknown' in o['status'] for o in objectives.values()) else
+              'failed_before_objectives' if invalid else 'pending_at_review_cutoff')
+    name = range_label(anchor)
+    opening = datetime.fromisoformat(anchor['start_ny'])
+    hour = opening.hour
+    play = ('Young Lefty' if hour in (7, 19) else '9ate8' if hour in (8, 20) else None
+            ) if anchor.get('timeframe') == 'H1' and not (opening.minute or opening.second) else None
+    named = name[0].upper() + name[1:] + (f' ({play})' if play else '')
+    if valid_full:
+        summary = (f"{named} completed its {direction} {full['liquidity_side']} objective "
+                   f"in {window(full['evidence'])}.")
+    elif valid_mid:
+        summary = (f"{named} reached 50% (midpoint) in its {direction} direction "
+                   f"in {window(mid['evidence'])}; full {full['liquidity_side']} delivery "
+                   + ('was not established before invalidation.' if invalid else 'remains pending or unverified.'))
+    elif status == 'failed_before_objectives':
+        summary = f"{named}'s {direction} attempt failed before its {full['liquidity_side']} objective."
+    elif status == 'pending_at_review_cutoff':
+        summary = f"{named}'s {direction} {full['liquidity_side']} objective remains pending at the review cutoff."
+    else:
+        summary = f"{named}'s {' '.join(filter(None, [direction, 'directional outcome']))} is unverified."
+    purges = [e for e in review['events'] if e['kind'].endswith('_side_purge')]
+    first = min(purges, key=lambda e: e['bar_open_ny']) if purges and direction else None
+    assigned = first.get('assigned_purge', {}) if first else {}
+    candle = assigned.get('assigned_candle', {})
+    origin = {'direction': direction, 'purged_side': first['kind'].split('_')[0],
+              'source_purge': {k: first[k] for k in ('bar_open_ny', 'bar_close_ny', 'precision_seconds')},
+              'bar_open_ny': candle.get('start_ny'), 'timeframe': candle.get('timeframe'),
+              'qualification': assigned.get('model1_qualification'),
+              'identity': ('Turtle Wick Soup' if assigned.get('model1_qualification') == 'wick_only' else
+                           'Model 1 candle' if assigned.get('model1_qualification') == 'model1_body_purge' else
+                           'assigned purge candle')} if first else None
+    if invalid:
+        summary += (f" The range later invalidated on {invalidating_label(review)}; earlier delivery remains recorded."
+                    if valid_full or valid_mid else f" The range invalidated on {invalidating_label(review)}.")
+    return {'range_start_ny': anchor['start_ny'], 'range_timeframe': anchor.get('timeframe'),
+            'range_label': name, 'play_context': play, 'direction': direction, 'status': status,
+            'initiating_identity': origin, 'midpoint': mid, 'opposing_liquidity': full,
+            'range_invalidated_at_ny': invalid, 'delivery_before_later_invalidation': bool(invalid and valid_full),
+            'spoken_summary': summary,
+            'response_contract': 'Lead with this named range and directional outcome. Midpoint is not full delivery. '
+                'A later invalidation or opposite-direction Model 1 cannot erase earlier completed delivery. '
+                'A wick-only Turtle Soup remains a valid setup path without a body Model 1; never call it Super Soup. '
+                'CSD and member execution are separate from this physical directional delivery.'}
+
+
+def attach_directional_outcome(review, bars, end, step):
+    outcome = directional_outcome(review)
+    origin = outcome['initiating_identity']
+    if origin:
+        start = parse_time(origin['source_purge']['bar_open_ny'])
+        stop = parse_time(review['invalidated_at_ny']) if review.get('invalidated_at_ny') else end
+        returned = next((b for b in bars if start <= b['time'] and b['time'] + step <= stop
+                         and review['anchor']['low'] <= b['close'] <= review['anchor']['high']), None)
+        outcome['first_source_return_inside'] = interval(returned, step) if returned else None
+    lifecycle = review.get('candle_lifecycle', {})
+    outcome['separate_opposite_identities'] = [
+        {key: fact[key] for key in ('identity', 'bar_open_ny', 'timeframe', 'direction')}
+        for fact in lifecycle.get('purge_candles', [])
+        if origin and fact['direction'] != origin['direction']]
+    review['directional_outcome'] = outcome
+    if review['anchor'].get('timeframe') == 'H1' and 'variant_evidence' not in review:
+        row = {**review, 'direction_observed': outcome['direction'],
+               'invalidated_at_ny': review.get('invalidated_at_ny'), 'objectives': range_objectives(review)}
+        review['variant_evidence'] = classify_structure(row, bars, end, step)
+    if 'role' not in review:
+        review.setdefault('recap', {}).update(headline=outcome['spoken_summary'],
+            spoken_summary=outcome['spoken_summary'], evidence_precedence='local_directional_outcome_first')
+    return review
+
+
 def classify_structure(row, bars, end, step):
     result = {'status': 'unresolved', 'labels': [], 'entry_confirmed': False}
     anchor = row['anchor']
+    opening = datetime.fromisoformat(anchor['start_ny'])
+    if opening.minute or opening.second:
+        result['reason'] = 'Custom intrahour anchor: wall-hour variant classification is not assessed; retain directional evidence.'
+        return result
     if not anchor['complete']:
         result['reason'] = 'Incomplete anchor.'
         return result
@@ -48,20 +167,20 @@ def classify_structure(row, bars, end, step):
         result['reason'] = 'Missing candles before or during manipulation.'
         return result
     manipulation = sequence[-1]
-    if not anchor['low'] <= manipulation['close'] <= anchor['high']:
-        result.update(status='invalidated', reason='Manipulation hour closed outside the range.')
-        return result
+    closed_outside = not anchor['low'] <= manipulation['close'] <= anchor['high']
     inside = sequence[1:-1]
     if not all(c['high'] <= anchor['high'] and c['low'] >= anchor['low'] for c in inside):
         result['reason'] = 'Intervening candles do not establish a clean inside-bar sequence.'
         return result
     result.update(status='developing', manipulation_hour_ny=manipulation['start_ny'],
-                  inside_bars_before_manipulation=len(inside))
+                  inside_bars_before_manipulation=len(inside),
+                  manipulation_closed_outside=closed_outside,
+                  later_range_invalidated_at_ny=row.get('invalidated_at_ny'))
     def label(code, name, reason):
         result['labels'].append({'code': code, 'name': name, 'reason': reason})
-    if len(inside) == 1:
+    if len(inside) == 1 and not closed_outside:
         label('V4', 'one inside bar', 'One complete inside H1 preceded manipulation; manipulation closed back inside.')
-    elif len(inside) >= 2:
+    elif len(inside) >= 2 and not closed_outside:
         label('V5', 'multiple inside bars', f'{len(inside)} complete inside H1 candles preceded manipulation; manipulation closed back inside.')
 
     target = next((o['evidence'] for o in row['objectives']
@@ -70,17 +189,28 @@ def classify_structure(row, bars, end, step):
         target_start = parse_time(target['bar_open_ny']) // 3600 * 3600
         target_hour = summarize(bars, target_start, target_start + 3600, step)
         through_target = summarize(bars, start, parse_time(target['bar_close_ny']), step)
-        if target_hour['complete'] and through_target['complete']:
+        invalid = row.get('invalidated_at_ny')
+        before_invalidation = not invalid or parse_time(target['bar_close_ny']) < parse_time(invalid)
+        # V2 is completed directional delivery inside candle 2. Its later H1
+        # outside close cannot undo an already observed opposing objective.
+        if target_hour['complete'] and through_target['complete'] and before_invalidation:
             count = (target_start - start) // 3600 + 1
             result.update(status='distribution_observed', distribution_hour_ny=target_hour['start_ny'],
                           candles_through_distribution=count)
             if not inside and manipulation_start == start + 3600:
                 if count == 2:
                     label('V2', 'Kryptonite', 'Candle 2 purged and reached opposing liquidity in later source bars within the same H1.')
-                elif count == 3:
+                elif count == 3 and not closed_outside:
                     label('V1', 'Textbook', 'Candle 1 was the range, candle 2 manipulated and closed inside, candle 3 reached opposing liquidity.')
-                elif count > 3:
+                elif count > 3 and not closed_outside:
                     label('V3', 'extended distribution', f'Opposing liquidity was first observed in candle {count}.')
+
+    if closed_outside:
+        if result['status'] != 'distribution_observed':
+            result.update(status='invalidated', reason='Manipulation hour closed outside before verified opposing delivery.')
+        else:
+            result['reason'] = 'Opposing delivery completed before the later invalidating H1 close; keep both facts.'
+        return result
 
     # A repeat touch of the original range boundary is NOT enough for V6.
     # Require a later H1 to sweep the completed manipulation extreme and close
@@ -111,7 +241,7 @@ def named_hourly_range_summary(row, cutoff, progression=()):
     anchor = row['anchor']
     name = range_label(anchor)
     selected = row['role'] == 'selected_range'
-    parts = [f"{name[0].upper() + name[1:]} " + (
+    parts = [directional_outcome(row)['spoken_summary'], f"{name[0].upper() + name[1:]} " + (
         'was the selected range.' if selected else
         'is independent hourly context, not a selected range.')]
     if not anchor['complete']:
@@ -180,10 +310,7 @@ def build_shift_recap(story):
                  and o['status'] == 'observed_after_purge' for o in r['objectives'])]
     failed = [r for r in selected if r['invalidated_at_ny']]
     if completed:
-        anchors = ', '.join(objective_identity('opposing_liquidity', r['direction_observed'], r['anchor'])['spoken_label'] for r in completed)
-        headline = f"Price reached {anchors} during the shift."
-        if failed and failed[0]['label'] == '9ate8' and completed[0] is not failed[0]:
-            headline = f"9ate8 failed, but price later reached {anchors}."
+        headline = ' '.join(directional_outcome(r)['spoken_summary'] for r in completed)
     elif not story['coverage']['complete'] or not story['progression_complete']:
         uncertain = [r for r in story['ranges'] if not r['anchor']['complete'] or
                      (r['role'] == 'selected_range' and not (r.get('observation_coverage') or {}).get('complete'))]
@@ -196,7 +323,7 @@ def build_shift_recap(story):
     passages, brief = [], [headline]
     for row in selected:
         anchor_name = clock(row['anchor_start_ny'])
-        parts = []
+        parts = [directional_outcome(row)['spoken_summary']]
         transition = next((t for t in story['range_transitions'] if t['to_anchor_ny'] == row['anchor_start_ny']), None)
         if transition:
             parts.append(f"The {anchor_name} candle became the selected range on its closure.")
@@ -252,7 +379,8 @@ def build_shift_recap(story):
             brief.append(f"{anchor_name} became selected at the cutoff, leaving no shift candles to assess it.")
             continue
         delivered = [o for o in row['objectives'] if o['status'] == 'observed_after_purge']
-        select_text = f"The {anchor_name} range became selected on that candle's closure" if transition else f"{anchor_name} stayed selected"
+        select_text = directional_outcome(row)['spoken_summary'] + ' ' + (
+            f"The {anchor_name} range became selected on that candle's closure" if transition else f"{anchor_name} stayed selected")
         first = next((e for e in row['events'] if e['kind'].endswith('_side_purge')), None)
         if first and row['direction_observed']:
             side = 'buy-side' if row['direction_observed'] == 'bearish' else 'sell-side'
@@ -302,7 +430,8 @@ def build_shift_recap(story):
             'hourly_crt_summary': ' '.join(x['text'] for x in named if x['role'] == 'selected_range'),
             'shift_start_ny': story['start_ny'], 'shift_end_ny': story['end_ny'],
             'selected_range_chapters': passages, 'closing': close,
-            'response_contract': 'Lead with headline; cover every selected range in order, including later delivery. '
+            'response_contract': 'Lead with the named range and directional outcome in headline; then explain mechanism. '
+                                 'Cover every selected range in order, including later delivery. '
                                  'Use spoken_summary for the whole shift; hourly_crt_summary for H1 CRT questions. '
                                  'For named hours use range_summaries in order, naming 8, 9, 10, 11 as applicable; '
                                  'never replace them with one/another or a blanket incomplete verdict. '

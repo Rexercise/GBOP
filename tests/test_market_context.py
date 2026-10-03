@@ -44,6 +44,6 @@ class PairedContextTests(unittest.TestCase):
         self.assertEqual(self.status(d),'context_only_anchor_invalid_at_smt')
     def test_spoken_summary_has_asset_outcomes(self):
         s=enrich_smt(self.data())['spoken_summary']
-        self.assertIn('XAUUSD was boneless',s);self.assertIn('completed its own',s)
+        self.assertIn('XAUUSD is the boneless leg',s);self.assertIn('completed its own',s)
 
 if __name__=='__main__': unittest.main()
