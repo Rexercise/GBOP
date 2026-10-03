@@ -1,0 +1,40 @@
+name: Apply isolated call reliability repair
+on:
+  push:
+    branches: [fix/call-reliability-20261003]
+permissions:
+  contents: read
+concurrency:
+  group: gbop-call-reliability-repair
+  cancel-in-progress: false
+jobs:
+  apply-and-test:
+    if: github.repository == 'Rexercise/GBOP'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install existing test dependencies
+        run: pip install httpx==0.28.1 fastapi==0.116.1
+      - name: Apply exact-match edits on repair branch only
+        run: |
+          test "$GITHUB_REF_NAME" = 'fix/call-reliability-20261003'
+          python tools/apply_call_reliability.py
+          python -m compileall -q bot.py gbop_voice_web tests
+      - name: Run complete regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Commit tested repair without the temporary patch runner
+        run: |
+          git rm tools/apply_call_reliability.py .github/workflows/apply-call-reliability.yml
+          git add bot.py gbop_voice_web tests
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Fix paired SMT evidence, private journal delivery and read-only voice recovery'
+          git push origin HEAD:"$GITHUB_REF_NAME"
+          git rev-parse HEAD
