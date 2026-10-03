@@ -1,0 +1,60 @@
+name: Validate TAB launch directory
+on:
+  push:
+    branches: [fix/tab-launch-directory]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Fix import order and add isolated working-directory regression
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('gbop_voice_web/server.py'); t=p.read_text()
+          imported='from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches\n'
+          assert t.startswith(imported)
+          t=t[len(imported):]
+          anchor='sys.path.insert(0, str(Path(__file__).resolve().parent.parent))\n'
+          assert t.count(anchor)==1
+          p.write_text(t.replace(anchor,anchor+imported))
+          Path('tests/test_tab_launch.py').write_text('''import ast
+          import subprocess
+          import sys
+          import unittest
+          from pathlib import Path
+          
+          class LaunchDirectoryTests(unittest.TestCase):
+              def test_package_imports_follow_repository_bootstrap(self):
+                  source=Path('gbop_voice_web/server.py').read_text()
+                  tree=ast.parse(source)
+                  bootstrap=next(n.lineno for n in tree.body if isinstance(n,ast.Expr) and isinstance(n.value,ast.Call) and ast.unparse(n.value.func)=='sys.path.insert')
+                  self.assertTrue(all(n.lineno>bootstrap for n in tree.body if isinstance(n,ast.ImportFrom) and (n.module or '').startswith('gbop_voice_web')))
+              def test_watch_import_from_isolated_render_working_directory(self):
+                  path=Path('gbop_voice_web/server.py').resolve()
+                  source=path.read_text()
+                  node=next(n for n in ast.parse(source).body if isinstance(n,ast.ImportFrom) and n.module=='gbop_voice_web.market_watch')
+                  prefix='\\n'.join(source.splitlines()[:node.end_lineno])
+                  result=subprocess.run([sys.executable,'-I','-c','__file__='+repr(str(path))+'\\n'+prefix],cwd=path.parent,capture_output=True,text=True,timeout=15)
+                  self.assertEqual(result.returncode,0,result.stderr)
+          ''')
+          PY
+      - name: Install test dependencies
+        run: pip install httpx==0.28.1 fastapi==0.116.1
+      - name: Compile and run full suite under production Python series
+        run: |
+          python -m compileall -q bot.py gbop_voice_web
+          python -m unittest discover -s tests
+      - name: Commit only verified fix and remove temporary workflow
+        run: |
+          rm .github/workflows/tab-launch-fix.yml
+          git add gbop_voice_web/server.py tests/test_tab_launch.py .github/workflows/tab-launch-fix.yml
+          git -c user.name='GBOP release validation' -c user.email='noreply@github.com' commit -m 'Initialize repository path before importing TAB watch tools'
+          git push origin HEAD:fix/tab-launch-directory
