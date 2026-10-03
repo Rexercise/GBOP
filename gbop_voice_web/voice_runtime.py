@@ -125,7 +125,11 @@ def compact_voice_tool_result(name, result):
     def page(value):
         if isinstance(value, dict):
             rows = value.get('candles')
-            if isinstance(rows, list) and len(rows) > 4:
+            # Only raw candle-query tables have this pagination contract.
+            # model1.candles contains identified events with candle_open_ny;
+            # keep those facts intact instead of guessing a raw-table cursor.
+            if (isinstance(rows, list) and len(rows) > 4
+                    and all(isinstance(row, dict) and 'start_ny' in row for row in rows)):
                 value['candles'] = rows[:4]
                 value['next_start_ny'] = rows[4]['start_ny']
                 value['voice_page'] = {
