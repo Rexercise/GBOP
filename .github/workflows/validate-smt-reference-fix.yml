@@ -16,8 +16,68 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install httpx==0.28.1 fastapi==0.116.1
-      - name: Apply source changes and preserve regression cases
+      - name: Apply source changes and regression cases
         run: python scripts/apply_reference_fix.py
+      - name: Preserve voice budget and make untouched target fixture accurate
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('gbop_voice_web/gtop_boneless.txt')
+          text = p.read_text().split('\nOWNER CLARIFICATION — CANDLE NAMES')[0]
+          text += '''
+          OWNER CLARIFICATION — CANDLE IDENTITY / SMT MODEL 1 — 3 OCTOBER 2026
+          Name candles by OPENING time: "the 10 AM H1 candle's close, at 11 AM," never the 11 AM candle. Apply this to every timeframe, day/night, Model 1, CSD, Super Soup, retests and invalidation; retain New York chart time.
+          In verified SMT, the boneless asset's Model 1 is its OWN candle at the SAME opening time and assigned timeframe as the partner's BODY-purge Model 1. This SMT-inherited reference needs no visible local purge. Use its own OHLC/body reference, not partner prices. A wick alone or missing same-time candle cannot establish it. Identity precedes CSD; never copy partner CSD, Super Soup, fills or results.
+          Do not substitute a later opposite-direction local Model 1 or let its failure erase earlier SMT-supported 9ate8 delivery. Explain local-only versus paired outcomes. The partner supplies directional purge context; verify the boneless asset's OWN target and chronology. No local purge does not mean no objective. SMT alone does not mean success.
+          '''
+          p.write_text(text)
+          p = Path('gbop_voice_web/market_context.py')
+          text = p.read_text(); left, rest = text.split('LIFECYCLE_PROMPT = """',1); old,right = rest.split('""".strip()',1)
+          prompt = '''
+          Use candle_lifecycle.purge_candles and recap.candle_timeline for OHLC, wick/body,
+          CSD, Super Soup, retests, body closes and own objectives. Identity is independent
+          of confirmation/execution; legacy false/not_assessed cannot negate it.
+          Name candles by OPENING time; state closing time separately.
+          Use paired_smt/paired_context for gold/silver, Bitcoin/Ethereum, NAS100/SPX.
+          paired_model1.boneless_reference is the same-time SMT-inherited Model 1, not a
+          visible local purge or later opposite-direction model. Volunteer boneless_asset
+          and each own objective_status. Prefer recap.paired_interpretation over local-only
+          failure; retain earlier verified delivery. Missing SPX is not no SMT or US30.
+          Never invent context unavailable at entry.
+          '''
+          p.write_text(left+'LIFECYCLE_PROMPT = """'+prompt+'""".strip()'+right)
+          p = Path('tests/test_smt_reference.py'); text = p.read_text()
+          old = "        p = fixture(delivered=False)\n        p[0]['bars'][17].update(low=89,close=92)"
+          new = "        p = fixture(delivered=False)\n        for bar in p[1]['bars']:\n            if bar['time'] >= START + 3600:\n                bar['low'] = max(bar['low'], 191)\n        p[0]['bars'][17].update(low=89,close=92)"
+          assert text.count(old) == 1
+          text = text.replace(old,new)
+          text += '''
+              def test_bullish_reference_is_symmetric(self):
+                  p = fixture()
+                  for item in p:
+                      for bar in item['bars']:
+                          o,h,l,c = (bar[k] for k in ('open','high','low','close'))
+                          bar.update(open=1000-o,high=1000-l,low=1000-h,close=1000-c)
+                  e = next(e for e in review(p)['events'] if e['side']=='sell_side')
+                  self.assertEqual(e['paired_model1']['status'],'identified')
+                  self.assertEqual(e['paired_model1']['boneless_reference']['direction'],'bullish')
+                  self.assertEqual(e['paired_model1']['boneless_reference']['open'],803)
+              def test_voice_retains_paired_identity_and_reconciled_recap(self):
+                  from gbop_voice_web.voice_runtime import compact_voice_tool_result
+                  session = {'paired_smt':review(fixture()),'shift_story':{'recap':{'spoken_summary':'Local-only failure'},'ranges':[]}}
+                  reconcile_paired_recap(session,'XAUUSD')
+                  result = compact_voice_tool_result('review_market_session',{'ok':True,'review':session})
+                  e = bearish(result['review']['paired_smt'])
+                  self.assertEqual(e['paired_model1']['boneless_reference']['bar_open_ny'],'2026-10-02T09:15:00-04:00')
+                  self.assertIn('SMT-inherited Model 1',result['review']['shift_recap']['spoken_summary'])
+          '''
+          # The appended class methods carry four spaces, not workflow indentation.
+          from textwrap import dedent
+          marker = '\n    def test_bullish_reference_is_symmetric'
+          # YAML removes its uniform indentation, leaving the intended Python class indent.
+          p.write_text(text)
+          PY
       - name: Compile and run all regression tests
         shell: bash
         run: |
