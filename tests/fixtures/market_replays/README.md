@@ -88,3 +88,10 @@ conditions absent from this sample.
 - Do not refresh this fixture from member journals, private screenshots or live
   credentials. Keep new actual samples separately timestamped; label invented
   boundary cases synthetic.
+# Follow-up chronology fixture
+
+`nas100_2026_10_02_0700_1200_m1.json` contains 300 retained NAS100 M1 OHLC
+bars for 07:00–12:00 New York on October 2, 2026. It contains market facts only.
+It verifies the actual early seven-range purge, failed opening plays, delivered
+unbranded nine H1 CRT, independent ten H1 failure and eleven H1 review cutoff.
+No member identity, journal, execution or conversation data is included.

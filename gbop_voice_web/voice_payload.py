@@ -34,12 +34,16 @@ def _voice_market_context(context, *, evidence_ref=None):
     """
     out = deepcopy(context)
     if not isinstance(out, dict) or out.get('source_tool') not in {
-            'review_market_session', 'review_market_crt', 'review_current_market'}:
+            'review_market_session', 'review_market_crt', 'review_current_market', 'review_other_market_ranges'}:
         return out
     if not all(key in out for key in ('selection', 'scope_id', 'evidence_id')):
         return out
     for key in ('recap', 'range_outcomes'):
         out.pop(key, None)
+    # Focused candle pages have a tight evidence budget. Discussion navigation
+    # stays in the server context/tool contract and is irrelevant to this page.
+    if out.get('source_tool') == 'review_market_crt':
+        out.pop('discussion_context', None)
     if evidence_ref:
         out['evidence_ref'] = evidence_ref
         out['snapshot_note'] = ('Repeated conversation recap/outcomes omitted; use the supplied review '
@@ -403,6 +407,20 @@ def current_voice_overview(result):
 
 def voice_tool_payload(name, result):
     """Select a bounded presentation after authoritative context capture."""
+    if (name == 'review_other_market_ranges' and isinstance(result, dict)
+            and isinstance(result.get('review', {}).get('other_range_followup'), dict)):
+        out = deepcopy(result)
+        out['market_context'] = _voice_market_context(out.get('market_context'), evidence_ref='#/review')
+        out['voice_view'] = {'kind': 'other_range_followup', 'detail_omitted': True,
+                            'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
+                            'note': 'Remaining ranges only, in chronology. Speak explicit range openings. '
+                                    'Retrieval is not discussion; completed playback is acknowledged separately.'}
+        if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+            return _bounded_error({'ok': False, 'status': 'voice_other_ranges_budget_exceeded',
+                'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),
+                'message': 'Remaining range evidence exceeds the voice budget. Request one exact range; no follow-up was supplied.'},
+                SHIFT_SYNOPSIS_TARGET_CHARS)
+        return out
     if (name == 'review_current_market' and isinstance(result, dict)
             and result.get('review', {}).get('mode') == 'current_market'):
         return current_voice_overview(result)

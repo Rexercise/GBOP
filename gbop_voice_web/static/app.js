@@ -26,6 +26,25 @@ let timeline = [];
 let sessionId = null;
 let voiceTurn = 0;
 let connectionGeneration = 0;
+let outputScope = null;
+let outputSequence = 0;
+let remotePlaybackReady = false;
+
+function acknowledgeMarketResponse(text) {
+  const scope = outputScope;
+  outputScope = null;
+  if (!scope || scope.session !== sessionId || scope.turn !== voiceTurn
+      || scope.connection !== connectionGeneration || !text.trim()
+      || !remotePlaybackReady || els.remoteAudio.paused || els.remoteAudio.muted
+      || els.remoteAudio.ended || els.remoteAudio.volume === 0
+      || !(els.remoteAudio.currentTime > scope.audioStartedAt)) return;
+  authFetch("/api/live/context/delivered", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: scope.session, turn_id: scope.turn,
+      response_id: scope.response, text }),
+  }).catch(console.warn);
+}
 
 function setState(text, mode = "idle") {
   els.voiceState.textContent = text;
@@ -178,8 +197,13 @@ async function startVoice() {
 
     connection.ontrack = (event) => {
       if (!currentConnection()) return;
+      remotePlaybackReady = false;
       els.remoteAudio.srcObject = event.streams[0];
-      els.remoteAudio.play().catch(() => {});
+      els.remoteAudio.play().then(() => {
+        if (currentConnection()) remotePlaybackReady = true;
+      }).catch(() => {
+        if (currentConnection()) remotePlaybackReady = false;
+      });
     };
 
     for (const track of mic.getAudioTracks()) {
@@ -242,20 +266,29 @@ async function startVoice() {
       }
 
       if (event.type === "session.output_audio.started") {
+        outputScope = { session: sessionId, turn: voiceTurn,
+          connection: connectionGeneration, response: `browser_${++outputSequence}`,
+          audioStartedAt: els.remoteAudio.currentTime };
         setState("Speaking", "speaking");
         return;
       }
 
       if (event.type === "session.output_audio.stopped") {
         if (currentOutput.trim()) {
+          acknowledgeMarketResponse(currentOutput);
           addLine("assistant", currentOutput);
           currentOutput = "";
         }
+        outputScope = null;
         setState("Listening", "listening");
         return;
       }
 
       if (event.type === "session.input_audio.speech_started") {
+        // An interrupted transcript is useful history, not a completed reply.
+        outputScope = null;
+        if (currentOutput.trim()) addLine("assistant", currentOutput);
+        currentOutput = "";
         invalidateMarketContext();
         setState("Listening", "listening");
         return;
@@ -367,6 +400,8 @@ function toggleMute() {
 }
 
 function cleanup(message = "Tap to start") {
+  outputScope = null;
+  remotePlaybackReady = false;
   connectionGeneration += 1;
   invalidateMarketContext(true);
   connected = false;

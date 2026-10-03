@@ -3,6 +3,7 @@ import os
 import json
 from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.photo_recall import result_text
+from gbop_voice_web.delivery_receipts import DELIVERY_ACTION
 
 
 def history(db, guild_id, user_id, args):
@@ -75,44 +76,50 @@ def messages(result):
 
 
 def send_history(db, guild_id, user_id, args):
+    from gbop_voice_web.delivery_receipts import deliver, bounded_delivery_db
+    return deliver(db, guild_id, user_id, 'send_journal_history', args,
+        lambda operation: _send_history(bounded_delivery_db(db), guild_id, user_id, args, operation))
+
+
+def _send_history(db, guild_id, user_id, args, operation):
     import httpx
     result = history(db, guild_id, user_id, args)
+    operation.state.update({key: result[key] for key in ('journal_count', 'trade_count',
+        'open_trade_count', 'closed_trade_count', 'has_more', 'next_offset')})
     token = os.getenv('DISCORD_TOKEN', '')
     if not token:
-        return {**result, 'ok': False, 'sent_count': 0, 'error': 'Journal retrieved; Discord delivery is not configured.'}
-    sent = 0
-    try:
-        with httpx.Client(base_url='https://discord.com/api/v10', headers={'Authorization': 'Bot ' + token}, timeout=20) as client:
-            channel = client.post('/users/@me/channels', json={'recipient_id': str(user_id)})
-            if channel.status_code >= 300:
-                return {**result, 'ok': False, 'sent_count': 0, 'error': 'Journal retrieved but your DMs could not be opened. Check Discord privacy settings.'}
-            for content in messages(result):
-                response = client.post(f"/channels/{channel.json()['id']}/messages",
-                                       json={'content': content, 'allowed_mentions': {'parse': []}})
-                if response.status_code >= 300:
-                    return {**result, 'ok': False, 'sent_count': sent, 'error': 'Only part of the journal was delivered; Discord blocked or rate-limited the remaining messages.'}
-                sent += 1
-    except (httpx.HTTPError, KeyError, ValueError):
-        return {**result, 'ok': False, 'sent_count': sent, 'error': 'Journal retrieved; Discord delivery failed or timed out. Delivery of the last attempted message is uncertain.'}
-    # Full text was delivered privately; do not reload it into every voice turn.
-    return {k: v for k, v in {**result, 'sent_count': sent,
-            'journal_numbers': [j['journal_number'] for j in result['journals']],
-            'delivery': 'private_discord_dm'}.items() if k != 'journals'}
+        return operation.finish({**result, 'ok': False,
+            'error': 'Journal retrieved; Discord delivery is not configured.'})
+    with httpx.Client(base_url='https://discord.com/api/v10', headers={'Authorization': 'Bot ' + token}, timeout=20) as client:
+        channel = client.post('/users/@me/channels', json={'recipient_id': str(user_id)})
+        if channel.status_code >= 300:
+            return operation.finish({**result, 'ok': False,
+                'error': 'Journal retrieved but your DMs could not be opened. Check Discord privacy settings.'})
+        channel_id = channel.json()['id']
+        for content in messages(result):
+            operation.before_send()
+            response = client.post(f'/channels/{channel_id}/messages',
+                json={'content': content, 'allowed_mentions': {'parse': []}})
+            if response.status_code >= 300:
+                operation.rejected(response)
+                return operation.finish({**result, 'ok': False,
+                    'error': 'Discord could not deliver the entire journal; confirmed message count is in sent_count.'})
+            operation.accepted(response)
+    # Full text was delivered privately; only transport facts enter the receipt.
+    return operation.finish({k: v for k, v in {**result,
+        'journal_numbers': [j['journal_number'] for j in result['journals']]}.items() if k != 'journals'})
 
 
 JOURNAL_RECALL_TOOLS = [schema('send_journal_history',
-    'On an explicit request to send journals, DM the authenticated member their saved entries and counts. No recipient override; never claim delivery unless sent_count is positive.',
-    {'limit': {'type': ['integer', 'null']}, 'offset': {'type': ['integer', 'null']}})]
+    'On an explicit request to send journals, DM the authenticated member their saved entries and counts. No recipient override; never claim delivery unless sent_count is positive. Default delivery_action=send_or_recover; use resend only when the member explicitly asks to send again.',
+    {'limit': {'type': ['integer', 'null']}, 'offset': {'type': ['integer', 'null']}, 'delivery_action': DELIVERY_ACTION})]
 JOURNAL_RECALL_PROMPT = """
-JOURNAL RECALL: You CAN retrieve this authenticated member's saved journal. For
-'do you have any of my trades recorded?' call get_journal_history for both journal
-and all-trade counts; get_trade_state alone lists OPEN trades, not all saved trades.
-For 'send my journal/records', call send_journal_history now, not an offer or a
-request to paste records. Its counts are member-scoped; a different Discord login
-has different records. Never reveal the owner's history to the test member.
-Only report no records after a successful empty lookup. A timeout/access error is
-not an empty journal. Do not claim you cannot access private records without an
-actual tool error. Stop the prior market discussion when the member requests records.
-When photos are requested, also use send_trade_photos with matching resolved trade
-or journal filters. A journal text DM alone is not proof of photo delivery.
+JOURNAL RECALL: get_journal_history retrieves this authenticated member's saved
+journals and all-trade counts; get_trade_state lists only OPEN trades. Never use
+another member's or the owner's records. For 'send my journal', call
+send_journal_history, not an offer or request to paste it. Stop prior market talk.
+Only a successful empty lookup means no records; timeout/access errors do not.
+Never claim unavailable access without a tool error. For requested photos also
+call send_trade_photos with matching trade/journal filters; a journal text DM
+proves no photo delivery. Counts belong to this Discord login only.
 """.strip()

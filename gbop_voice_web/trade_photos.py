@@ -107,6 +107,8 @@ def annotate(db, guild_id, user_id, args):
 
 
 def search(db,guild_id,user_id,args,include_bytes=False):
+    from gbop_voice_web.photo_recall import normalized_filters
+    args = normalized_filters(args)
     from gbop_voice_web.journal_coach import init_coach
     init_coach(db)
     with db() as conn:
@@ -174,27 +176,8 @@ def search(db,guild_id,user_id,args,include_bytes=False):
 
 
 def send_photos(db,guild_id,user_id,args):
-    import httpx
-    from gbop_voice_web.photo_recall import recall_cards
-    result = search(db,guild_id,user_id,args,include_bytes=True)
-    if not result['ok'] or not result['photos']:
-        return {**result,'sent_count':0}
-    token = os.getenv('DISCORD_TOKEN','')
-    if not token:
-        return {'ok':False,'sent_count':0,'error':'Discord delivery is not configured.'}
-    sent = 0
-    with httpx.Client(base_url='https://discord.com/api/v10',headers={'Authorization':f'Bot {token}'},timeout=30) as client:
-        channel = client.post('/users/@me/channels',json={'recipient_id':str(user_id)})
-        if channel.status_code >= 300:
-            return {'ok':False,'sent_count':0,'error':'Unable to open your DMs. Check your Discord privacy settings.'}
-        for p, filename, payload in recall_cards(result['photos'],result['has_more']):
-            response = client.post(f"/channels/{channel.json()['id']}/messages",
-                data={'payload_json':json.dumps(payload)},
-                files={'files[0]':(filename,base64.b64decode(p['image_base64']),p['mime'])})
-            if response.status_code >= 300:
-                return {'ok':False,'sent_count':sent,'error':'Discord could not deliver all photos. DMs may be disabled or rate limited.'}
-            sent += 1
-    return {'ok':True,'sent_count':sent,'has_more':result['has_more'],'next_offset':result['next_offset']}
+    from gbop_voice_web.photo_recall import send_photos as deliver_photos
+    return deliver_photos(db, guild_id, user_id, args)
 
 
 def photo_tool(db,guild_id,user_id,name,args):
@@ -225,6 +208,6 @@ PHOTO_TOOLS = [
     schema('annotate_trade_photo','Save image analysis and tags; link to a member-visible trade number. Null tags mean unknown.',
            {'photo_id':{'type':'string'},'trade_number':NUM,'analysis':{'type':'string'},'tier':NUM,'entry_model':STR,'play':STR,'asset':STR}),
     schema('list_trade_photos','Find your saved photo metadata and member-visible trade numbers. Filters use exact canonical labels.',FILTERS),
-    schema('send_trade_photos','Only when the member asks: DM up to five matching saved photos and their trade information to that member.',FILTERS),
+    schema('send_trade_photos','Only when the member asks: DM up to five matching saved photos and their trade information to that member. Default delivery_action=send_or_recover; resend only for an explicit request to send again.',{**FILTERS, 'delivery_action': {'type':['string','null'], 'enum':['send_or_recover','resend',None]}}),
 ]
 PHOTO_NAMES = {t['name'] for t in PHOTO_TOOLS}

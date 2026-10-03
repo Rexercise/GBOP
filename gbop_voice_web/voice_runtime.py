@@ -7,7 +7,7 @@ import math
 import random
 
 READ_ONLY_RECOVERY_NAMES = frozenset({
-    'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_member_plan',
+    'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_member_plan',
     'get_member_dashboard', 'get_shift_plans', 'get_performance_review',
     'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_trade_assist',
     'list_trade_photos', 'get_market_price', 'list_market_shifts', 'review_market_session',
@@ -40,6 +40,13 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
     if (turn != getattr(session, '_voice_turn_count', 0)
             or (is_current is not None and not is_current())):
         return {'ok': False, 'error': 'This voice request is no longer current.'}
+    context = getattr(session, 'market_context', None)
+    identity = (getattr(getattr(session, 'member', None), 'id', None),
+                tuple(getattr(context, 'owner', ()) or ()), getattr(context, 'session_id', None))
+    previous_identity = getattr(session, '_tool_identity', identity)
+    if previous_identity != identity:
+        return {'ok': False, 'error': 'This tool cache belongs to an earlier authenticated session. Reconnect before continuing.'}
+    session._tool_identity = identity
     cache = getattr(session, '_tool_call_results', None)
     if cache is None:
         cache = session._tool_call_results = {}
@@ -52,15 +59,9 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
     deliveries = getattr(session, '_delivery_results', None)
     if deliveries is None:
         deliveries = session._delivery_results = {}
-    canonical = {k: v for k, v in args.items() if v is not None}
-    if name == 'send_journal_history':
-        canonical = {'limit': max(1, min(int(args.get('limit') or 5), 20)),
-                     'offset': max(0, int(args.get('offset') or 0))}
-    elif name == 'send_trade_photos':
-        canonical = {k: v for k, v in canonical.items() if k in {
-            'journal_number', 'trade_number', 'tier', 'entry_model', 'play', 'asset', 'unlinked_only', 'offset'}}
-        canonical['offset'] = max(0, int(args.get('offset') or 0))
-        canonical['unlinked_only'] = bool(args.get('unlinked_only'))
+    from gbop_voice_web.delivery_receipts import canonical_arguments, SAFE_FIELDS
+    canonical = (canonical_arguments(name, args) if name in PRIVATE_DELIVERY_NAMES
+                 else {k: v for k, v in args.items() if v is not None})
     key = (turn, name, json.dumps(canonical, sort_keys=True))
     if name in PRIVATE_DELIVERY_NAMES and key in deliveries:
         result = deliveries[key]
@@ -73,6 +74,15 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
         result = await runner()
         if name in PRIVATE_DELIVERY_NAMES:
             deliveries[key] = result
+            # This runs inside the shielded operation, even when the voice waiter
+            # was interrupted. Never revive old audio to report transport facts.
+            receipts = getattr(session, '_delivery_receipts', {})
+            receipt_key = result.get('receipt_id') or str(key)
+            receipts[receipt_key] = {k: v for k, v in result.items() if k in SAFE_FIELDS}
+            session._delivery_receipts = dict(list(receipts.items())[-20:])
+            print('[GBOP-DELIVERY]', name, 'status=', result.get('status', 'unknown'),
+                  'sent_count=', result.get('sent_count', 0),
+                  'uncertain=', bool(result.get('delivery_uncertain')))
     cache[call_id] = result
     if len(cache) > 256:
         cache.pop(next(iter(cache)))

@@ -113,10 +113,10 @@ class JournalDeleteTests(unittest.TestCase):
 
     def test_wiring_and_request_snapshot(self):
         source = SOURCE.read_text()
-        self.assertIn('result = run_tool(user_id, call.name, args, confirmation_token)', source)
+        self.assertIn('result = market_context.run(call.name, args,', source)
+        self.assertIn('lambda name, values: run_tool(user_id, name, values, confirmation_token)', source)
         self.assertIn('"prepare_journal_delete": tool_prepare_journal_delete', source)
         self.assertIn('return tool_delete_journal(user_id, args, confirmation_token)', source)
 
 if __name__ == '__main__':
     unittest.main()
-
