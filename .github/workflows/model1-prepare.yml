@@ -27,8 +27,8 @@ jobs:
           end = text.index('\nBREAKER BLOCK\n', start)
           block = '''MODEL 1 CANDLE / BODY-CLOSE LOGIC — CORRECTED 3 OCTOBER 2026
           [GTOP REFINEMENT]
-          The qualifying body-purging candle on the selected range's assigned timeframe IS the Model 1 candle, not a candidate. Its real body crosses and closes through the range boundary. H1 uses M5: bearish above the high; bullish below the low. Wick-only, forming or incomplete candles do not establish that body close.
-          The candle remains Model 1 whether later CSD confirms, stays unconfirmed or the setup fails.
+          The assigned-timeframe candle whose body crosses and closes through the selected range boundary IS Model 1, not a candidate. H1 uses M5: bearish above the high; bullish below the low. Wick-only, forming or incomplete candles cannot establish that body close.
+          It remains Model 1 whether later CSD confirms, stays unconfirmed or the setup fails.
 
           SUBSEQUENT EVENTS
           [GTOP EXCLUSIVE / GTOP REFINEMENT]
@@ -37,9 +37,9 @@ jobs:
           CSD/CISD confirms when price closes through the OTHER SIDE of that candle's liquidity. This activates its confirmed function, not its identity.
 
           MODEL 1 RESPONSE CONTRACT
-          Answer "the Model 1" with the candle first: open/close times, OHLC, purged range/side/level. Use review_market_crt or inspect_market_candles. model1.candles identifies body purges; m5_body_evidence describes a separate LATER body cross. Preserve candle precision and identify multiple qualifying candles without inventing one winner.
-          Keep formation, CSD, Super Soup occurrence and trader execution separate. entry_confirmed=false negates none of the observed candle facts. No execution record does not mean no Super Soup; inspect later assigned candles to assess its sequence.
-          Missing data means unverified, not absent. not_assessed is not a negative result. Later failure never erases prior formation. Correct obsolete mislabels directly.
+          Answer with the candle first: open/close times, OHLC, purged range/side/level. Use review_market_crt or inspect_market_candles. model1.candles identifies body purges; m5_body_evidence describes a separate LATER body cross. Preserve time precision and identify multiple qualifying candles rather than inventing one winner.
+          Separate formation, CSD, Super Soup occurrence and trader execution. entry_confirmed=false negates none of these candle facts. No execution record does not mean no Super Soup; inspect later assigned candles to assess its sequence.
+          Missing data means unverified, not absent. not_assessed is not a negative result. Failure never erases prior formation. Correct obsolete mislabels directly.
           '''
           text = text[:start] + block + text[end:]
           text = replace_once(text,
