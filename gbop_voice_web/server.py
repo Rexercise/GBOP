@@ -1120,15 +1120,22 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
         + "\n\nHandle the member's latest request."
     )
 
+    from gbop_voice_web.market_prefetch import prefetch_market_evidence
+    prefetched = prefetch_market_evidence(market_context,
+        lambda name, values: run_tool(user_id, name, values, confirmation_token), market_generation)
+    if not market_context.current(market_generation):
+        return 'This request was superseded by newer speech.'
+    items = [{"role": "user", "content": user_input}]
+    if prefetched:
+        items.append({'role': 'developer', 'content': prefetched})
     response = client.responses.create(
         model=BACKEND_MODEL,
         instructions=BACKEND_PROMPT + market_context.prompt(),
-        input=user_input,
+        input=items,
         tools=conversation_tools,
         store=False,
     )
 
-    items = [{"role": "user", "content": user_input}]
     for _ in range(6):
         if not market_context.current(market_generation):
             return 'This request was superseded by newer speech.'

@@ -151,3 +151,33 @@ Two-person acceptance is complete only after the actual spoken, member-isolation
 journal/photo, hang-up and qualifying-watch-event checks have supporting evidence.
 Unexercised recovery conditions remain disclosed; simulated unit tests cannot be
 reported as a completed human session.
+
+## Directional evidence follow-up acceptance (2026-10-03)
+
+Automated tests cover named evidence and retrieval; actual audio wording remains
+an explicit human acceptance check. No extra ASR or model upgrade is introduced.
+Text-capable backend/Discord turns prefetch recognized focused questions before
+answer generation. Audio-only tool selection still depends on the live model.
+
+- [ ] Review NAS100, 2026-10-02 day shift. Ask about the 9AM range's Model 1s.
+  The 10:00 and 10:10 M5 bodies purge the 9AM high at 30995.59 and are bearish.
+  The 11:15 M5 body purges the low at 30829.47, is bullish, and belongs to a
+  separate opposite attempt after the original bearish objective delivered.
+- [ ] Ask specifically about 11:10. It is a bullish sell-side Turtle Wick Soup,
+  not a body Model 1. Its 11:12–11:13 source purge shares the original bearish
+  delivery source minute; tick order is unknown. Its assigned identity is known
+  at 11:15, so it is not an earlier bearish pre-delivery candidate.
+- [ ] Ask about the 10AM Model 1's Super Soup. The assigned soup candle opens
+  10:05, is known at 10:10, and is observed before the 10:50–10:55 CSD candle.
+  Its own local CRT invalidates at 10:20. Its physical own target at 10:59 does
+  not restore that CRT; the parent 9AM target at 11:12 is a separate outcome.
+- [ ] Ask how close the 8AM bearish attempt came to midpoint. The read-only
+  source-bar calculation gives midpoint 30821.71, closest retained low 30829.47
+  in the 09:32 M1 candle, 7.76 provider price points short. Explain coverage and
+  boundary-order limits if the requested source window is incomplete.
+- [ ] Follow with an elliptical CSD or target question. Keep the same named
+  asset/date/range/candle; fetch omitted detail rather than claiming it is absent.
+  Check the scoped tool log for an actual retrieval when one is promised.
+- [ ] Recheck gold Young Lefty and potential/pending boneless explanations.
+  Qualified/potential paired evidence must survive payload compaction; rejected
+  paired target details have an explicit same-scope recovery request.

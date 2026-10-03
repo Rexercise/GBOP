@@ -312,12 +312,12 @@ MARKET_TOOLS = [
         'anchor_start_ny': {'type': 'string'}, 'anchor_timeframe': {'type': 'string'},
         'through_ny': {'type': 'string'}}),
     schema('get_market_price', 'Get latest broker bid/ask ONLY when a quote is requested. Disclose stale or absent data.', {'asset': {'type': 'string'}}),
-    schema('review_market_session', 'Review the entire GTOP shift: 9AM-noon or 9PM-midnight New York, beginning with the 8 oclock anchor. Returns hourly range promotions, later CRTs, own objectives, assigned wick/body candle lifecycle, CSD/Super Soup/retests and automatic configured paired-market context. Use for casual references to today’s play as well as direct questions.', {
+    schema('review_market_session', 'Review the entire GTOP shift: 9AM-noon or 9PM-midnight New York, beginning with the 8 oclock anchor. Returns hourly range promotions, later CRTs, own objectives, assigned wick/body candle lifecycle, CSD/Super Soup/retests and automatic configured paired-market context. Use for broad shift recaps. For Model 1 identity, Super Soup, CSD, wick/body, or objective-distance followups use review_market_crt for the specific range and exact named candle instead; overview omissions never establish absence.', {
         'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null'], 'description': 'Explicit NY date; null selects the latest completed usable shift. Unavailable dates are never silently changed.'},
         'shift': {'type': 'string', 'enum': ['day', 'night']}}),
     schema('inspect_market_candles', 'Read historical or current candle OHLC and when extremes formed. Explicit ISO start/end in New York (or with offset). M1-M60, H1-H24, D1, W1, MN1; custom anchors supported. Incomplete coverage is not a definitive daily/weekly extreme. Paginate next_start_ny.', {
         'asset': {'type': 'string'}, 'start_ny': {'type': 'string'}, 'end_ny': {'type': 'string'}, 'timeframe': {'type': 'string'}}),
-    schema('review_market_crt', 'Inspect ANY selected CRT anchor, subsequent purges and invalidating anchor-timeframe closes. Returns assigned wick/body candles and lifecycle facts separately from execution. Defaults: monthly->daily, weekly->H4, daily->H1, H4->M15, H1->M5. Specify exact anchor start to preserve chart/session alignment.', {
+    schema('review_market_crt', 'Inspect ANY selected CRT anchor, subsequent purges and invalidating anchor-timeframe closes. Returns assigned wick/body candles and lifecycle facts separately from execution. Defaults: monthly->daily, weekly->H4, daily->H1, H4->M15, H1->M5. REQUIRED for focused Model 1, Super Soup, CSD, wick/body identity and objective-distance questions; a shift overview cannot substitute. Specify exact anchor start, retained cutoff, and detail_candle_start_ny when a candle was named. Preserve that exact candle on elliptical followups; never select a different candle because its direction or outcome is easier to explain.', {
         'asset': {'type': 'string'}, 'anchor_start_ny': {'type': 'string'}, 'through_ny': {'type': 'string'},
         'anchor_timeframe': {'type': 'string'}, 'confirmation_timeframe': {'type': ['string', 'null']},
         'blessed_thief_timeframe': {'type': ['string', 'null'], 'description': 'Candle opens to review; null uses anchor timeframe, independent of Model 1 mapping.'},
@@ -328,8 +328,7 @@ MARKET_TOOLS = [
 MARKET_NAMES = {t['name'] for t in MARKET_TOOLS}
 MARKET_PROMPT = """
 # GROUNDED MARKET CONVERSATION
-Actual price/date/setup questions require review_market_session/review_market_crt;
-never substitute definitions or quotes. '988', '9 ate 8', 'nine ate eight' mean 9ate8.
+Use review_market_session/review_market_crt for actual setups, not definitions/quotes. '988', '9 ate 8', 'nine ate eight' mean 9ate8.
 For a whole shift use shift_story.recap.spoken_summary (voice: shift_recap), including
 paired_smt/paired_context, not observations[0]. Give 4-7 concise sentences. Start at
 8, follow selected range_transitions through noon/midnight NY; later setups survive
@@ -350,18 +349,18 @@ available_shifts; use a sole option if unspecified. For an unavailable explicit 
 relay its message and ask about the checked same-day alternative; never silently switch date/shift.
 Use NY dates. Last week Wednesday means the preceding Monday-Sunday week. Night belongs
 to its 9PM start date; after midnight, tonight may mean yesterday. Clarify ambiguity.
-Only get_market_price/volunteer bid-ask when requested. inspect_market_candles supplies
-historical levels/times. Missing data does not prove closure. broker_session unknown
-with source=null is not a calendar; feed_health separates upload and quote ages,
-neither diagnoses closure or history gaps. Stale quotes do not negate historical facts.
-Partial means limited, ongoing means unfinished. Say highest/lowest in available bars
-when coverage is partial. Never reconstruct fine candles from coarse OHLC. Daily/week/
+Quotes only on request; inspect_market_candles provides historical levels/times.
+Missing data does not prove closure. Unknown broker_session is not a calendar;
+feed_health ages do not diagnose closure/gaps. Stale quotes do not negate history.
+Partial coverage bounds extremes to available bars; ongoing means unfinished. Never reconstruct fine candles from coarse OHLC. Daily/week/
 month/custom anchors use chart boundaries, not assumed NY midnight; clarify if needed.
 Name candles by opening and 'closure'; speak closing timestamps only when requested.
 Respect source precision: a 9:15 M5 candle is not a verified 9:17 tick.
-On a challenge, recheck the same asset/date/shift/range; answer the disputed fact and
-correct verified errors without defensiveness or definition loops. Usually answer
-1-3 sentences; omit routine execution disclaimers unless execution is at issue.
+Model 1/CSD/Super Soup/distance follow-ups require review_market_crt using exact
+range/candle detail_request. Omitted facts are not absent. Keep each direction and
+attempt separate; pure definitions need no retrieval.
+On challenges, recheck disputed facts in the same asset/date/shift/range/candle; correct verified
+errors. Answer in 1-3 sentences; omit routine execution disclaimers unless execution is at issue.
 Relate evidence to member-reported fills only; save actual journals through tools.
 MOB is discretionary: preserve member-supplied levels, do not auto-detect PD arrays.
 Tools never place/manage broker orders or change member progress.
@@ -699,6 +698,8 @@ def market_tool(db, name, args, now=None):
         if name in ('review_market_session', 'review_market_crt'):
             reconcile_paired_recap(result['review'], result['asset'])
         if name == 'review_market_crt':
+            from gbop_voice_web.objective_approach import objective_approach
+            result['review']['objective_approach'] = objective_approach(result['review'], bars, end, step)
             result['voice_detail_selection'] = {key: args.get(key) for key in (
                 'detail_candle_start_ny', 'detail_from_ny', 'through_ny',
                 'confirmation_timeframe', 'blessed_thief_timeframe', 'blessed_thief_from_ny')}

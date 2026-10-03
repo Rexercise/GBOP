@@ -5,8 +5,23 @@ import json
 from gbop_voice_web.candle_evidence import parse_time
 from gbop_voice_web.voice_runtime import compact_voice_tool_result
 from gbop_voice_web.voice_payload import _bounded_error, _factor_review, _paired, _pick, _voice_market_context
+from gbop_voice_web.directional_evidence import directional_candidate_evidence
 
 DETAIL_CHARACTER_BUDGET = 32000
+
+
+def _approach(value):
+    """Keep every measured distance/order caveat without duplicate labels."""
+    out = {key: deepcopy(child) for key, child in value.items()
+           if key not in ('response_contract', 'window_rule', 'objectives')}
+    out['objectives'] = {name: _pick(target, (
+        'level', 'status', 'distance_price_points', 'observed_distance_price_points',
+        'closest_observed_price', 'closest_source_interval', 'first_touch_order_verified',
+        'boundary_observations')) for name, target in value.get('objectives', {}).items()}
+    for name, target in value.get('objectives', {}).items():
+        if 'coverage_through_touch' in target:
+            out['objectives'][name]['coverage_through_touch_complete'] = target['coverage_through_touch'].get('complete')
+    return out
 
 
 def crt_voice_detail(result):
@@ -26,8 +41,11 @@ def crt_voice_detail(result):
         'blessed_thief_timeframe': selection.get('blessed_thief_timeframe'),
         'blessed_thief_from_ny': selection.get('blessed_thief_from_ny'),
         'detail_candle_start_ny': None, 'detail_from_ny': None}
+    candidates = directional_candidate_evidence(review, compact.get('asset'), max_cards=0,
+                                                include_later_wicks=True, focus_open_ny=focus)
     index = [_pick(fact, ('identity', 'purge_type', 'timeframe', 'bar_open_ny',
-        'bar_close_ny', 'purged_side')) for fact in facts]
+        'bar_close_ny', 'purged_side', 'direction', 'attempt_role'))
+        for fact in candidates['identity_index']]
     def error(status, message):
         return _bounded_error({'ok': False, 'status': status, 'asset': compact.get('asset'),
             **({'market_context': _voice_market_context(compact['market_context'])} if 'market_context' in compact else {}),
@@ -64,11 +82,20 @@ def crt_voice_detail(result):
                       if selected and parse_time(fact['bar_open_ny']) > parse_time(selected)), None)
     out = {key: deepcopy(value) for key, value in compact.items()
            if key not in ('review', 'voice_detail_selection')}
+    if 'focused_evidence_request' in out:
+        # The successful page already pins exact scope, selection and cursors.
+        # Keep intent without repeating the full null-filled request envelope.
+        out['focused_evidence_request'] = _pick(out['focused_evidence_request'],
+                                               ('tool', 'query_purpose', 'status'))
     if 'market_context' in out:
         out['market_context'] = _voice_market_context(out['market_context'], evidence_ref='#/review')
     out['review'] = {key: deepcopy(value) for key, value in review.items() if key not in (
         'model1', 'assigned_candles', 'candle_lifecycle', 'paired_smt', 'recap', 'blessed_thief')}
     view = out['review']
+    view['selected_directional_identities'] = [deepcopy(fact) for fact in candidates['identity_index']
+                                              if fact['bar_open_ny'] == selected]
+    if view.get('objective_approach'):
+        view['objective_approach'] = _approach(view['objective_approach'])
     if view.get('range_observation_coverage') == view.get('observation_coverage'):
         view['range_observation_coverage'] = {'same_evidence_as': '#/review/observation_coverage'}
     view['model1'] = _pick(review.get('model1', {}), ('status', 'assigned_timeframe',
@@ -105,17 +132,18 @@ def crt_voice_detail(result):
             'start_ny': selected or anchor.get('end_ny'), 'end_ny': cutoff,
             'timeframe': review.get('assigned_timeframe') or review.get('anchor_timeframe')}},
         'character_budget': DETAIL_CHARACTER_BUDGET,
-        'note': 'One exact assigned-candle lifecycle page; all returned identity times are indexed. '
-            'Original anchor/cutoff and local-versus-parent outcomes are unchanged. '
-            'same_evidence_as is an exact duplicate at that JSON pointer in this payload. '
-            'Fetch only the identity needed for the current question; do not automatically fetch all pages. '
-            'For another identity use detail_candle_start_ny; next_request preserves the window. '
-            'A backend_remaining_from_ny beyond this index marks unavailable deeper records, not an executable page. '
-            'Following raw OHLC is separately paged; missing details never prove absence. '
-            'Blessed Thief has its separate existing next_candle_start_ny cursor; preserve all other args.'}
+        'note': 'Exact candle page; own and parent targets/directions remain separate. '
+            'same_evidence_as resolves in this payload. Fetch needed identities with detail_candle_start_ny '
+            'or next_request; preserve scope/cutoff. backend_remaining_from_ny marks unavailable deeper records, '
+            'not a page cursor. Raw/BT cursors are separate. Missing detail proves no absence; '
+            'distances are source-bar price points, not tick order or fills.'}
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
         # Repeated pair narrative is not the requested lifecycle evidence.
         view.pop('recap', None)
+        view.pop('limits', None)
+        # Scope, target, direction and ordering fields remain authoritative;
+        # their repeated policy prose is already stated by the page contract.
+        view.get('directional_outcome', {}).pop('response_contract', None)
         view['blessed_thief'] = _pick(bt, ('status', 'timeframe', 'window_end_ny', 'next_candle_start_ny'))
         view['blessed_thief']['detail_omitted'] = True
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
@@ -128,8 +156,21 @@ def crt_voice_detail(result):
                 view[key] = _pick(view[key], ('start_ny', 'end_ny', 'complete',
                     'source_resolution_seconds', 'bar_count', 'missing_bar_count', 'coverage_note'))
         out['voice_detail_page']['coverage_extrema_omitted'] = (
-            'Repeated observation extrema and last anchor occurrences omitted; '
-            'anchor OHLC, first extremes, source gaps and all lifecycle event times remain.')
+            'Repeated extrema omitted; anchor OHLC/first extremes, source gaps and lifecycle times retained.')
+    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
+        # Rejected paired theses are not the selected candle's lifecycle.
+        # Potential/qualified boneless evidence remains complete. Explicit
+        # paired investigations have their own unmodified review tool.
+        if review.get('paired_smt') is not None:
+            view['paired_smt'] = _paired(review['paired_smt'], compact.get('asset'), overview=True)
+            peer = next((asset for asset in review['paired_smt'].get('assets', [])
+                         if asset != compact.get('asset')), None)
+            if peer:
+                out['voice_detail_page']['paired_detail_request'] = {
+                    'tool': 'review_market_smt', 'args': {
+                        'asset': compact.get('asset'), 'comparison_asset': peer,
+                        'context_action': 'continue', 'anchor_start_ny': anchor.get('start_ny'),
+                        'anchor_timeframe': review.get('anchor_timeframe'), 'through_ny': cutoff}}
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
         _factor_review(out)
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:

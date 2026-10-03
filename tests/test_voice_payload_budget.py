@@ -80,10 +80,19 @@ class VoicePayloadBudgetTests(unittest.TestCase):
             actual = expanded(overview, actual)
             self.assertEqual(actual.get('recap_eligible'), raw.get('recap_eligible'))
             for event, original_event in zip(actual['events'], raw['events']):
-                self.assertEqual(event.get('setup_interval'), original_event.get('setup_interval'))
                 self.assertEqual(event.get('recap_eligible'), original_event.get('recap_eligible'))
-                self.assertEqual(event['scope'], {k:v for k,v in original_event.get('scope', {}).items() if k != 'response_contract'})
-                self.assertEqual(event['paired_model1'].get('smt_qualified_at_ny'), original_event.get('paired_model1', {}).get('smt_qualified_at_ny'))
+                if event.get('detail_omitted'):
+                    self.assertEqual(original_event['boneless_status'], 'disqualified')
+                    self.assertIs(original_event['recap_eligible'], False)
+                    for part in ('setup_interval', 'scope'):
+                        for key, value in event[part].items():
+                            self.assertEqual(value, original_event[part][key])
+                    self.assertNotIn('objective_status', event)
+                    self.assertNotIn('paired_model1', event)
+                else:
+                    self.assertEqual(event.get('setup_interval'), original_event.get('setup_interval'))
+                    self.assertEqual(event['scope'], {k:v for k,v in original_event.get('scope', {}).items() if k != 'response_contract'})
+                    self.assertEqual(event['paired_model1'].get('smt_qualified_at_ny'), original_event.get('paired_model1', {}).get('smt_qualified_at_ny'))
         assert_pair(review['paired_smt'], original['paired_smt'])
         for actual, raw in zip(review['paired_context']['ranges'], original['paired_context']['ranges']):
             assert_pair(actual['paired_review'], raw['paired_review'])
@@ -133,6 +142,10 @@ class VoicePayloadBudgetTests(unittest.TestCase):
                 overview = self.assert_overview(source, with_context=True)
                 pair = expanded(overview, overview['review']['paired_smt'])
                 for actual, raw in zip(pair['events'], source['review']['paired_smt']['events']):
+                    if actual.get('detail_omitted'):
+                        self.assertEqual(raw['boneless_status'], 'disqualified')
+                        self.assertFalse(raw['recap_eligible'])
+                        continue
                     self.assertEqual(actual['scope'], {k:v for k,v in raw['scope'].items() if k != 'response_contract'})
                     self.assertEqual(actual['paired_model1']['status'], raw['paired_model1']['status'])
                     if 'boneless_reference' in raw['paired_model1']:
@@ -150,20 +163,25 @@ class VoicePayloadBudgetTests(unittest.TestCase):
         source = replay.tool('NAS100')
         overview = self.assert_overview(source)
         later = expanded(overview, overview['review']['shift_story']['ranges'][1])
-        columns = overview['voice_view']['model1_outcome_columns']
-        outcomes = [dict(zip(columns, row)) for row in later['candle_lifecycle']['model1_outcome_rows']]
-        for clock, quality, price, touch in [('10:00', 'clean', 30930.59, '10:59'),
-                                            ('10:10', 'not_clean', 30963.6, '10:52')]:
-            row = next(r for r in outcomes if f'T{clock}:' in r['model1_bar_open_ny'])
-            self.assertEqual(row['soup_structural_quality'], quality)
-            self.assertTrue(row['csd_candle_open_ny'])
-            self.assertEqual(row['local_crt_invalidated_at_ny'], '2026-10-02T10:20:00-04:00')
-            self.assertEqual(row['physical_local_function_outcome'], 'opposing_liquidity_delivered')
-            self.assertEqual(row['parent_range_function_outcome'], 'opposing_liquidity_delivered')
-            objective = dict(zip(overview['voice_view']['own_objective_columns'], row['own_opposing_liquidity']))
-            self.assertEqual(objective['level'], price)
-            self.assertEqual(objective['touch_bar_open_ny'], f'2026-10-02T{touch}:00-04:00')
-            self.assertEqual(objective['relative_to_model1_invalidation'], 'after_model1_invalidation')
+        outcomes = later['candle_lifecycle']['model1_outcomes']
+        self.assertEqual(len(outcomes), 1)
+        card = outcomes[0]
+        self.assertEqual(card['bar_open_ny'], '2026-10-02T10:00:00-04:00')
+        soup = card['super_soup']
+        self.assertEqual(soup['structural_quality'], 'clean')
+        self.assertEqual(soup['pre_csd_status'], 'observed_before_csd')
+        self.assertEqual(soup['candle']['bar_open_ny'], '2026-10-02T10:05:00-04:00')
+        self.assertEqual(soup['structure_known_at_ny'], '2026-10-02T10:10:00-04:00')
+        self.assertEqual(card['csd']['candle']['bar_open_ny'], '2026-10-02T10:50:00-04:00')
+        self.assertEqual(soup['local_crt_invalidated_at_ny'], '2026-10-02T10:20:00-04:00')
+        self.assertEqual(soup['local_function_outcome'], 'opposing_liquidity_delivered')
+        self.assertEqual(soup['parent_function_outcome'], 'opposing_liquidity_delivered')
+        objective = soup['local_function_objectives']['opposing_liquidity']
+        self.assertEqual(objective['level'], 30930.59)
+        self.assertEqual(objective['source_interval']['bar_open_ny'], '2026-10-02T10:59:00-04:00')
+        self.assertEqual(objective['relative_to_model1_invalidation'], 'after_model1_invalidation')
+        self.assertGreater(later['candle_lifecycle']['detail_omissions']['omitted_lifecycle_card_count'], 0)
+        self.assertIn('2026-10-02T10:10:00-04:00', [x['bar_open_ny'] for x in later['model1']['candles']])
 
     def test_oversized_story_fails_explicitly_with_exact_range_requests_not_raw_truncation(self):
         replay = self.replay(retained.RetainedMarketReplayTests)
