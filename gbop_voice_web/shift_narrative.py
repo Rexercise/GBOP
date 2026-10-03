@@ -7,7 +7,7 @@ is reported separately. Unordered source bars cannot prove a completed variant.
 from datetime import datetime
 from gbop_voice_web.candle_evidence import parse_time, summarize
 from gbop_voice_web.smt_reference import closing_candle
-from gbop_voice_web.candle_naming import candle_label, source_timeframe
+from gbop_voice_web.candle_naming import candle_label, source_timeframe, objective_identity, range_label
 
 
 def clock(value):
@@ -106,6 +106,73 @@ def classify_structure(row, bars, end, step):
     return result
 
 
+def named_hourly_range_summary(row, cutoff, progression=()):
+    """One named H1 range at a time; partial later data cannot erase known facts."""
+    anchor = row['anchor']
+    name = range_label(anchor)
+    selected = row['role'] == 'selected_range'
+    parts = [f"{name[0].upper() + name[1:]} " + (
+        'was the selected range.' if selected else
+        'is independent hourly context, not a selected range.')]
+    if not anchor['complete']:
+        parts.append(f"The {clock(row['anchor_start_ny'])} H1 candle is incomplete in available data; its CRT is unverified.")
+        return ' '.join(parts)
+    if parse_time(anchor['end_ny']) >= cutoff:
+        parts.append('It closed at the shift cutoff; there are no later shift candles to assess its CRT.')
+        return ' '.join(parts)
+    direction = row['direction_observed']
+    purges = [e for e in row['events'] if e['kind'].endswith('_side_purge')]
+    if direction and purges:
+        first = min(purges, key=lambda e: e['bar_open_ny'])
+        parts.append(first.get('assigned_purge', {}).get('spoken_summary') or
+                     f"{name[0].upper() + name[1:]} had its {'buy' if direction == 'bearish' else 'sell'}-side purged in {window(first)}.")
+        returns = [x for x in row['sweep_detail']
+                   if x['side'] == ('buy' if direction == 'bearish' else 'sell')
+                   and x['first_source_close_back_inside_ny']]
+        if returns:
+            returned = min(returns, key=lambda x: x['first_source_close_back_inside_ny'])
+            label = closing_candle(returned['first_source_close_back_inside_ny'],
+                                   source_timeframe(returned['precision_seconds']))['spoken_label']
+            parts.append(f"Price returned inside {name} on {label}.")
+        # Source re-entry and the enclosing H1 closure answer different questions.
+        hour = next((x for x in progression if x['anchor_start_ny'] == row['anchor_start_ny']
+                     and x.get('complete') and parse_time(x['candle_start_ny']) <= parse_time(first['bar_open_ny'])
+                     < parse_time(x['candle_end_ny'])), None)
+        if hour:
+            science = hour['candle_science']
+            relation = ('above' if science == 'close_above' else 'below' if science == 'close_below'
+                        else 'back inside')
+            parts.append(f"The {clock(hour['candle_start_ny'])} H1 candle closed {relation} {name}.")
+        targets = []
+        for objective in row['objectives']:
+            label, status = objective['spoken_label'], objective['status']
+            if status == 'observed_after_purge':
+                targets.append(f"reached {label} in {window(objective['evidence'])}")
+            elif status == 'same_bar_order_unknown':
+                targets.append(f"touched {label} in the purge source candle, with order unresolved")
+            elif status.startswith('not_observed'):
+                boundary = 'range invalidation' if row['invalidated_at_ny'] else 'the shift cutoff'
+                targets.append(f"did not reach {label} before {boundary}")
+            else:
+                targets.append(f"has unverified delivery to {label} because this range's source coverage is incomplete")
+        if targets:
+            parts.append('Price ' + '; '.join(targets) + '.')
+    elif purges:
+        parts.append(f"Both sides of {name} were swept in the same source candle; directional order is unresolved.")
+    elif (row.get('observation_coverage') or {}).get('complete'):
+        parts.append(f"No purge of {name} was observed before the shift cutoff.")
+    else:
+        parts.append(f"Missing source candles leave the later purge/outcome of {name} unverified.")
+    if row['invalidated_at_ny']:
+        earlier = any(o['status'] == 'observed_after_purge' for o in row['objectives'])
+        parts.append(f"{name[0].upper() + name[1:]} was invalidated by {invalidating_label(row)}"
+                     + ('; earlier delivery stays recorded.' if earlier else '.'))
+    variants = row['variant_evidence']['labels']
+    if variants:
+        parts.append('Its verified H1 structure supports ' + ', '.join(f"{v['code']} {v['name']}" for v in variants) + '.')
+    return ' '.join(parts)
+
+
 def build_shift_recap(story):
     """Put selected-range outcomes ahead of definitions and independent candidates."""
     selected = [r for r in story['ranges'] if r['role'] == 'selected_range']
@@ -113,12 +180,15 @@ def build_shift_recap(story):
                  and o['status'] == 'observed_after_purge' for o in r['objectives'])]
     failed = [r for r in selected if r['invalidated_at_ny']]
     if completed:
-        anchors = ', '.join(clock(r['anchor_start_ny']) for r in completed)
-        headline = f"The {anchors} range delivered opposing liquidity during the shift."
+        anchors = ', '.join(objective_identity('opposing_liquidity', r['direction_observed'], r['anchor'])['spoken_label'] for r in completed)
+        headline = f"Price reached {anchors} during the shift."
         if failed and failed[0]['label'] == '9ate8' and completed[0] is not failed[0]:
-            headline = f"9ate8 failed, but the later {anchors} range delivered opposing liquidity."
+            headline = f"9ate8 failed, but price later reached {anchors}."
     elif not story['coverage']['complete'] or not story['progression_complete']:
-        headline = 'The available candles do not establish the complete shift outcome.'
+        uncertain = [r for r in story['ranges'] if not r['anchor']['complete'] or
+                     (r['role'] == 'selected_range' and not (r.get('observation_coverage') or {}).get('complete'))]
+        names = ', '.join(clock(r['anchor_start_ny']) for r in uncertain)
+        headline = f"The {names or clock(story['start_ny'])} H1 range coverage is incomplete; verified range events follow."
     elif failed:
         headline = 'The shift included range invalidation without verified opposing-liquidity delivery.'
     else:
@@ -140,9 +210,10 @@ def build_shift_recap(story):
             if direction and purges:
                 first = min(purges, key=lambda e: e['bar_open_ny'])
                 side = 'buy-side' if direction == 'bearish' else 'sell-side'
-                opposite = 'low' if direction == 'bearish' else 'high'
                 target = next(o for o in row['objectives'] if o['objective'] == 'opposing_liquidity')
-                parts.append(f"Its {side} was purged in {window(first)}, with a {direction} range objective at its {opposite}, {target['level']}.")
+                parts.append(first.get('assigned_purge', {}).get('spoken_summary') or
+                             f"Its {side} was purged in {window(first)}.")
+                parts.append(f"The {direction} objective was {target['spoken_label']}.")
                 returns = [x for x in row['sweep_detail']
                            if x['side'] == ('buy' if direction == 'bearish' else 'sell')
                            and x['first_source_close_back_inside_ny']]
@@ -152,9 +223,9 @@ def build_shift_recap(story):
                                            source_timeframe(returned['precision_seconds']))['spoken_label']
                     parts.append(f"Price returned inside on {label}.")
                 for objective in row['objectives']:
-                    name = 'midpoint' if objective['objective'] == 'midpoint' else 'opposing liquidity'
+                    name = objective['spoken_label']
                     if objective['status'] == 'observed_after_purge':
-                        parts.append(f"Price reached {name} at {objective['level']} in {window(objective['evidence'])}.")
+                        parts.append(f"Price reached {name} in {window(objective['evidence'])}.")
                     elif objective['status'] == 'same_bar_order_unknown':
                         parts.append(f"The {name} touch and purge share a source candle; their order is unknown.")
                     elif objective['status'].startswith('not_observed'):
@@ -181,30 +252,34 @@ def build_shift_recap(story):
             brief.append(f"{anchor_name} became selected at the cutoff, leaving no shift candles to assess it.")
             continue
         delivered = [o for o in row['objectives'] if o['status'] == 'observed_after_purge']
-        if row['invalidated_at_ny'] and not delivered:
-            failed_objectives = [o for o in row['objectives'] if o['status'] == 'not_observed_before_invalidation']
-            suffix = ' without either objective being reached' if len(failed_objectives) == 2 else ''
-            brief.append(f"The {anchor_name} range was invalidated by {invalidating_label(row)}{suffix}.")
-            continue
         select_text = f"The {anchor_name} range became selected on that candle's closure" if transition else f"{anchor_name} stayed selected"
         first = next((e for e in row['events'] if e['kind'].endswith('_side_purge')), None)
         if first and row['direction_observed']:
             side = 'buy-side' if row['direction_observed'] == 'bearish' else 'sell-side'
-            select_text += f"; its {side} was purged in {window(first)}"
+            select_text += '. ' + (first.get('assigned_purge', {}).get('spoken_summary') or
+                                   f"Its {side} was purged in {window(first)}").rstrip('.')
         else:
             select_text += '; no directional setup is established in the available candles'
         labels = row['variant_evidence']['labels']
         if labels:
             select_text += ', supporting ' + ', '.join(f"{v['code']} {v['name']}" for v in labels)
         brief.append(select_text + '.')
+        returned = next((x for x in row['sweep_detail'] if x['side'] == ('buy' if row['direction_observed'] == 'bearish' else 'sell')
+                         and x['first_source_close_back_inside_ny']), None)
+        if first and returned:
+            label = closing_candle(returned['first_source_close_back_inside_ny'],
+                                   source_timeframe(returned['precision_seconds']))['spoken_label']
+            brief.append(f"Price returned inside the {anchor_name} range on {label}.")
         if delivered:
-            touches = [('midpoint' if o['objective'] == 'midpoint' else 'opposing liquidity')
-                       + f" at {o['level']} during {window(o['evidence'])}" for o in delivered]
+            touches = [o['spoken_label'] + f" during {window(o['evidence'])}" for o in delivered]
             brief.append('Price reached ' + ' and '.join(touches) + '.')
         elif first:
-            brief.append('Opposing-liquidity delivery remains unestablished within the reviewed window.')
+            target = next(o for o in row['objectives'] if o['objective'] == 'opposing_liquidity')
+            brief.append(f"Delivery to {target['spoken_label']} was not established before "
+                         + ('range invalidation.' if row['invalidated_at_ny'] else 'the reviewed cutoff.'))
         if row['invalidated_at_ny']:
-            brief.append(f"Later, {invalidating_label(row)} invalidated that range after the recorded delivery.")
+            brief.append(f"The {anchor_name} range was invalidated by {invalidating_label(row)}"
+                         + (' after the recorded delivery.' if delivered else ' without verified objective delivery.'))
     close = f"Review ends at {clock(story['end_ny'])} New York."
     final = story['hourly_progression'][-1]
     if story['progression_complete'] and final.get('close') is not None:
@@ -217,13 +292,23 @@ def build_shift_recap(story):
         close += (f" The final H1 closed at {final['close']}, {state[final['candle_science']]} "
                   f"the {clock(final['anchor_start_ny'])} range{tail}.")
     if not story['coverage']['complete'] or not story['progression_complete']:
-        close += ' Missing or unfinished candles prevent a complete shift conclusion.'
-    close += ' These are reconstructed candle facts, not proof of an entry or profit.'
+        close += ' Missing or unfinished candles limit the affected ranges; their verified events are retained.'
     brief.append(close)
+    named = [{'anchor_start_ny': row['anchor_start_ny'], 'range_label': range_label(row['anchor']),
+              'role': row['role'], 'text': named_hourly_range_summary(row, parse_time(story['end_ny']), story['hourly_progression'])}
+             for row in story['ranges']]
     return {'spoken_summary': ' '.join(brief), 'headline': headline,
+            'range_summaries': named,
+            'hourly_crt_summary': ' '.join(x['text'] for x in named if x['role'] == 'selected_range'),
+            'shift_start_ny': story['start_ny'], 'shift_end_ny': story['end_ny'],
             'selected_range_chapters': passages, 'closing': close,
             'response_contract': 'Lead with headline; cover every selected range in order, including later delivery. '
-                                 'Use spoken_summary as the default complete answer; paraphrase naturally without omitting later ranges. '
-                                 'Use variant_evidence only when supported. Summarize as a trading peer in 4–7 sentences, '
-                                 'with key hours and outcomes; give exact levels/minutes when requested. '
+                                 'Use spoken_summary for the whole shift; hourly_crt_summary for H1 CRT questions. '
+                                 'For named hours use range_summaries in order, naming 8, 9, 10, 11 as applicable; '
+                                 'never replace them with one/another or a blanket incomplete verdict. '
+                                 'Preserve this shift date and selected/independent roles. '
+                                 'Give the supported variant in the initial answer; midpoint is not full opposing delivery. '
+                                 'Incomplete/cutoff outcomes are unresolved, not failure. '
+                                 'Name range/timeframe and buy-side, sell-side or 50% before any optional provider price. '
+                                 'Assigned candle opening/timeframe comes before precise source-purge time. '
                                  'Do not replace the walkthrough with terminology definitions or stop at 9ate8.'}

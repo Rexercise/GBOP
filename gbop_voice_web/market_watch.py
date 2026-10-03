@@ -9,7 +9,7 @@ from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.member_access import member_access_error
 
 NY = ZoneInfo('America/New_York')
-VERSION = 'tab-watch-shift-availability-2026-10-03'
+VERSION = 'tab-watch-corrected-chronology-2026-10-03'
 TABLES = ('gbop_market_watches', 'gbop_market_alerts', 'gbop_watch_runtime', 'gbop_prepared_shifts')
 SCHEMA = [
     '''CREATE TABLE IF NOT EXISTS gbop_market_watches (

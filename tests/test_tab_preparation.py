@@ -47,6 +47,25 @@ class PreparationTests(unittest.TestCase):
             prepare_next_shift(self.db,cache,T+8*3600)
             prepare_next_shift(self.db,cache,T+8*3600+30)
         self.assertEqual(tool.call_count,1)
+    def test_prior_version_is_not_served_and_is_rebuilt_with_same_candles(self):
+        from gbop_voice_web.market_watch import VERSION
+        old='tab-watch-shift-availability-2026-10-03'
+        self.assertNotEqual(VERSION,old)
+        cache={}
+        with patch('gbop_voice_web.market_data.read_feed',return_value=self.feed),patch('gbop_voice_web.market_data.market_tool',return_value=self.result) as tool:
+            with patch('gbop_voice_web.market_watch.VERSION',old),patch('gbop_voice_web.market_watch_runtime.VERSION',old):
+                self.assertIsNotNone(prepare_next_shift(self.db,cache,T+8*3600))
+            payload=self.conn.execute('SELECT payload FROM gbop_prepared_shifts').fetchone()[0]
+            saved=watch_tool(self.db,1,42,42,'get_prepared_market_brief',{'asset':'NAS','shift':'day'},T+8*3600)
+            self.assertFalse(saved['ok'])
+            self.assertEqual(saved['status'],'not_prepared')
+            # Filtering old derived state does not delete it or any member data.
+            self.assertEqual(self.conn.execute('SELECT payload FROM gbop_prepared_shifts').fetchone()[0],payload)
+            self.assertIsNotNone(prepare_next_shift(self.db,cache,T+8*3600))
+            self.assertEqual(tool.call_count,2)
+        self.assertEqual(self.conn.execute('SELECT version FROM gbop_prepared_shifts').fetchone()[0],VERSION)
+        self.assertEqual(cache[('NAS100','2026-10-02','day')][0],VERSION)
+        self.assertTrue(watch_tool(self.db,1,42,42,'get_prepared_market_brief',{'asset':'NAS','shift':'day'},T+8*3600)['ok'])
     def test_prepared_brief_preserves_post_invalidation_local_function(self):
         from test_super_soup_function import review, first, MODEL, INVALID, LOCAL_TARGET
         actual=review([MODEL,INVALID,LOCAL_TARGET],authoritative=True)

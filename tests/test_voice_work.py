@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 from gbop_voice_web.voice_runtime import VoiceRateLimitRecovery, compact_voice_tool_result
 from gbop_voice_web.voice_work import VoiceToolWork
+from gbop_voice_web.voice_payload import voice_tool_payload
 from test_voice_latency import method
 
 
@@ -70,7 +71,7 @@ class WorkTests(unittest.IsolatedAsyncioTestCase):
         async def to_thread(fn, *args):
             return await current_provider(*args)
         execute = method('execute_tool', dict(asyncio=NS(to_thread=to_thread), json=json,
-            time=time, ai_execute_tool=Mock(), compact_voice_tool_result=compact_voice_tool_result,
+            time=time, ai_execute_tool=Mock(), voice_tool_payload=voice_tool_payload,
             GBOP_REALTIME_MAX_OUTPUT_TOKENS=700))
         session.execute_tool = MethodType(execute, session)
         session.playback = NS(source=Mock(), voice_client=NS(is_playing=lambda: True, stop_playing=Mock()))

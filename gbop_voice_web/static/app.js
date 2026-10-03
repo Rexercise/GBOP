@@ -24,6 +24,8 @@ let currentInput = "";
 let currentOutput = "";
 let timeline = [];
 let sessionId = null;
+let voiceTurn = 0;
+let connectionGeneration = 0;
 
 function setState(text, mode = "idle") {
   els.voiceState.textContent = text;
@@ -134,8 +136,20 @@ async function waitForIceGathering(pc) {
   });
 }
 
+function invalidateMarketContext(closed = false) {
+  voiceTurn += 1;
+  if (!sessionId) return;
+  authFetch("/api/live/context/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, turn_id: voiceTurn, closed }),
+  }).catch(console.warn);
+}
+
 async function startVoice() {
   if (connected) return;
+  const generation = ++connectionGeneration;
+  const currentConnection = () => generation === connectionGeneration;
 
   if (!window.isSecureContext && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
     setState("HTTPS required for microphone", "error");
@@ -146,32 +160,42 @@ async function startVoice() {
   els.orb.disabled = true;
 
   try {
-    mic = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
       },
     });
+    if (!currentConnection()) {
+      for (const track of stream.getTracks()) track.stop();
+      return;
+    }
+    mic = stream;
 
-    pc = new RTCPeerConnection();
+    const connection = new RTCPeerConnection();
+    pc = connection;
 
-    pc.ontrack = (event) => {
+    connection.ontrack = (event) => {
+      if (!currentConnection()) return;
       els.remoteAudio.srcObject = event.streams[0];
       els.remoteAudio.play().catch(() => {});
     };
 
     for (const track of mic.getAudioTracks()) {
-      pc.addTrack(track, mic);
+      connection.addTrack(track, mic);
     }
 
-    dc = pc.createDataChannel("oai-events");
+    const channel = connection.createDataChannel("oai-events");
+    dc = channel;
 
-    dc.addEventListener("open", () => {
+    channel.addEventListener("open", () => {
+      if (!currentConnection()) return;
       console.log("GBOP Live data channel opened");
     });
 
-    dc.addEventListener("message", async ({ data }) => {
+    channel.addEventListener("message", async ({ data }) => {
+      if (!currentConnection()) return;
       let event;
       try {
         event = JSON.parse(data);
@@ -232,6 +256,7 @@ async function startVoice() {
       }
 
       if (event.type === "session.input_audio.speech_started") {
+        invalidateMarketContext();
         setState("Listening", "listening");
         return;
       }
@@ -247,18 +272,21 @@ async function startVoice() {
       }
     });
 
-    dc.addEventListener("close", () => {
+    channel.addEventListener("close", () => {
+      if (!currentConnection()) return;
       if (connected) cleanup("Disconnected");
     });
 
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await waitForIceGathering(pc);
+    const offer = await connection.createOffer();
+    if (!currentConnection()) return;
+    await connection.setLocalDescription(offer);
+    await waitForIceGathering(connection);
+    if (!currentConnection()) return;
 
     const response = await authFetch("/api/live/session", {
       method: "POST",
       headers: { "Content-Type": "application/sdp" },
-      body: pc.localDescription.sdp,
+      body: connection.localDescription.sdp,
     });
 
     if (!response.ok) {
@@ -267,22 +295,26 @@ async function startVoice() {
     }
 
     const answer = await response.json();
+    if (!currentConnection()) return;
     sessionId = answer.session_id;
 
-    await pc.setRemoteDescription({
+    await connection.setRemoteDescription({
       type: "answer",
       sdp: answer.sdp,
     });
   } catch (err) {
+    if (!currentConnection()) return;
     console.error(err);
     cleanup("Connection failed");
     setState(err.message || "Connection failed", "error");
   } finally {
-    els.orb.disabled = false;
+    if (currentConnection()) els.orb.disabled = false;
   }
 }
 
 async function handleDelegation(delegationId) {
+  const requestSession = sessionId;
+  const requestTurn = voiceTurn;
   setState("Checking GTOP…", "thinking");
 
   try {
@@ -292,10 +324,13 @@ async function handleDelegation(delegationId) {
       body: JSON.stringify({
         delegation_id: delegationId,
         history: timeline,
+        session_id: requestSession,
+        turn_id: requestTurn,
       }),
     });
 
     const data = await response.json();
+    if (sessionId !== requestSession || voiceTurn !== requestTurn) return;
     if (!response.ok) {
       throw new Error(data.detail || "Backend delegation failed");
     }
@@ -308,6 +343,7 @@ async function handleDelegation(delegationId) {
     });
   } catch (err) {
     console.error(err);
+    if (sessionId !== requestSession || voiceTurn !== requestTurn) return;
 
     sendEvent({
       type: "session.commentary.append",
@@ -331,6 +367,8 @@ function toggleMute() {
 }
 
 function cleanup(message = "Tap to start") {
+  connectionGeneration += 1;
+  invalidateMarketContext(true);
   connected = false;
 
   try {
@@ -355,6 +393,7 @@ function cleanup(message = "Tap to start") {
   muted = false;
 
   els.remoteAudio.srcObject = null;
+  els.orb.disabled = false;
   els.endButton.disabled = true;
   els.muteButton.disabled = true;
   els.muteButton.textContent = "Mute";

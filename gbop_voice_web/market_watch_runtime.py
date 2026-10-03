@@ -57,14 +57,15 @@ def extract_events(result):
                 if objective.get('status')=='observed_after_event' and objective.get('first_touch'):
                     hit=objective['first_touch']
                     add('objective',hit['bar_close_ny'],[anchor,candle.get('purged_side'),name,objective['level']],
-                        f"{name.replace('_',' ')} touched at {objective['level']} for range {anchor}; not a recorded trade result")
+                        f"{objective.get('spoken_label') or name.replace('_',' ') + ' of the selected range'} touched; not a recorded trade result")
         if row.get('invalidated_at_ny'):
             add('invalidation',row['invalidated_at_ny'],[anchor],f'Range {anchor} invalidated by its timeframe close')
     paired = [review.get('paired_smt',{})]
     paired += [x.get('paired_review',{}) for x in review.get('paired_context',{}).get('ranges',[])]
     for comparison in paired:
         for event in comparison.get('events',[]):
-            if not event.get('anchors_valid_at_event'):
+            if (not event.get('anchors_valid_at_event')
+                    or event.get('setup_interval', {}).get('qualified_smt') is False):
                 continue
             add('smt',event['bar_close_ny'],[event.get('side'),event.get('swept_asset'),event.get('nonconfirming_asset')],
                 f"{event['direction']} SMT: {event['swept_asset']} visibly purged; {event.get('boneless_asset',event.get('nonconfirming_asset'))} was boneless at that moment")
@@ -188,7 +189,9 @@ def prepare_next_shift(db,fingerprints,now=None):
         if not availability['reviewable'] or availability['temporal_status'] != 'completed':
             continue
         key=(asset,day,shift)
-        token=(asset,day,shift,hashlib.sha256(json.dumps(bars,separators=(',',':')).encode()).hexdigest(),now//300)
+        # A narrative/qualification change must rebuild derived summaries even
+        # when candle bytes and the five-minute freshness bucket are unchanged.
+        token=(VERSION,asset,day,shift,hashlib.sha256(json.dumps(bars,separators=(',',':')).encode()).hexdigest(),now//300)
         if fingerprints.get(key)==token:
             continue
         selected=(asset,day,shift,token,availability)

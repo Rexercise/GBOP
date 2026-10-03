@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 from gbop_voice_web.voice_runtime import compact_voice_tool_result, VOICE_TRUNCATION
+from gbop_voice_web.voice_payload import voice_tool_payload
 
 
 def method(name, namespace):
@@ -55,7 +56,7 @@ class VoiceLatencyTests(unittest.IsolatedAsyncioTestCase):
         async def run_tool(fn, *args):
             return fn(*args)
         ns = dict(asyncio=NS(to_thread=run_tool), json=json, time=time, ai_execute_tool=execute,
-                  compact_voice_tool_result=compact_voice_tool_result)
+                  voice_tool_payload=voice_tool_payload)
         session = NS(member=NS(id=42), send_event=AsyncMock(), refresh_context=AsyncMock())
         await method('execute_tool', ns)(session, {'name': 'open_trade', 'call_id': 'call-1', 'arguments': '{}'})
         execute.assert_called_once_with(42, 'open_trade', {})
@@ -70,9 +71,12 @@ class VoiceLatencyTests(unittest.IsolatedAsyncioTestCase):
             return fn(*args)
         ns = dict(asyncio=NS(to_thread=run_tool), json=json, time=time,
                   ai_execute_tool=Mock(return_value=result), GBOP_REALTIME_MAX_OUTPUT_TOKENS=700,
-                  compact_voice_tool_result=compact_voice_tool_result)
+                  voice_tool_payload=voice_tool_payload)
         session = NS(member=NS(id=42), send_event=AsyncMock(), _tool_response_options={})
         await method('execute_tool', ns)(session, {'name': 'review_market_session', 'call_id': 'shift', 'arguments': '{}'})
+        sent = json.loads(session.send_event.await_args.args[0]['item']['output'])
+        self.assertEqual(sent['voice_view']['kind'], 'shift_overview')
+        self.assertLessEqual(len(json.dumps(sent, separators=(',', ':'))), 32000)
         self.assertEqual(session._tool_response_options, {'max_output_tokens': 2200})
         async def events():
             yield json.dumps({'type': 'response.done', 'response': {'status': 'completed'}})
@@ -90,7 +94,7 @@ class VoiceLatencyTests(unittest.IsolatedAsyncioTestCase):
             return fn(*args)
         ns = dict(asyncio=NS(to_thread=run_tool), json=json, time=time,
                   ai_execute_tool=Mock(return_value={'ok': False, 'error': 'missing data'}),
-                  compact_voice_tool_result=compact_voice_tool_result)
+                  voice_tool_payload=voice_tool_payload)
         session = NS(member=NS(id=42), send_event=AsyncMock(), _tool_response_options={})
         await method('execute_tool', ns)(session, {'name': 'review_market_session', 'call_id': 'shift', 'arguments': '{}'})
         self.assertEqual(session._tool_response_options, {})

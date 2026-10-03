@@ -7,6 +7,8 @@ from gbop_voice_web.candle_evidence import (
     interval, next_boundary, parse_time, stamp, summarize,
 )
 
+from gbop_voice_web.candle_naming import objective_identity
+
 VERSION = 'super-soup-local-function-2026-10-03'
 
 
@@ -80,7 +82,9 @@ def objective(bars, after, level, step, valid_until, complete):
 
 
 def objectives(bars, after, reference, bearish, step, invalid_at, complete):
-    return {name: objective(bars, after, level, step, invalid_at, complete)
+    return {name: {**objective(bars, after, level, step, invalid_at, complete),
+                   **objective_identity(name, 'bearish' if bearish else 'bullish', reference,
+                                        model1='bar_open_ny' in reference)}
             for name, level in (
                 ('midpoint', (reference['high'] + reference['low']) / 2),
                 ('opposing_liquidity', reference['low'] if bearish else reference['high']))}

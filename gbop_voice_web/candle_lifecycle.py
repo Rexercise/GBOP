@@ -4,8 +4,8 @@ CSD uses the opposite edge of the ORIGINAL purge candle's real body (its open).
 Retests and later closes are named by the exact reference tested. They never
 silently become a member's stop or the parent range's invalidation rule.
 """
-from gbop_voice_web.candle_evidence import summarize, stamp, parse_time, next_boundary, timeframe
-from gbop_voice_web.candle_naming import candle_label, closure_label, source_timeframe
+from gbop_voice_web.candle_evidence import summarize, stamp, parse_time, next_boundary, timeframe, interval
+from gbop_voice_web.candle_naming import candle_label, closure_label, source_timeframe, objective_identity
 
 VERSION = 'candle-lifecycle-local-function-2026-10-03'
 MAX_IDENTITIES = 32
@@ -61,6 +61,7 @@ def _objectives(bars, start, end, anchor, bearish, step, invalid_at, origin=None
         if hit and invalid_at and hit['time'] + step == invalid_at:
             status = 'touch_in_invalidating_bar_order_unresolved'
         result[name] = {'level': level, 'status': status,
+                        **objective_identity(name, 'bearish' if bearish else 'bullish', anchor),
                         'same_formation_bar_touch_order_unknown': same_origin,
                         'first_touch': ({'bar_open_ny': stamp(hit['time']),
                                          'bar_close_ny': stamp(hit['time'] + step),
@@ -174,9 +175,12 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
             if len(result['purge_candles']) >= MAX_IDENTITIES:
                 result['next_identity_open_ny'] = result['next_identity_open_ny'] or row['start_ny']
                 continue
+            purge = next(b for b in bars if parse_time(row['start_ny']) <= b['time'] < parse_time(row['end_ny'])
+                         and (b['high'] > level if side == 'buy' else b['low'] < level))
             fact = {**_fact(row), 'identity': 'Model 1 candle' if body else 'Turtle Wick Soup',
                     'purge_type': 'body_soup' if body else 'wick_soup',
                     'timeframe': mapped, 'purged_side': side, 'purged_level': level,
+                    'purge_source_interval': interval(purge, step),
                     'direction': 'bearish' if side == 'buy' else 'bullish',
                     'identified_at_ny': row['end_ny'], 'source_resolution_seconds': step,
                     'range_start_ny': anchor['start_ny'], 'range_end_ny': anchor['end_ny'],
@@ -206,6 +210,8 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
         f['following_candle_relations'] = r['following_candles']
         f['next_relation_detail_start_ny'] = r['next_detail_start_ny']
         f['model1_crt_invalidating_close'] = r['model1_crt_invalidating_close']
+        if structure['structure_status'] == 'observed':
+            structure['performance_summary'] = super_soup_performance_summary(f)
     result['response_contract'] += (' Use super_soup_structure for nested CRT cleanliness, '
         'supported variants, local_crt_outcome, local_function_outcome and parent_function_outcome independently. '
         'Clean formation can fail; an invalidated or unclean Model 1 can still deliver its own '
@@ -218,8 +224,71 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
     result.update(identified_count=total, observation_complete=complete,
                   window_start_ny=stamp(start), window_end_ny=stamp(end))
     result['status'] = 'identified' if total else ('not_observed_in_complete_window' if complete else 'unverified_incomplete_observation')
+    result['performance_summary'] = next((f['super_soup_structure']['performance_summary']
+        for f in result['purge_candles'] if f.get('super_soup_structure', {}).get('performance_summary')), '')
     result['spoken_summary'] = lifecycle_summary(result)
     return result
+
+
+def super_soup_performance_summary(body):
+    """Answer performance from own objective/chronology, then the parent range.
+
+    A clean structure is not delivery. Physical delivery after local invalidation
+    remains visible without retroactively calling the nested CRT valid or a win.
+    """
+    structure = body['super_soup_structure']
+    targets = structure['local_function_objectives']
+    full, midpoint = targets['opposing_liquidity'], targets['midpoint']
+    delivered = full if full['status'] == 'observed_after_purge' else (
+        midpoint if midpoint['status'] == 'observed_after_purge' else None)
+    invalidating = body.get('model1_crt_invalidating_close')
+    invalidation = (closure_label(invalidating['bar_open_ny'], body['timeframe'])
+                    if invalidating else None)
+    def state(target):
+        status = target['status']
+        if 'unresolved' in status or 'unverified' in status:
+            return 'unverified because coverage or event order is unresolved'
+        if 'invalidation' in status:
+            return 'not reached before parent-range invalidation'
+        return 'not reached by the review cutoff'
+    def touch(target):
+        event = target['evidence']
+        return candle_label(event['bar_open_ny'], source_timeframe(event.get('precision_seconds')))
+    if delivered:
+        text = f"The Super Soup reached {delivered['spoken_label']} in {touch(delivered)}"
+        timing = delivered['relative_to_model1_invalidation']
+        if timing == 'after_model1_invalidation' and invalidation:
+            text += f", after {invalidation} invalidated the Model 1 CRT"
+        elif timing == 'before_model1_invalidation' and invalidation:
+            text += f", before {invalidation} later invalidated the Model 1 CRT"
+        elif timing == 'same_model1_invalidating_bar_order_unresolved':
+            text += '; its order relative to the Model 1 invalidating close is unresolved'
+        text += '.'
+        if delivered is midpoint:
+            text += f" Its full objective, {full['spoken_label']}, is {state(full)}."
+    else:
+        text = f"The Super Soup's objective, {full['spoken_label']}, is {state(full)}."
+        if invalidation:
+            text += f" The Model 1 CRT invalidated on {invalidation}."
+    if invalidation:
+        earlier_midpoint = structure['local_crt_objectives']['midpoint']
+        if (delivered is full and delivered['relative_to_model1_invalidation'] == 'after_model1_invalidation'
+                and earlier_midpoint['status'] == 'observed_after_purge'):
+            text += f" Before invalidation, it had reached {earlier_midpoint['spoken_label']} in {touch(earlier_midpoint)}."
+        text += ' Any later physical delivery does not restore CRT validity.'
+    parent = structure['parent_range_objectives']
+    pfull, pmid = parent['opposing_liquidity'], parent['midpoint']
+    phit = pfull if pfull['status'] == 'observed_after_purge' else (
+        pmid if pmid['status'] == 'observed_after_purge' else None)
+    if structure['parent_function_outcome'] == 'unverified_parent_validity':
+        text += ' Parent-range validity and performance remain unverified.'
+    elif phit:
+        text += f" Separately, price reached {phit['spoken_label']} in {touch(phit)}."
+        if phit is pmid:
+            text += f" {pfull['spoken_label']} is {state(pfull)}."
+    else:
+        text += f" Separately, {pfull['spoken_label']} is {state(pfull)}."
+    return text
 
 
 def lifecycle_summary(result):
@@ -231,6 +300,9 @@ def lifecycle_summary(result):
     body = next((f for f in facts if f['purge_type'] == 'body_soup' and f['purged_side'] == first['purged_side']), None)
     if body:
         parts.append(f"Model 1 was identified on {closure_label(body['bar_open_ny'], body['timeframe'])}.")
+        source = body.get('purge_source_interval')
+        if source:
+            parts.append(f"Its precise source purge is in {candle_label(source['bar_open_ny'], source_timeframe(body['source_resolution_seconds']))}.")
         csd = body['csd']
         if csd['status'] == 'confirmed':
             parts.append(f"CSD confirmed on {closure_label(csd['evidence']['bar_open_ny'], body['timeframe'])} through its body reference, {csd['reference_level']}.")
@@ -245,44 +317,7 @@ def lifecycle_summary(result):
             when = closure_label(structure['event']['bar_open_ny'], body['timeframe'])
             parts.append(f"The Model 1 nested CRT purge was identified on {when}; its structure was {quality}" +
                          (f", supporting {variants}." if variants else '.'))
-            outcomes = {
-                'opposing_liquidity_delivered': 'opposing liquidity delivered',
-                'midpoint_delivered_then_invalidated': 'midpoint delivered, then invalidated',
-                'midpoint_only_at_cutoff': 'midpoint delivered; full objective not established',
-                'failed_before_objectives': 'invalidated before either objective was verified',
-                'pending_at_cutoff': 'not delivered by the review cutoff',
-                'unverified': 'outcome unverified',
-                'unverified_parent_validity': 'parent validity unverified',
-            }
-            parts.append('For the nested CRT: ' + outcomes.get(structure['local_crt_outcome'], 'unverified') +
-                         '; for the parent range: ' + outcomes.get(structure['parent_function_outcome'], 'unverified') + '.')
-            function = structure.get('local_function_outcome')
-            invalidated_at = structure.get('local_crt_invalidated_at_ny')
-            if function and (invalidated_at or function != structure['local_crt_outcome']):
-                objectives = structure['local_function_objectives']
-                target_name = ('opposing_liquidity' if function == 'opposing_liquidity_delivered' else
-                               'midpoint' if function.startswith('midpoint_') else None)
-                if target_name:
-                    target = objectives[target_name]
-                    evidence = target['evidence']
-                    timing = target['relative_to_model1_invalidation']
-                    source_tf = source_timeframe(body['source_resolution_seconds'])
-                    sentence = (f"Independently, the Model 1 function delivered its own {target_name.replace('_', ' ')} "
-                                f"at {target['level']} in {candle_label(evidence['bar_open_ny'], source_tf)}")
-                    invalidating = body.get('model1_crt_invalidating_close')
-                    invalidation = (closure_label(invalidating['bar_open_ny'], body['timeframe'])
-                                    if invalidating else 'its invalidating candle’s closure')
-                    if timing == 'after_model1_invalidation':
-                        sentence += f", after {invalidation} invalidated the Model 1 CRT"
-                    elif timing == 'before_model1_invalidation':
-                        sentence += f", before {invalidation} later invalidated the Model 1 CRT"
-                    elif timing == 'same_model1_invalidating_bar_order_unresolved':
-                        sentence += '; its order relative to the Model 1 invalidating close is unresolved'
-                    parts.append(sentence + '. This does not restore CRT validity or change its structural quality.')
-                else:
-                    description = ('neither objective verified before the parent-range observation window ended'
-                                   if function == 'failed_before_objectives' else outcomes.get(function, 'unverified'))
-                    parts.append('Independent Model 1 function: ' + description + '.')
+            parts.append(structure['performance_summary'])
         if body['super_soup']['status'] == 'observed_before_csd':
             returned = body['super_soup']['evidence']['return_candle']
             parts.append(f"A Super Soup returned inside the Model 1 range on {closure_label(returned['bar_open_ny'], body['timeframe'])}, before CSD.")

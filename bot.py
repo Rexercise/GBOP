@@ -13,7 +13,8 @@ import re
 import json
 import asyncio
 from typing import Literal
-from gbop_voice_web.voice_runtime import compact_voice_tool_result, VOICE_TRUNCATION, VoiceRateLimitRecovery
+from gbop_voice_web.voice_runtime import VOICE_TRUNCATION, VoiceRateLimitRecovery
+from gbop_voice_web.voice_payload import voice_tool_payload
 from gbop_voice_web.discord_controls import (
     VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild, voice_readiness,
     private_room_autojoin_allowed,
@@ -5432,7 +5433,11 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
     return {"ok": False, "error": f"Unknown tool: {name}"}
 
 
-def ai_run_turn(user_id: int, user_text: str, photos=None):
+def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None):
+    from gbop_voice_web.market_conversation import TEXT_MARKET_CONTEXTS, contextual_tools
+    market_context = TEXT_MARKET_CONTEXTS.get((GTOP_GUILD_ID, user_id, 'text', conversation_id))
+    market_generation = market_context.begin_turn(user_text)
+    conversation_tools = contextual_tools(GBOP_AI_TOOLS)
     init_ai_db()
 
     history = ai_recent_messages(user_id, limit=10)
@@ -5448,13 +5453,14 @@ def ai_run_turn(user_id: int, user_text: str, photos=None):
         content_items.append({"type": "input_image", "image_url": photo["image_url"]})
     input_items.append({"role": "user", "content": content_items})
 
-    instructions = GTOP_AI_PROMPT + "\n\n" + member_state
+    base_instructions = GTOP_AI_PROMPT + "\n\n" + member_state
+    instructions = base_instructions + market_context.prompt()
 
     response = ai_client.responses.create(
         model=OPENAI_MODEL,
         instructions=instructions,
         input=input_items,
-        tools=GBOP_AI_TOOLS,
+        tools=conversation_tools,
         store=False,
     )
 
@@ -5473,7 +5479,9 @@ def ai_run_turn(user_id: int, user_text: str, photos=None):
         for call in calls:
             try:
                 args = json.loads(call.arguments)
-                result = ai_execute_tool(user_id, call.name, args)
+                result = market_context.run(call.name, args,
+                    lambda name, values: ai_execute_tool(user_id, name, values),
+                    generation=market_generation)
             except Exception as exc:
                 result = {
                     "ok": False,
@@ -5486,11 +5494,12 @@ def ai_run_turn(user_id: int, user_text: str, photos=None):
                 "output": json.dumps(result),
             })
 
+        instructions = base_instructions + market_context.prompt()
         response = ai_client.responses.create(
             model=OPENAI_MODEL,
             instructions=instructions,
             input=input_items,
-            tools=GBOP_AI_TOOLS,
+            tools=conversation_tools,
             store=False,
         )
 
@@ -5616,7 +5625,7 @@ async def on_message(message: discord.Message):
             return
         try:
             async with message.channel.typing():
-                answer = await asyncio.to_thread(ai_run_turn, member.id, content, photos)
+                answer = await asyncio.to_thread(ai_run_turn, member.id, content, photos, message.channel.id)
         except Exception as exc:
             saved = " Your pictures are saved, but analysis is still pending." if photos else ""
             await message.reply("I hit an AI connection error." + saved +
@@ -5987,7 +5996,10 @@ class GBOPRealtimeSession:
         self.rate_limit_recovery = VoiceRateLimitRecovery(self)
         from gbop_voice_web.voice_work import VoiceToolWork
         self.tool_work = VoiceToolWork(self)
-        self.recovery_tools = GBOP_AI_TOOLS
+        from gbop_voice_web.market_conversation import MarketConversation, contextual_tools
+        self.market_context = MarketConversation((GTOP_GUILD_ID, member.id, 'discord_voice'))
+        self.conversation_tools = contextual_tools(GBOP_AI_TOOLS)
+        self.recovery_tools = self.conversation_tools
         self.authorize_tool = lambda: asyncio.to_thread(
             member_access_error, db, GTOP_GUILD_ID, self.member.id, GTOP_OWNER_USER_ID)
         self._recovery_active = False
@@ -5997,7 +6009,9 @@ class GBOPRealtimeSession:
         # records remain available through the unchanged member-scoped tools.
         profile = get_profile(db, GTOP_GUILD_ID, self.member.id)
         member_state = market_clock() + "\n" + profile_context(profile)
-        return build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, member_state)
+        self._market_base_instructions = build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, member_state)
+        context = getattr(self, 'market_context', None)
+        return self._market_base_instructions + (context.prompt() if context is not None else '')
 
     def session_update(self):
         return {
@@ -6007,7 +6021,7 @@ class GBOPRealtimeSession:
                 "model": GBOP_REALTIME_MODEL,
                 "output_modalities": ["audio"],
                 "instructions": self.instructions(),
-                "tools": [{k: v for k, v in tool.items() if k != "strict"} for tool in GBOP_AI_TOOLS],
+                "tools": [{k: v for k, v in tool.items() if k != "strict"} for tool in getattr(self, "conversation_tools", GBOP_AI_TOOLS)],
                 "tool_choice": "auto",
                 "reasoning": {"effort": "low"},
                 "max_output_tokens": GBOP_REALTIME_MAX_OUTPUT_TOKENS,
@@ -6173,6 +6187,12 @@ class GBOPRealtimeSession:
             async def run_current_tool():
                 if work is not None and not work.current(scope):
                     return {'ok': False, 'error': 'This voice request is no longer current.'}
+                context = getattr(self, 'market_context', None)
+                if context is not None:
+                    generation = context.generation
+                    return await asyncio.to_thread(context.run, name, args,
+                        lambda tool, values: ai_execute_tool(self.member.id, tool, values),
+                        generation=generation)
                 return await asyncio.to_thread(ai_execute_tool, self.member.id, name, args)
             runner = lambda: guarded_voice_tool(self, name, args, call_id, run_current_tool,
                 is_current=(lambda: work.current(scope)) if work is not None else None)
@@ -6183,7 +6203,7 @@ class GBOPRealtimeSession:
         if work is not None and not work.current(scope):
             return
         original_chars = len(json.dumps(result))
-        output = json.dumps(compact_voice_tool_result(name, result), separators=(",", ":"))
+        output = json.dumps(voice_tool_payload(name, result), separators=(",", ":"))
         print("[GBOP-RT-TOOL]", name, "duration_ms=", round((time.monotonic() - started_at) * 1000),
               "result_chars=", original_chars, "voice_chars=", len(output))
 
@@ -6200,6 +6220,20 @@ class GBOPRealtimeSession:
         if sent is False or (work is not None and not work.current(scope)):
             return
 
+        context = getattr(self, 'market_context', None)
+        from gbop_voice_web.market_conversation import SCOPED_TOOLS
+        if (context is not None and name in SCOPED_TOOLS
+                and result.get('status') != 'stale_market_context'):
+            # Keep verified facts AND unresolved requested scope outside the
+            # truncatable conversation. An unavailable NAS night must not leave
+            # an older BTC review pinned as if it answered the new request.
+            # This updates existing session instructions; no extra provider call.
+            await self.send_event({'type': 'session.update', 'session': {
+                'type': 'realtime',
+                'instructions': self._market_base_instructions + context.prompt(),
+            }}, quiet=True)
+            if work is not None and not work.current(scope):
+                return
         self.tool_output_pending = True
         if (name == 'review_market_session' and result.get('ok')
                 and result.get('review', {}).get('shift_story')):
@@ -6246,6 +6280,9 @@ class GBOPRealtimeSession:
                 self._tool_response_options = {}
                 self._last_response_options = {}
                 self._voice_turn_count += 1
+                context = getattr(self, 'market_context', None)
+                if context is not None:
+                    context.begin_turn()
                 print(
                     "[GBOP-RT-EVENT] speech_started:",
                     self.member,
@@ -6503,6 +6540,9 @@ class GBOPRealtimeSession:
     def stop(self):
         """Stop model work and audio synchronously, before any network cleanup."""
         self.closed = True
+        context = getattr(self, 'market_context', None)
+        if context is not None:
+            context.close()
         self.rate_limit_recovery.cancel(reset=True)
         self.tool_work.cancel()
 

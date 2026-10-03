@@ -148,12 +148,12 @@ class VoiceReleaseTests(unittest.TestCase):
         self.assertEqual(prompt.count(CANONICAL_KNOWLEDGE), 1)
         self.assertEqual(prompt.count(MARKET_PROMPT), 1)
 
-    def test_all_33_existing_tool_schemas_remain_unchanged(self):
+    def test_all_existing_tools_remain_available_with_contextual_schema_copy(self):
         source = ast.parse((ROOT/'bot.py').read_text())
         cls = next(n for n in source.body if getattr(n,'name','')=='GBOPRealtimeSession')
         update = next(n for n in cls.body if getattr(n,'name','')=='session_update')
         text = ast.unparse(update)
-        self.assertIn('for tool in GBOP_AI_TOOLS', text)
+        self.assertIn("getattr(self, 'conversation_tools', GBOP_AI_TOOLS)", text)
         self.assertNotIn('[:', text)
         self.assertIn('interrupt_response', text)
 

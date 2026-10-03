@@ -30,7 +30,7 @@ class BonelessKnowledgeTests(unittest.TestCase):
         self.assertIn("Gold was boneless and completed its sell-side objective", CANONICAL_KNOWLEDGE)
         self.assertIn("A midpoint touch alone is midpoint delivery", CANONICAL_KNOWLEDGE)
         self.assertIn("A partner reaching its own objective does not prove", CANONICAL_KNOWLEDGE)
-        self.assertIn("Later invalidation does not erase earlier SMT", CANONICAL_KNOWLEDGE)
+        self.assertIn("Later invalidation does not erase earlier qualified SMT", CANONICAL_KNOWLEDGE)
         self.assertIn("A touch only after thesis invalidation is not valid-thesis objective completion", CANONICAL_KNOWLEDGE)
 
     def test_smt_does_not_invent_candles_or_execution(self):
@@ -40,7 +40,7 @@ class BonelessKnowledgeTests(unittest.TestCase):
         self.assertIn("Do not claim continuous monitoring, pre-analysis", CANONICAL_KNOWLEDGE)
 
     def test_proactive_coaching_is_time_aware_not_hindsight(self):
-        self.assertIn("Volunteer relevant verified SMT context without waiting", CANONICAL_KNOWLEDGE)
+        self.assertIn("Volunteer relevant qualified SMT context without waiting", CANONICAL_KNOWLEDGE)
         self.assertIn("A post-entry SMT cannot be presented as a missed pre-entry observation", CANONICAL_KNOWLEDGE)
         self.assertIn("SMT alone does not prove why a trade lost", CANONICAL_KNOWLEDGE)
         self.assertIn("Objective completion does not guarantee continuation", CANONICAL_KNOWLEDGE)
@@ -60,6 +60,14 @@ class BonelessKnowledgeTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(infer_tier(name), tier)
         self.assertIsNone(infer_tier("boneless"))
+
+    def test_completed_setup_hour_governs_boneless_not_minute_asynchrony(self):
+        for phrase in ('both have bones, even at different minutes',
+                       'Forming/incomplete setup intervals are provisional',
+                       'Same-setup-hour catch-up prevents inherited boneless identity',
+                       'Omit minute asynchrony from normal recaps',
+                       'Same-interval catch-up disqualifies boneless even after an earlier target touch'):
+            self.assertIn(phrase, CANONICAL_KNOWLEDGE)
 
     def test_both_runtimes_import_shared_canon(self):
         for filename in ("bot.py", "gbop_voice_web/server.py"):

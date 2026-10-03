@@ -182,6 +182,9 @@ def _cleanup_auth_state():
 
     for sid, session in list(AUTH_SESSIONS.items()):
         if now >= float(session.get("expires_at", 0)):
+            context = session.get('market_context')
+            if context is not None:
+                context.close()
             AUTH_SESSIONS.pop(sid, None)
 
 
@@ -211,6 +214,9 @@ async def _refresh_member_session(sid: str, session: dict) -> dict:
     now = time.time()
 
     if now >= float(session.get("oauth_expires_at", 0)):
+        context = session.get('market_context')
+        if context is not None:
+            context.close()
         AUTH_SESSIONS.pop(sid, None)
         raise HTTPException(status_code=401, detail="Discord login expired. Sign in again.")
 
@@ -223,6 +229,9 @@ async def _refresh_member_session(sid: str, session: dict) -> dict:
             session["access_token"],
         )
     except HTTPException:
+        context = session.get('market_context')
+        if context is not None:
+            context.close()
         AUTH_SESSIONS.pop(sid, None)
         raise HTTPException(
             status_code=403,
@@ -231,6 +240,9 @@ async def _refresh_member_session(sid: str, session: dict) -> dict:
 
     roles = member.get("roles") or []
     if not _member_is_allowed(int(session["user_id"]), roles):
+        context = session.get('market_context')
+        if context is not None:
+            context.close()
         AUTH_SESSIONS.pop(sid, None)
         raise HTTPException(
             status_code=403,
@@ -254,6 +266,9 @@ async def require_authenticated_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Discord session not found. Sign in again.")
 
     if time.time() >= float(session.get("expires_at", 0)):
+        context = session.get('market_context')
+        if context is not None:
+            context.close()
         AUTH_SESSIONS.pop(sid, None)
         raise HTTPException(status_code=401, detail="Discord session expired. Sign in again.")
 
@@ -264,6 +279,9 @@ async def require_authenticated_user(request: Request) -> dict:
         member_access_error, db, GTOP_GUILD_ID, int(session["user_id"]), OWNER_USER_ID
     )
     if denial:
+        context = session.get('market_context')
+        if context is not None:
+            context.close()
         AUTH_SESSIONS.pop(sid, None)
         raise HTTPException(status_code=403, detail=denial)
     return session
@@ -1070,7 +1088,14 @@ BACKEND_PROMPT += (
 )
 
 
-def run_backend(history: list[dict[str, str]], user_id: int) -> str:
+def run_backend(history: list[dict[str, str]], user_id: int, market_context=None, client_turn=None) -> str:
+    from gbop_voice_web.market_conversation import MarketConversation, contextual_tools, SCOPED_TOOLS
+    market_context = market_context or MarketConversation((GTOP_GUILD_ID, user_id, 'browser_request'))
+    user_text = next((item.get('text', '') for item in reversed(history) if item.get('role') == 'user'), '')
+    market_generation = market_context.begin_turn(user_text, client_turn=client_turn)
+    if market_generation is None:
+        return 'This request was superseded by newer speech.'
+    conversation_tools = contextual_tools(TOOLS)
     # Snapshot before any tool runs: preview and deletion cannot occur in the
     # same backend request, even if the model attempts both.
     pending = PENDING_JOURNAL_DELETIONS.get(user_id)
@@ -1097,14 +1122,16 @@ def run_backend(history: list[dict[str, str]], user_id: int) -> str:
 
     response = client.responses.create(
         model=BACKEND_MODEL,
-        instructions=BACKEND_PROMPT,
+        instructions=BACKEND_PROMPT + market_context.prompt(),
         input=user_input,
-        tools=TOOLS,
+        tools=conversation_tools,
         store=False,
     )
 
     items = [{"role": "user", "content": user_input}]
     for _ in range(6):
+        if not market_context.current(market_generation):
+            return 'This request was superseded by newer speech.'
         calls = [
             item
             for item in response.output
@@ -1117,9 +1144,18 @@ def run_backend(history: list[dict[str, str]], user_id: int) -> str:
         items += response.output
 
         for call in calls:
+            # A prior call may have been superseded while it was running.
+            # Leave already-started work alone; never start a later queued call.
+            if not market_context.current(market_generation):
+                return 'This request was superseded by newer speech.'
             try:
                 args = json.loads(call.arguments)
-                result = run_tool(user_id, call.name, args, confirmation_token)
+                if call.name in SCOPED_TOOLS:
+                    result = market_context.run(call.name, args,
+                        lambda name, values: run_tool(user_id, name, values, confirmation_token),
+                        generation=market_generation)
+                else:
+                    result = run_tool(user_id, call.name, args, confirmation_token)
             except Exception as exc:
                 result = {
                     "ok": False,
@@ -1134,11 +1170,13 @@ def run_backend(history: list[dict[str, str]], user_id: int) -> str:
                 }
             )
 
+        if not market_context.current(market_generation):
+            return 'This request was superseded by newer speech.'
         response = client.responses.create(
             model=BACKEND_MODEL,
-            instructions=BACKEND_PROMPT,
+            instructions=BACKEND_PROMPT + market_context.prompt(),
             input=items,
-            tools=TOOLS,
+            tools=conversation_tools,
             store=False,
         )
 
@@ -1203,6 +1241,14 @@ LIVE_INSTRUCTIONS = (
 class DelegateRequest(BaseModel):
     delegation_id: str
     history: list[dict[str, str]] = []
+    session_id: str | None = None
+    turn_id: int = 0
+
+
+class LiveContextRequest(BaseModel):
+    session_id: str
+    turn_id: int
+    closed: bool = False
 
 
 @app.get("/")
@@ -1384,7 +1430,10 @@ async def api_me(request: Request):
 async def auth_logout(request: Request):
     sid = request.cookies.get(SESSION_COOKIE)
     if sid:
-        AUTH_SESSIONS.pop(sid, None)
+        session = AUTH_SESSIONS.pop(sid, None) or {}
+        context = session.get('market_context')
+        if context is not None:
+            context.close()
 
     response = JSONResponse({"ok": True})
     response.delete_cookie(SESSION_COOKIE, path="/")
@@ -1409,6 +1458,8 @@ async def health(request: Request):
 async def live_session(request: Request):
     session = await require_authenticated_user(request)
     user_id = int(session["user_id"])
+    request_id = secrets.token_urlsafe(18)
+    session['live_request_id'] = request_id
 
     offer_sdp = (await request.body()).decode("utf-8", errors="strict")
     if not offer_sdp.strip():
@@ -1442,6 +1493,9 @@ async def live_session(request: Request):
         },
     }
 
+    if (session.get('live_request_id') != request_id
+            or AUTH_SESSIONS.get(request.cookies.get(SESSION_COOKIE)) is not session):
+        raise HTTPException(status_code=409, detail='A newer voice connection replaced this request.')
     async with httpx.AsyncClient(timeout=45.0) as http:
         response = await http.post(
             "https://api.openai.com/v1/live/sessions",
@@ -1460,6 +1514,15 @@ async def live_session(request: Request):
         )
 
     data = response.json()
+    if (session.get('live_request_id') != request_id
+            or AUTH_SESSIONS.get(request.cookies.get(SESSION_COOKIE)) is not session):
+        raise HTTPException(status_code=409, detail='A newer voice connection replaced this request.')
+    from gbop_voice_web.market_conversation import MarketConversation
+    previous = session.get('market_context')
+    if previous is not None:
+        previous.close()
+    session['live_session_id'] = data['session']['id']
+    session['market_context'] = MarketConversation((GTOP_GUILD_ID, user_id, 'browser_voice'))
 
     return JSONResponse(
         {
@@ -1469,16 +1532,38 @@ async def live_session(request: Request):
     )
 
 
+@app.post("/api/live/context/cancel")
+async def cancel_live_context(request: Request, body: LiveContextRequest):
+    session = await require_authenticated_user(request)
+    # A session ID is a generation fence, never an authentication credential.
+    if body.session_id == session.get('live_session_id'):
+        context = session.get('market_context')
+        if context is not None:
+            context.advance_client_turn(body.turn_id)
+            if body.closed:
+                context.close()
+                session.pop('market_context', None)
+                session.pop('live_session_id', None)
+    return {'ok': True}
+
+
 @app.post("/api/delegate")
 async def delegate(request: Request, body: DelegateRequest):
     session = await require_authenticated_user(request)
     user_id = int(session["user_id"])
-
+    market_context = session.get('market_context')
+    if (not body.session_id or body.session_id != session.get('live_session_id')
+            or market_context is None or market_context.closed):
+        # Every queued delegation must remain attached to an authenticated live
+        # generation, including across logout or connection replacement.
+        raise HTTPException(status_code=409, detail='This voice session ended. Refresh and start a new conversation.')
     try:
         result = await asyncio.to_thread(
             run_backend,
             body.history,
             user_id,
+            market_context,
+            body.turn_id,
         )
     except Exception as exc:
         raise HTTPException(

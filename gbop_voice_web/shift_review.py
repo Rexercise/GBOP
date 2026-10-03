@@ -1,6 +1,7 @@
 """Chronological GTOP shift evidence, reconstructed from closed source bars."""
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from gbop_voice_web.candle_naming import objective_identity
 from gbop_voice_web.candle_evidence import summarize, crt_review, stamp, parse_time
 from gbop_voice_web.shift_narrative import classify_structure, build_shift_recap
 
@@ -13,7 +14,7 @@ def review_shift(bars, day, shift, step=300):
     end = start + 3 * 3600
     bars = sorted((b for b in bars if start - 3600 <= b['time'] and b['time'] + step <= end),
                   key=lambda b: b['time'])
-    hours = [summarize(bars, t, t + 3600, step) for t in range(start - 3600, end, 3600)]
+    hours = [dict(summarize(bars, t, t + 3600, step), timeframe='H1') for t in range(start - 3600, end, 3600)]
     ledger, active, transitions = [], 0, []
     # The 8 o'clock anchor remains selected until a closed H1 invalidates it.
     # Missing hours stop promotion: a hidden invalidation cannot be reconstructed.
@@ -59,16 +60,18 @@ def review_shift(bars, day, shift, step=300):
         invalid = evidence.get('invalidated_at_ny')
         purges = [e for e in events if e['kind'].endswith('_side_purge')]
         direction = evidence.get('observed_direction')
+        range_coverage = evidence.get('range_observation_coverage', evidence.get('observation_coverage', {}))
         objectives = []
         for kind, level in [('midpoint', anchor.get('midpoint')),
                             ('opposing_liquidity', evidence.get('primary_target'))]:
             hit = next((e for e in events if e['kind'] == kind + '_observed'), None)
             objectives.append({'objective': kind, 'level': level,
+                               **objective_identity(kind, direction, anchor),
                                'status': ('observed_after_purge' if hit and hit['order_after_purge_known'] else
                                           'same_bar_order_unknown' if hit else
                                           'direction_unresolved' if not direction else
-                                          'not_observed_before_invalidation' if invalid and evidence['observation_coverage']['complete'] else
-                                          'not_observed_by_shift_end' if evidence.get('observation_coverage', {}).get('complete') else
+                                          'not_observed_before_invalidation' if invalid and range_coverage.get('complete') else
+                                          'not_observed_by_shift_end' if range_coverage.get('complete') else
                                           'unresolved_incomplete_coverage'),
                                'evidence': hit})
         sweep_detail = []
@@ -127,7 +130,7 @@ def review_shift(bars, day, shift, step=300):
                        'entry_confirmed_scope': evidence['entry_confirmed_scope'],
                        'model1': evidence['model1'], 'blessed_thief': evidence['blessed_thief'], 'objectives': objectives,
                        'events': events, 'sweep_detail': sweep_detail, 'm5_body_evidence': body_facts,
-                       'observation_coverage': evidence.get('observation_coverage')})
+                       'observation_coverage': range_coverage})
     for row in ranges:
         row['variant_evidence'] = classify_structure(row, bars, end, step)
     story = {'start_ny': stamp(start), 'end_ny': stamp(end),
