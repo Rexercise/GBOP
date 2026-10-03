@@ -80,11 +80,13 @@ class VoiceLatencyTests(unittest.IsolatedAsyncioTestCase):
             yield json.dumps({'type': 'response.done', 'response': {'status': 'failed',
                 'status_details': {'error': {'code': 'rate_limit_exceeded'}}}})
         session = NS(websocket=events(), last_error=None, tool_output_pending=True,
-                     member='test', _voice_turn_count=1, send_event=AsyncMock())
+                     member='test', _voice_turn_count=1, send_event=AsyncMock(),
+                     rate_limit_recovery=Mock())
         await method('receiver_loop', dict(json=json))(session)
         self.assertIn('rate limit', session.last_error)
         self.assertFalse(session.tool_output_pending)
         session.send_event.assert_not_awaited()
+        session.rate_limit_recovery.failed.assert_called_once()
 
 
 if __name__ == '__main__':

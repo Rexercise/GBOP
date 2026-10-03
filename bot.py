@@ -11,7 +11,7 @@ import re
 import json
 import asyncio
 from typing import Literal
-from gbop_voice_web.voice_runtime import compact_voice_tool_result, VOICE_TRUNCATION
+from gbop_voice_web.voice_runtime import compact_voice_tool_result, VOICE_TRUNCATION, VoiceRateLimitRecovery
 from gbop_voice_web.discord_controls import (
     VOICE_HELP, summon_requested, in_voice_channel, private_room_owner, pick_voice_guild, voice_readiness,
     private_room_autojoin_allowed,
@@ -5982,6 +5982,7 @@ class GBOPRealtimeSession:
         self.tool_output_pending = False
         self._voice_turn_count = 0
         self._logged_audio_items = set()
+        self.rate_limit_recovery = VoiceRateLimitRecovery(self)
 
     def instructions(self):
         member_state = ai_member_context(self.member.id)
@@ -6009,6 +6010,7 @@ class GBOPRealtimeSession:
             + "- Risk violations are warn-and-save.\n"
             + "- If the member starts speaking while you are talking, stop the old response immediately and follow the newest speech.\n"
             + "- After an interruption, do not resume the cancelled answer unless the member asks you to.\n\n"
+            + "- When tools are disabled for a rate-limit recovery response, answer the latest unanswered request briefly from verified conversation evidence and existing tool outputs. Do not perform or claim new actions. If required evidence is missing, explain that the request could not be completed and ask the member to repeat it; never invent prices or results.\n"
             + "# CURRENT MEMBER STATE\n"
             + member_state
         )
@@ -6228,9 +6230,12 @@ class GBOPRealtimeSession:
                 error = event.get("error", {})
                 self.last_error = error.get("message") or str(error)
                 print("[GBOP-RT] API error:", self.last_error)
+                self.rate_limit_recovery.failed(error)
                 continue
 
             if event_type == "input_audio_buffer.speech_started":
+                self.rate_limit_recovery.cancel(reset=True)
+                self.tool_output_pending = False
                 self._voice_turn_count += 1
                 print(
                     "[GBOP-RT-EVENT] speech_started:",
@@ -6285,6 +6290,7 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "response.created":
+                self.rate_limit_recovery.cancel()
                 response = event.get("response") or {}
                 print(
                     "[GBOP-RT-EVENT] response.created:",
@@ -6375,8 +6381,13 @@ class GBOPRealtimeSession:
                                        if error.get("code") == "rate_limit_exceeded"
                                        else "Voice response failed: " + str(error.get("code", "unknown")))
                     self.tool_output_pending = False
+                    self.rate_limit_recovery.failed(error)
                 elif status == "completed":
                     self.last_error = None
+                    self.rate_limit_recovery.cancel(reset=True)
+                elif status == "cancelled":
+                    self.tool_output_pending = False
+                    self.rate_limit_recovery.cancel()
                 print(
                     "[GBOP-RT-EVENT] response.done:",
                     self.member,
@@ -6447,6 +6458,7 @@ class GBOPRealtimeSession:
                 backoff = min(8.0, backoff * 2)
 
             finally:
+                self.rate_limit_recovery.cancel(reset=True)
                 children = [task for task in (receiver, sender) if task is not None]
                 for task in children:
                     task.cancel()
@@ -6464,6 +6476,7 @@ class GBOPRealtimeSession:
 
     async def close(self):
         self.closed = True
+        self.rate_limit_recovery.cancel(reset=True)
 
         if self.runner is not None:
             self.runner.cancel()

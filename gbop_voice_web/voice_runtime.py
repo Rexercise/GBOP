@@ -1,5 +1,7 @@
 """Small, credential-free helpers for Discord Realtime context management."""
 from copy import deepcopy
+import asyncio
+import re
 
 
 def compact_voice_tool_result(name, result):
@@ -11,6 +13,33 @@ def compact_voice_tool_result(name, result):
     if name not in {'review_market_session', 'review_market_crt', 'inspect_market_candles'}:
         return result
     result = deepcopy(result)
+
+    # The shift story already contains 8's full CRT evidence. Sending the older
+    # 9ate8 view as well duplicates events, coverage and assigned candle tables.
+    review = result.get('review', {})
+    story = review.get('shift_story')
+    if name == 'review_market_session' and isinstance(story, dict):
+        ranges = story.get('ranges', [])
+        for observation in review.get('observations', []):
+            if observation.get('play') == '9ate8' and any(r.get('label') == '9ate8' for r in ranges):
+                observation.pop('evidence', None)
+                observation['evidence_ref'] = 'shift_story.ranges: label=9ate8'
+        for row in ranges:
+            # Keep OHLC, first extreme times, precision, all events/objectives,
+            # body evidence and progression. Repeated coverage extrema and last
+            # occurrence metadata remain available via inspect_market_candles.
+            anchor = row.get('anchor', {})
+            for key in ('high_last_seen', 'low_last_seen', 'high_occurrences', 'low_occurrences'):
+                anchor.pop(key, None)
+            coverage = row.get('observation_coverage')
+            if isinstance(coverage, dict):
+                row['observation_coverage'] = {key: coverage[key] for key in (
+                    'start_ny', 'end_ny', 'complete', 'source_resolution_seconds',
+                    'bar_count', 'missing_bar_count', 'coverage_note') if key in coverage}
+        review['voice_detail_note'] = (
+            'Whole hourly shift sequence and range events retained. Duplicate 9ate8 evidence '
+            'is in shift_story. Per-range coverage extrema and last extreme occurrences '
+            'are omitted; use inspect_market_candles for those details. Never infer omitted values.')
 
     def page(value):
         if isinstance(value, dict):
@@ -38,3 +67,64 @@ VOICE_TRUNCATION = {
     'retention_ratio': 0.8,
     'token_limits': {'post_instructions': 6000},
 }
+
+
+class VoiceRateLimitRecovery:
+    """Bounded response-only recovery; never re-execute a tool or a stale turn."""
+    def __init__(self, session):
+        self.session = session
+        self.task = None
+        self.attempts = 0
+        self.notified = False
+
+    def cancel(self, reset=False):
+        if self.task is not None:
+            self.task.cancel()
+            self.task = None
+        if reset:
+            self.attempts = 0
+            self.notified = False
+
+    def failed(self, error):
+        if error.get('code') != 'rate_limit_exceeded' or self.task is not None:
+            return
+        if self.session.closed:
+            return
+        match = re.search(r'try again in (\d+(?:\.\d+)?)s', str(error.get('message', '')), re.I)
+        delay = min(60.0, max(2.0, float(match.group(1)) + 1.0)) if match else 15.0
+        exhausted = self.attempts >= 2
+        self.attempts += 1
+        self.task = asyncio.create_task(self._recover(delay, exhausted))
+
+    async def _recover(self, delay, exhausted):
+        session = self.session
+        turn, websocket = session._voice_turn_count, session.websocket
+        try:
+            if not self.notified or exhausted:
+                self.notified = True
+                notice = ('Voice is still rate-limited. Please wait a minute, then ask again.'
+                          if exhausted else
+                          f'Voice hit a temporary rate limit. I will retry the reply in about {int(delay) + 1} seconds. '
+                          'You do not need to repeat your request.')
+                try:
+                    await asyncio.wait_for(session.member.send(notice), timeout=3)
+                except Exception as exc:
+                    print('[GBOP-RT-RECOVERY] notice unavailable:', type(exc).__name__)
+            if exhausted:
+                return
+            await asyncio.sleep(delay)
+            if session.closed or session.websocket is not websocket or session._voice_turn_count != turn:
+                return
+            # Existing function outputs are in the conversation. Disable tools
+            # during recovery so saves/deletes and other actions cannot repeat.
+            await session.send_event({'type': 'response.create', 'response': {
+                'tool_choice': 'none',
+            }})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            session.last_error = 'Voice recovery failed: ' + type(exc).__name__
+            print('[GBOP-RT-RECOVERY]', session.last_error)
+        finally:
+            if self.task is asyncio.current_task():
+                self.task = None
