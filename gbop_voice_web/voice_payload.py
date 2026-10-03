@@ -281,4 +281,8 @@ def voice_tool_payload(name, result):
     if (name == 'review_market_session' and isinstance(result, dict)
             and isinstance(result.get('review', {}).get('shift_story'), dict)):
         return shift_voice_overview(result)
+    if (name == 'review_market_crt' and isinstance(result, dict)
+            and isinstance(result.get('review', {}).get('candle_lifecycle'), dict)):
+        from gbop_voice_web.voice_detail import crt_voice_detail
+        return crt_voice_detail(result)
     return compact_voice_tool_result(name, result)

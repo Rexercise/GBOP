@@ -169,10 +169,9 @@ class VoicePayloadBudgetTests(unittest.TestCase):
         self.assertEqual(result['range_index'][1]['detail_request']['args']['anchor_start_ny'], '2026-10-02T09:00:00-04:00')
         self.assertIn('full shift was not supplied', result['message'])
 
-    def test_precise_crt_raw_pages_failures_and_nonmarket_results_keep_existing_contract(self):
+    def test_raw_pages_failures_and_nonmarket_results_keep_existing_contract(self):
         replay = self.replay(retained.RetainedMarketReplayTests)
         for name, source in [
-            ('review_market_crt', replay.tool('NAS100', anchor='09:00')),
             ('inspect_market_candles', {'review': {'candles': [{'start_ny': str(i)} for i in range(8)]}}),
             ('review_market_session', {'ok': False, 'status': 'shift_unavailable'}),
             ('get_journal_history', {'ok': True, 'entries': []})]:
