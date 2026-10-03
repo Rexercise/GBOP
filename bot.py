@@ -5980,6 +5980,8 @@ class GBOPRealtimeSession:
         self.output_source = None
         self.output_item_id = None
         self.tool_output_pending = False
+        self._tool_response_options = {}
+        self._last_response_options = {}
         self._voice_turn_count = 0
         self._logged_audio_items = set()
         self.rate_limit_recovery = VoiceRateLimitRecovery(self)
@@ -5992,7 +5994,7 @@ class GBOPRealtimeSession:
             + "\n\n# LIVE DISCORD VOICE MODE\n"
             + "- This is a dedicated GBOP voice channel. Treat clear speech from an authorized member as addressed to you.\n"
             + "- GTOP CANON above is the source of truth. Never substitute generic trading definitions for it.\n"
-            + "- Direct GTOP questions: answer in 1-2 short sentences. Classification questions usually get one sentence.\n"
+            + "- GTOP definition questions: answer in 1-2 short sentences. A whole-shift review is different: use the market tool's shift_recap or shift_story.recap and cover every selected range in 4-7 concise sentences, including later variants and objective delivery.\n"
             + "- Give the answer first. Do not repeat the user's question or recite background they did not request.\n"
             + "- Example: one inside bar before manipulation = Variant 4; two or more = Variant 5.\n"
             + "- Skip filler preambles for direct answers. Do not say 'hmm', 'let me think', or narrate internal processing.\n"
@@ -6209,6 +6211,11 @@ class GBOPRealtimeSession:
         )
 
         self.tool_output_pending = True
+        if (name == 'review_market_session' and result.get('ok')
+                and result.get('review', {}).get('shift_story')):
+            # Audio tokens share this limit: live shift replies repeatedly hit 700.
+            # Expand only this evidence-backed recap, not every reply.
+            self._tool_response_options = {'max_output_tokens': max(GBOP_REALTIME_MAX_OUTPUT_TOKENS, 2200)}
         # The verified result is already in the conversation. Rebuilding every
         # profile/journal/coach snapshot here delayed the reply and busted caches.
 
@@ -6236,6 +6243,8 @@ class GBOPRealtimeSession:
             if event_type == "input_audio_buffer.speech_started":
                 self.rate_limit_recovery.cancel(reset=True)
                 self.tool_output_pending = False
+                self._tool_response_options = {}
+                self._last_response_options = {}
                 self._voice_turn_count += 1
                 print(
                     "[GBOP-RT-EVENT] speech_started:",
@@ -6403,7 +6412,10 @@ class GBOPRealtimeSession:
 
                 if self.tool_output_pending and status not in ("cancelled", "failed"):
                     self.tool_output_pending = False
-                    await self.send_event({"type": "response.create"})
+                    options = getattr(self, '_tool_response_options', {})
+                    self._tool_response_options = {}
+                    self._last_response_options = options
+                    await self.send_event({"type": "response.create", 'response': options})
 
     async def run(self):
         backoff = 1.0

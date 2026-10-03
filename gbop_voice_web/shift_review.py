@@ -2,6 +2,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from gbop_voice_web.candle_evidence import summarize, crt_review, stamp, parse_time
+from gbop_voice_web.shift_narrative import classify_structure, build_shift_recap
 
 NY = ZoneInfo('America/New_York')
 
@@ -125,7 +126,9 @@ def review_shift(bars, day, shift, step=300):
                        'entry_confirmed': False, 'objectives': objectives,
                        'events': events, 'sweep_detail': sweep_detail, 'm5_body_evidence': body_facts,
                        'observation_coverage': evidence.get('observation_coverage')})
-    return {'start_ny': stamp(start), 'end_ny': stamp(end),
+    for row in ranges:
+        row['variant_evidence'] = classify_structure(row, bars, end, step)
+    story = {'start_ny': stamp(start), 'end_ny': stamp(end),
             'coverage': summarize(bars, start, end, step),
             'hourly_progression': ledger, 'range_transitions': transitions, 'ranges': ranges,
             'active_anchor_ny': None if blocked else hours[active]['start_ny'],
@@ -135,3 +138,5 @@ def review_shift(bars, day, shift, step=300):
                       'Same-bar order is unknown. M5 body crosses are mechanical evidence, not automatic CSD, '
                       'Super Soup, SMT, Blessed Thief or member execution confirmation. '
                       'Independent ranges are not automatically promoted. Missing hours block verified progression.'}
+    story['recap'] = build_shift_recap(story)
+    return story
