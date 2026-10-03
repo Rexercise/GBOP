@@ -1,0 +1,217 @@
+name: Apply and validate SMT reference fix
+on:
+  push:
+    branches: [fix/candle-labels-smt-reference-20261003]
+    paths: [.github/workflows/apply-smt-reference-fix.yml]
+permissions:
+  contents: write
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/candle-labels-smt-reference-20261003
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install httpx==0.28.1 fastapi==0.116.1
+      - name: Apply bounded source and knowledge changes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          def replace(path, old, new):
+              p = Path(path); text = p.read_text()
+              assert text.count(old) == 1, (path, old, text.count(old))
+              p.write_text(text.replace(old, new))
+          p = Path('gbop_voice_web/smt_evidence.py')
+          text = p.read_text(); head, sep, tail = text.rpartition('    return result\n')
+          assert sep and not tail.strip()
+          p.write_text(head + '    from gbop_voice_web.smt_reference import attach_paired_model1\n    return attach_paired_model1(result, data, anchors, timeframe)\n' + tail)
+          replace('gbop_voice_web/smt_reference.py', 'before subsequent invalidation. No local initiating-side purge was required.', 'while the range was valid. No local initiating-side purge was required.')
+          replace('gbop_voice_web/market_context.py',
+              "        text += ' These are paired market facts, not proof of a member execution.'",
+              """        identity = event.get('paired_model1', {})
+                  if identity.get('status') == 'identified':
+                      ref = identity['boneless_reference']
+                      text += (f" {ref['asset']}'s SMT-inherited Model 1 is its {ref['timeframe']} candle opening "
+                               f"{ref['bar_open_ny']}, matching {event['swept_asset']}'s body-purge candle. "
+                               'This is a same-time reference, not a claim of a visible local purge or inherited CSD confirmation.')
+                  text += ' These are paired market facts, not proof of a member execution.'""")
+          replace('gbop_voice_web/market_context.py',
+              "        'does not erase earlier SMT or delivery. No local body candle or member fill is implied.')",
+              "        'does not erase earlier SMT or delivery. Use paired_model1.boneless_reference for the same-time '
+              'SMT-inherited Model 1 identity; no visible local body purge or member fill is implied.')")
+          p = Path('gbop_voice_web/market_context.py')
+          text = p.read_text().replace('Name the candle first. Keep identity, confirmation, execution and parent-range',
+              'Name the candle by its OPENING time first; separately say when it closed. Use paired_model1.boneless_reference for the same-time inherited Model 1, not a later local opposite-direction candle. Keep identity, confirmation, execution and parent-range')
+          text = text.replace('Missing SPX is not no SMT or US30. Never invent context unavailable at entry.',
+              'Missing SPX is not no SMT or US30. Never invent context unavailable at entry. Prefer recap.paired_interpretation over a local-only failure headline; a verified earlier SMT objective remains delivered. No local purge is required on the boneless leg, but its own target touch must be verified.')
+          p.write_text(text)
+          replace('gbop_voice_web/market_data.py',
+              'from gbop_voice_web.market_watch import WATCH_PROMPT',
+              'from gbop_voice_web.market_watch import WATCH_PROMPT\nfrom gbop_voice_web.smt_reference import reconcile_paired_recap')
+          replace('gbop_voice_web/market_data.py',
+              "                step, args.get('confirmation_timeframe')), bars, end, step)\n        return result",
+              """                step, args.get('confirmation_timeframe')), bars, end, step)
+                      peer = PAIRINGS.get(result['asset'])
+                      if peer:
+                          result['review']['paired_smt'] = paired_market_review(
+                              db, result['asset'], peer, start, end, args['anchor_timeframe'])
+                  if name in ('review_market_session', 'review_market_crt'):
+                      reconcile_paired_recap(result['review'], result['asset'])
+                  return result""")
+          replace('gbop_voice_web/shift_narrative.py',
+              'from gbop_voice_web.candle_evidence import parse_time, summarize',
+              'from gbop_voice_web.candle_evidence import parse_time, summarize\nfrom gbop_voice_web.smt_reference import closing_candle')
+          replace('gbop_voice_web/shift_narrative.py',
+              "An hourly close outside invalidated {anchor_name} at {clock(row['invalidated_at_ny'])};",
+              "The range {anchor_name} was invalidated by {closing_candle(row['invalidated_at_ny'])['spoken_label']};")
+          replace('gbop_voice_web/shift_narrative.py',
+              "{anchor_name} was invalidated by the hourly close at {clock(row['invalidated_at_ny'])}{suffix}.",
+              "{anchor_name} was invalidated by {closing_candle(row['invalidated_at_ny'])['spoken_label']}{suffix}.")
+          replace('gbop_voice_web/shift_narrative.py',
+              "The later hourly close at {clock(row['invalidated_at_ny'])} invalidated that range after the recorded delivery.",
+              "Later, {closing_candle(row['invalidated_at_ny'])['spoken_label']} invalidated that range after the recorded delivery.")
+          p = Path('gbop_voice_web/gtop_boneless.txt')
+          text = p.read_text()
+          text += '''
+          OWNER CLARIFICATION — CANDLE NAMES AND SMT-INHERITED MODEL 1 — 3 OCTOBER 2026
+          Always name a candle by its OPENING time. The 10 AM H1 candle closes at 11 AM: say "the 10 AM candle's close, at 11 AM," not "the 11 AM candle invalidated it." The closing clock time is an event timestamp, not the candle's name. Apply this distinction to Model 1, CSD, invalidation, retests, Super Soup and delivery, across day/night shifts and timeframes. Preserve New York chart time unless another chart timezone is explicitly requested.
+          In verified, time-aligned SMT, the boneless asset's Model 1 reference is its OWN candle on the SAME assigned timeframe and at the SAME opening timestamp as the correlated partner's qualifying BODY-purge Model 1 candle. Call it the SMT-inherited Model 1 candle. A missing local purge does not disqualify this reference. For example ONLY: a silver 9:15 AM M5 body-purge Model 1 maps to gold's 9:15 AM M5 candle, even though gold did not purge its corresponding high. Use gold's own OHLC and body reference, never silver's prices. An earlier wick divergence alone does not manufacture a body-purge Model 1. Missing same-time candles mean unverified, never a nearest-candle substitute.
+          Distinguish this inherited reference from any later local Model 1 in the opposite direction. Report the reference candle first; assess CSD, Super Soup, retests and objectives independently on the asset under review. Do not copy the partner's CSD, entry or outcome. The inherited identity exists without those later confirmations.
+          A local-only reading can appear to fail or lack an initiating purge while the verified paired account is an SMT-supported 9ate8 that delivered. Explicitly reconcile the two: the partner supplied the directional purge context and the boneless leg reached its own opposing liquidity. Do not lead with overall "failed objectives" when the paired evidence verifies earlier delivery. A later opposite-direction local setup failing is a separate event, not failure of the earlier SMT 9ate8. The absence of a local initiating-side purge is not the absence of an objective. Still verify the boneless asset's own target touch and chronology; SMT is not automatic success and the partner delivering does not prove this asset delivered. Keep midpoint-only, full delivery, unresolved ordering, invalidation and missing data distinct.
+          '''
+          p.write_text(text)
+          PY
+      - name: Add targeted regression cases
+        shell: bash
+        run: |
+          cat > tests/test_smt_reference.py <<'PY'
+          import copy
+          import unittest
+          from unittest.mock import patch
+          from gbop_voice_web.candle_evidence import parse_time, stamp, model1_evidence, summarize
+          from gbop_voice_web.smt_evidence import compare_ranges
+          from gbop_voice_web.market_context import enrich_smt
+          from gbop_voice_web.smt_reference import closing_candle, reconcile_paired_recap
+
+          START = parse_time('2026-10-02T08:00:00-04:00')
+          END = START + 4 * 3600
+          def fixture(step=300, delivered=True):
+              left = [dict(time=t, open=95, high=100, low=90, close=95) for t in range(START, END, step)]
+              right = [dict(time=t, open=195, high=200, low=190, close=195) for t in range(START, END, step)]
+              t = START + 75 * 60
+              left[(t-START)//step].update(open=99, high=102, low=98, close=101)
+              right[(t-START)//step].update(open=197, high=198, low=194, close=196)
+              if delivered:
+                  right[(START+85*60-START)//step].update(open=195, high=196, low=189, close=192)
+              return [dict(asset='XAGUSD', symbol='XAGUSD', bars=left, step=step),
+                      dict(asset='XAUUSD', symbol='XAUUSD', bars=right, step=step)]
+          def review(pair):
+              return enrich_smt(compare_ranges(*pair, START, START+3600, END))
+          def bearish(result):
+              return next(e for e in result['events'] if e['side'] == 'buy_side')
+
+          class ReferenceTests(unittest.TestCase):
+              def test_hourly_name_is_open_not_close(self):
+                  c = closing_candle('2026-10-02T11:00:00-04:00')
+                  self.assertIn('10:00 AM H1 candle', c['spoken_label'])
+                  self.assertIn('11:00 AM', c['spoken_label'])
+                  self.assertNotIn('11:00 AM H1 candle', c['spoken_label'])
+              def test_night_midnight_names_previous_candle(self):
+                  c = closing_candle('2026-10-03T00:00:00-04:00')
+                  self.assertEqual(c['candle_open_ny'], '2026-10-02T23:00:00-04:00')
+              def test_five_minute_and_h4_names(self):
+                  self.assertIn('9:15 AM M5 candle', closing_candle('2026-10-02T09:20:00-04:00','M5')['spoken_label'])
+                  self.assertIn('9:00 AM H4 candle', closing_candle('2026-10-02T13:00:00-04:00','H4')['spoken_label'])
+              def test_daily_boundary_respects_dst(self):
+                  c = closing_candle('2026-11-02T00:00:00-05:00','D1')
+                  self.assertEqual(c['candle_open_ny'],'2026-11-01T00:00:00-04:00')
+              def test_boneless_reference_matches_time_but_keeps_own_prices(self):
+                  r = bearish(review(fixture()))['paired_model1']
+                  self.assertEqual(r['status'], 'identified')
+                  self.assertEqual(r['boneless_reference']['bar_open_ny'], '2026-10-02T09:15:00-04:00')
+                  self.assertEqual(r['origin_model1']['bar_open_ny'], r['boneless_reference']['bar_open_ny'])
+                  self.assertEqual(r['boneless_reference']['open'], 197)
+                  self.assertEqual(r['origin_model1']['open'], 99)
+                  self.assertFalse(r['boneless_reference']['local_purge_observed'])
+                  self.assertEqual(r['boneless_reference']['csd_status'],'not_assessed')
+              def test_wick_only_divergence_does_not_fabricate_model1(self):
+                  p = fixture(); p[0]['bars'][15]['close'] = 99
+                  self.assertNotEqual(bearish(review(p))['paired_model1']['status'], 'identified')
+              def test_missing_peer_bar_does_not_fabricate_reference(self):
+                  p = fixture(); del p[1]['bars'][15]
+                  r = review(p)
+                  self.assertFalse(r['paired_coverage_complete'])
+                  self.assertFalse(any(e.get('paired_model1',{}).get('status')=='identified' for e in r['events']))
+              def test_m1_event_maps_to_actual_m5_open(self):
+                  p = fixture(60)
+                  p[0]['bars'][75].update(high=100,close=99)
+                  p[0]['bars'][77].update(high=102,close=101)
+                  p[0]['bars'][79].update(high=102,close=101)
+                  r = bearish(review(p))['paired_model1']
+                  self.assertEqual(r['status'],'identified')
+                  self.assertEqual(r['boneless_reference']['bar_open_ny'],'2026-10-02T09:15:00-04:00')
+                  self.assertEqual(r['boneless_reference']['timeframe'],'M5')
+              def test_peer_catchup_before_body_close_prevents_new_reference(self):
+                  p = fixture(60)
+                  p[0]['bars'][75].update(high=100,close=99)
+                  p[0]['bars'][77].update(high=102,close=101)
+                  p[0]['bars'][79].update(high=102,close=101)
+                  p[1]['bars'][78].update(high=201)
+                  self.assertNotEqual(bearish(review(p))['paired_model1']['status'],'identified')
+              def test_no_copy_of_partner_delivery(self):
+                  p = fixture(delivered=False)
+                  p[0]['bars'][17].update(low=89,close=92)
+                  e = bearish(review(p))
+                  self.assertEqual(e['objective_status']['XAGUSD']['opposing_liquidity']['status'],'objective_complete_while_range_valid')
+                  self.assertNotEqual(e['objective_status']['XAUUSD']['opposing_liquidity']['status'],'objective_complete_while_range_valid')
+              def test_later_local_failure_does_not_replace_earlier_reference(self):
+                  p = fixture(); p[1]['bars'][35].update(low=180,close=185)
+                  r = review(p); e = bearish(r)
+                  self.assertEqual(e['paired_model1']['boneless_reference']['bar_open_ny'],'2026-10-02T09:15:00-04:00')
+                  self.assertEqual(e['objective_status']['XAUUSD']['opposing_liquidity']['status'],'objective_complete_while_range_valid')
+                  self.assertIn('10:00 AM H1 candle',r['invalidating_candles']['XAUUSD']['spoken_label'])
+                  original = 'Local Model 1 failed before its bullish objective.'
+                  session = {'paired_smt':r,'shift_story':{'recap':{'spoken_summary':original,'headline':'Failed'},'ranges':[]}}
+                  reconcile_paired_recap(session,'XAUUSD')
+                  recap = session['shift_story']['recap']
+                  self.assertIn('completed its own opposing',recap['headline'])
+                  self.assertEqual(recap['local_only_spoken_summary'],original)
+                  self.assertIn('SMT-inherited Model 1',recap['spoken_summary'])
+              def test_direct_crt_path_includes_paired_identity(self):
+                  from gbop_voice_web.market_data import market_tool
+                  p = fixture(); by_asset = {item['asset']:item for item in p}
+                  def feed(db, asset):
+                      return dict(ok=True,asset=asset,symbol=asset)
+                  def history(db, item, start, end):
+                      return by_asset[item['asset']]['bars'],300
+                  with patch('gbop_voice_web.market_data.read_feed',side_effect=feed), patch('gbop_voice_web.market_data.history_bars',side_effect=history):
+                      result = market_tool(None,'review_market_crt',dict(asset='XAUUSD',anchor_start_ny=stamp(START),through_ny=stamp(END),anchor_timeframe='H1',confirmation_timeframe=None))
+                  self.assertTrue(result['ok'],result)
+                  self.assertEqual(bearish(result['review']['paired_smt'])['paired_model1']['status'],'identified')
+                  self.assertIn('paired_interpretation',result['review']['recap'])
+              def test_repeat_reconciliation_does_not_duplicate_summary(self):
+                  session = {'paired_smt':review(fixture()),'shift_story':{'recap':{'spoken_summary':'local'},'ranges':[]}}
+                  reconcile_paired_recap(session,'XAUUSD')
+                  first = session['shift_story']['recap']['spoken_summary']
+                  reconcile_paired_recap(session,'XAUUSD')
+                  self.assertEqual(first,session['shift_story']['recap']['spoken_summary'])
+          PY
+      - name: Compile source and run complete regression suite
+        shell: bash
+        run: |
+          python -m compileall -q gbop_voice_web tests
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/gbop-reference-test.log
+      - name: Commit only validated changes and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/apply-smt-reference-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add gbop_voice_web/smt_evidence.py gbop_voice_web/smt_reference.py gbop_voice_web/market_context.py gbop_voice_web/market_data.py gbop_voice_web/shift_narrative.py gbop_voice_web/gtop_boneless.txt tests/test_smt_reference.py .github/workflows/apply-smt-reference-fix.yml
+          git diff --cached --stat
+          git commit -m 'Fix candle-open naming and boneless SMT Model 1 attribution'
+          git push origin HEAD:fix/candle-labels-smt-reference-20261003
