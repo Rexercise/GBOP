@@ -192,6 +192,29 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
                             objectives_after_formation=_objectives(bars, parse_time(row['end_ny']), end,
                                                                  anchor, side == 'buy', step, invalid_at, row))
             result['purge_candles'].append(fact)
+    # Add the owner's nested-CRT cleanliness/outcome axes to the SAME view.
+    # Do not replace the existing CSD or pre-CSD ordering statuses.
+    from gbop_voice_web.super_soup_evidence import enrich_model1
+    models = {'assigned_timeframe': mapped, 'candles': [
+        f for f in result['purge_candles'] if f['purge_type'] == 'body_soup']}
+    enrich_model1(bars, anchor, models, end, step, invalid_at)
+    structural = {r['model1_bar_open_ny']: r for r in models.get('lifecycle', [])}
+    for f in result['purge_candles']:
+        r = structural.get(f['bar_open_ny']) if f['purge_type'] == 'body_soup' else None
+        if r is None:
+            continue
+        structure = dict(r['super_soup'])
+        structure.pop('pre_csd', None)
+        structure['pre_csd_status_ref'] = 'super_soup.status'
+        f['super_soup_structure'] = structure
+        f['following_candle_relations'] = r['following_candles']
+        f['next_relation_detail_start_ny'] = r['next_detail_start_ny']
+        f['model1_crt_invalidating_close'] = r['model1_crt_invalidating_close']
+    result['response_contract'] += (' Use super_soup_structure for nested CRT cleanliness, '
+        'supported variants, local_crt_outcome and parent_function_outcome independently. '
+        'Clean formation can fail; unclean formation can still deliver parent function. '
+        'super_soup.status separately preserves pre-CSD ordering uncertainty. '
+        'The next candle may be an inside bar rather than an immediate soup.')
     complete = all(row['complete'] for row in rows)
     result.update(identified_count=total, observation_complete=complete,
                   window_start_ny=stamp(start), window_end_ny=stamp(end))
@@ -216,6 +239,24 @@ def lifecycle_summary(result):
             parts.append('CSD was not observed in the reviewed window; the Model 1 candle still exists.')
         else:
             parts.append('CSD or its timing remains unresolved in the available evidence.')
+        structure = body.get('super_soup_structure')
+        if structure and structure['structure_status'] == 'observed':
+            quality = 'clean' if structure['structural_quality'] == 'clean' else 'not clean'
+            variants = ', '.join(v['code'] for v in structure['variants'])
+            when = _clock(structure['event']['bar_close_ny'])
+            parts.append(f"The Model 1 nested CRT purge closed at {when}; its structure was {quality}" +
+                         (f", supporting {variants}." if variants else '.'))
+            outcomes = {
+                'opposing_liquidity_delivered': 'opposing liquidity delivered',
+                'midpoint_delivered_then_invalidated': 'midpoint delivered, then invalidated',
+                'midpoint_only_at_cutoff': 'midpoint delivered; full objective not established',
+                'failed_before_objectives': 'invalidated before either objective was verified',
+                'pending_at_cutoff': 'not delivered by the review cutoff',
+                'unverified': 'outcome unverified',
+                'unverified_parent_validity': 'parent validity unverified',
+            }
+            parts.append('For the nested CRT: ' + outcomes.get(structure['local_crt_outcome'], 'unverified') +
+                         '; for the parent range: ' + outcomes.get(structure['parent_function_outcome'], 'unverified') + '.')
         if body['super_soup']['status'] == 'observed_before_csd':
             parts.append(f"A Super Soup returned inside that candle at {_clock(body['super_soup']['evidence']['return_candle']['bar_close_ny'])}, before CSD.")
         if body['body_reference_retest']['evidence']:
