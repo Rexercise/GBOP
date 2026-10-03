@@ -7,15 +7,27 @@ PAIRINGS = {'XAUUSD': 'XAGUSD', 'XAGUSD': 'XAUUSD',
             'NAS100': 'SPX', 'SPX': 'NAS100'}
 
 LIFECYCLE_PROMPT = """
-Use candle_lifecycle.purge_candles and recap.candle_timeline for candle identity,
-OHLC, wick/body type, separate CSD/Super Soup, reference retests, body closes and
-own objectives. Follow the canonical lifecycle rules and each evidence status;
-legacy entry_confirmed=false or model1.csd_status=not_assessed cannot negate them.
-Name the candle first. Keep identity, confirmation, execution and parent-range
-invalidation separate. Fold relevant facts into the recap without dumping tables.
-Use paired_smt plus paired_context for configured gold/silver, Bitcoin/Ethereum
-and NAS100/SPX comparisons. Volunteer boneless_asset and each own objective_status.
+Use candle_lifecycle.purge_candles and recap.candle_timeline for local candle
+identity, OHLC, wick/body type, separate CSD/Super Soup, retests and objectives.
+Follow canonical evidence statuses; legacy entry_confirmed=false or
+model1.csd_status=not_assessed cannot negate formation. Name the candle by its
+OPENING time and timeframe; give its closing/confirmation time separately.
+The 10 AM H1 candle closes at 11 AM, not the 11 AM candle. Keep identity,
+confirmation, execution and parent-range invalidation separate.
+Use paired_smt plus paired_context for gold/silver, Bitcoin/Ethereum and
+NAS100/SPX. Include boneless_asset and each own objective_status in the main
+recap BEFORE the overall verdict, not as an optional afterthought. A completed
+bearish SMT 9ate8 and a failed local bullish attempt are independent outcomes.
+For a boneless Model 1 question, verify the partner's assigned-timeframe body
+purge with review_market_crt or inspect_market_candles, then inspect the boneless
+candle at the identical opening/closing interval. That is its SMT-aligned Model 1
+(identity_basis=smt_time_aligned), without inventing a local physical purge.
+Do not substitute a later unrelated local Model 1 or gate identity on CSD.
+A source SMT bar or wick alone does not establish an assigned body-purge time.
 Missing SPX is not no SMT or US30. Never invent context unavailable at entry.
+Preserve the working chronology, Super Soup cleanliness and separate nested
+versus parent outcomes. Follow canonical candle naming even when a legacy raw
+summary mentions only the closing time. Answer the requested fact first.
 """.strip()
 
 
@@ -76,5 +88,10 @@ def enrich_smt(review):
     review['spoken_summary'] = ' '.join(passages)
     review['response_contract'] = ('Use boneless_asset as an event-specific asset adjective. Use objective_status '
         'for valid-thesis delivery; raw later touches may occur after invalidation. Later invalidation '
-        'does not erase earlier SMT or delivery. No local body candle or member fill is implied.')
+        'does not erase earlier SMT or delivery. Integrate these paired outcomes into the main shift recap; '
+        'a failed local opposite-direction attempt does not erase completed SMT delivery. '
+        'For SMT-aligned Model 1 identity, retrieve the partner body-purge candle on the assigned timeframe '
+        'and the boneless candle at the identical opening/closing interval. This is identity_basis=smt_time_aligned, '
+        'not an invented local body purge, CSD or member fill. Do not infer its time from a coarse SMT bar. '
+        'Name all candles by opening time; state closing/confirmation time separately.')
     return review
