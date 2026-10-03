@@ -204,6 +204,7 @@ def prepare_next_shift(db,fingerprints,now=None):
            'range_transitions':story.get('range_transitions',[]),'paired_smt':review.get('paired_smt'),
            'paired_context':review.get('paired_context'),
            'selected_ranges':[{'anchor_start_ny':r.get('anchor_start_ny'),'variant_evidence':r.get('variant_evidence'),
+              'candle_lifecycle_summary':(r.get('candle_lifecycle') or {}).get('spoken_summary'),
               'candle_lifecycle':r.get('candle_lifecycle'),'invalidated_at_ny':r.get('invalidated_at_ny')}
               for r in story.get('ranges',[]) if r.get('role')=='selected_range']}
     payload=json.dumps(brief,separators=(',',':'))
