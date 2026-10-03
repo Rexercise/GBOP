@@ -36,14 +36,12 @@ jobs:
           text = p.read_text(); left, rest = text.split('LIFECYCLE_PROMPT = """',1); old,right = rest.split('""".strip()',1)
           prompt = '''
           Use candle_lifecycle.purge_candles and recap.candle_timeline for OHLC, wick/body,
-          CSD, Super Soup, retests, body closes and own objectives. Identity is independent
-          of confirmation/execution; legacy false/not_assessed cannot negate it.
+          CSD, Super Soup, retests and own targets. Unconfirmed does not erase identity.
           Name candles by OPENING time; state closing time separately.
-          Use paired_smt/paired_context for gold/silver, Bitcoin/Ethereum, NAS100/SPX.
-          paired_model1.boneless_reference is the same-time SMT-inherited Model 1, not a
-          visible local purge or later opposite-direction model. Volunteer boneless_asset
-          and each own objective_status. Prefer recap.paired_interpretation over local-only
-          failure; retain earlier verified delivery. Missing SPX is not no SMT or US30.
+          Use paired_smt/paired_context and paired_model1.boneless_reference for the
+          same-time SMT-inherited Model 1, not a local purge or later opposite model.
+          Volunteer boneless_asset and own objective_status. Prefer recap.paired_interpretation
+          to local-only failure; preserve earlier delivery. Missing SPX is not no SMT or US30.
           Never invent context unavailable at entry.
           '''
           p.write_text(left+'LIFECYCLE_PROMPT = """'+prompt+'""".strip()'+right)
@@ -72,10 +70,6 @@ jobs:
                   self.assertEqual(e['paired_model1']['boneless_reference']['bar_open_ny'],'2026-10-02T09:15:00-04:00')
                   self.assertIn('SMT-inherited Model 1',result['review']['shift_recap']['spoken_summary'])
           '''
-          # The appended class methods carry four spaces, not workflow indentation.
-          from textwrap import dedent
-          marker = '\n    def test_bullish_reference_is_symmetric'
-          # YAML removes its uniform indentation, leaving the intended Python class indent.
           p.write_text(text)
           PY
       - name: Compile and run all regression tests
