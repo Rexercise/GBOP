@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, LIVE_MARKET_PROMPT, market_clock, market_tool, init_market
 from gbop_voice_web.market_routes import market_router
 from db_compat import db
+from gbop_voice_web.member_access import member_access_error
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
 from gbop_voice_web.member_intelligence import (
     INTELLIGENCE_PROMPT,
@@ -253,7 +254,16 @@ async def require_authenticated_user(request: Request) -> dict:
         AUTH_SESSIONS.pop(sid, None)
         raise HTTPException(status_code=401, detail="Discord session expired. Sign in again.")
 
-    return await _refresh_member_session(sid, session)
+    session = await _refresh_member_session(sid, session)
+    # Check the persistent GBOP gate on every protected request, not just login
+    # or the cached Discord role check. Revocation applies across interfaces.
+    denial = await asyncio.to_thread(
+        member_access_error, db, GTOP_GUILD_ID, int(session["user_id"]), OWNER_USER_ID
+    )
+    if denial:
+        AUTH_SESSIONS.pop(sid, None)
+        raise HTTPException(status_code=403, detail=denial)
+    return session
 
 def require_pin(pin: str | None):
     if not pin or not hmac.compare_digest(pin, VOICE_PIN):
@@ -968,6 +978,11 @@ TOOLS.extend(MARKET_TOOLS)
 
 
 def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
+    # A request may span multiple AI calls. Recheck before each read/write so
+    # revocation during an in-flight conversation cannot authorize later actions.
+    denial = member_access_error(db, GTOP_GUILD_ID, user_id, OWNER_USER_ID)
+    if denial:
+        return {"ok": False, "error": denial}
     if name in MARKET_NAMES:
         return market_tool(db, name, args)
     if name in TRADE_ASSIST_NAMES:
