@@ -13,6 +13,7 @@ from gbop_voice_web.candle_evidence import parse_time, stamp, candle_query, crt_
 from gbop_voice_web.smt_evidence import compare_ranges
 from gbop_voice_web.candle_lifecycle import lifecycle_review
 from gbop_voice_web.market_context import PAIRINGS, enrich_smt, LIFECYCLE_PROMPT
+from gbop_voice_web.market_watch import WATCH_PROMPT
 
 NY = ZoneInfo('America/New_York')
 ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
@@ -285,7 +286,7 @@ MARKET_TOOLS = [
         'through_ny': {'type': 'string'}}),
     schema('get_market_price', 'Get latest broker bid/ask ONLY when a quote is requested. Disclose stale or absent data.', {'asset': {'type': 'string'}}),
     schema('review_market_session', 'Review the entire GTOP shift: 9AM-noon or 9PM-midnight New York, beginning with the 8 oclock anchor. Returns hourly range promotions, later CRTs, own objectives, assigned wick/body candle lifecycle, CSD/Super Soup/retests and automatic configured paired-market context. Use for casual references to today’s play as well as direct questions.', {
-        'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null']},
+        'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null'], 'description': 'Explicit NY date; null selects the latest shift represented by closed feed candles.'},
         'shift': {'type': 'string', 'enum': ['day', 'night']}}),
     schema('inspect_market_candles', 'Read historical or current candle OHLC and when extremes formed. Explicit ISO start/end in New York (or with offset). M1-M60, H1-H24, D1, W1, MN1; custom anchors supported. Incomplete coverage is not a definitive daily/weekly extreme. Paginate next_start_ny.', {
         'asset': {'type': 'string'}, 'start_ny': {'type': 'string'}, 'end_ny': {'type': 'string'}, 'timeframe': {'type': 'string'}}),
@@ -377,7 +378,7 @@ purge is a Turtle Wick Soup. Identity does not wait for CSD or member execution.
 MOB is discretionary knowledge. Do not spend calls trying to detect PD arrays or claim
 an automatically verified MOB. Preserve a member-supplied MOB as their chosen level.
 These tools never place/manage/close broker orders or change member trade progress.
-""".strip() + '\n\n' + LIFECYCLE_PROMPT
+""".strip() + '\n\n' + LIFECYCLE_PROMPT + '\n\n' + WATCH_PROMPT
 
 LIVE_MARKET_PROMPT = """
 MARKET-DEPENDENT QUESTIONS MUST BE DELEGATED TO THE BACKEND, even if they contain
@@ -400,7 +401,7 @@ asked. Speak the verified event and timestamp naturally, preserving data precisi
 Remember follow-up references to the same asset/CRT and distinguish market observations
 from the member’s actual fill/exit. MOB explanation is discretionary GTOP knowledge;
 automatic PD-array recognition is not required.
-""".strip() + '\n\n' + LIFECYCLE_PROMPT
+""".strip() + '\n\n' + LIFECYCLE_PROMPT + '\n\n' + WATCH_PROMPT
 
 
 def market_clock():
@@ -441,6 +442,28 @@ def paired_market_review(db, asset, comparison_asset, start, end, tf='H1', detec
     return enrich_smt(compare_ranges(pair[0], pair[1], start, anchor_end, end, tf, detect_through))
 
 
+def latest_available_shift_date(feed, shift, db=None):
+    """Find the latest actual shift in snapshots plus retained broker history."""
+    if shift not in ('day','night'):
+        raise ValueError('shift must be day or night.')
+    first,last=(9,12) if shift=='day' else (21,24)
+    now=int(time.time()); dates=[]
+    sets=[(feed.get('bars',[]),300),(feed.get('bars_m1',[]),60)]
+    if db is not None:
+        with db() as conn:
+            rows=conn.execute('SELECT step,payload FROM gbop_market_history WHERE asset=? AND symbol=? ORDER BY day_utc DESC,step DESC LIMIT 8',
+                              (feed['asset'],feed['symbol'])).fetchall()
+        sets += [(json.loads(r['payload']),r['step']) for r in rows]
+    for bars,step in sets:
+        for bar in bars:
+            moment=datetime.fromtimestamp(bar['time'],NY)
+            if bar['time']+step<=now and first<=moment.hour<last:
+                dates.append(moment.date())
+    if not dates:
+        raise ValueError('No retained closed candles identify the requested shift. Specify a historical date to inspect its coverage.')
+    return max(dates).isoformat()
+
+
 def market_tool(db, name, args):
     try:
         if name not in MARKET_NAMES:
@@ -455,8 +478,8 @@ def market_tool(db, name, args):
             result.pop('bars', None); result.pop('bars_m1', None)
             return result
         if name == 'review_market_session':
-            day = date.fromisoformat(args.get('date_ny') or datetime.now(NY).date().isoformat())
             shift = args.get('shift', 'day')
+            day = date.fromisoformat(args.get('date_ny') or latest_available_shift_date(result, shift, db))
             start = int(datetime(day.year, day.month, day.day, 7 if shift == 'day' else 19, tzinfo=NY).timestamp())
             end = start + 5 * 3600
         else:

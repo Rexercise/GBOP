@@ -206,8 +206,5 @@ Prepared briefings cover connected feeds in rotation without AI polling. Use
 get_prepared_market_brief for a prepared overview, and review_market_session/CRT
 for exact or fresher facts. State its actual date and as-of time. Do not pretend an
 unsupported correlated feed is available or claim uninterrupted monitoring.
-For Super Soup, use classification.formation and classification.outcome separately:
-clean/unclean structure is not success/failure. Read nested_crt_objectives separately
-from parent_range_function. Name V4/V5 inside-bar sequences and V6 re-soups when
-supported; no sweep plus directional delivery is not a Super Soup.
+Super Soup: read formation, outcome and parent-range function separately.
 '''

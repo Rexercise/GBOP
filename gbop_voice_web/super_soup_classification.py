@@ -75,7 +75,7 @@ def classify_super_soup(model, side, rows, bars, anchor, end, step, invalid_at=N
     index = next((i for i, x in enumerate(pre) if x['purges_model1_extreme']), None)
     base = {'version': VERSION, 'model1_candle': fact(model), 'timeframe': timeframe,
             'following_candles': sequence[:32], 'following_candles_truncated': len(sequence) > 32,
-            'sequence_gap_at': gap, 'formation': 'unverified' if gap else 'none_observed',
+            'sequence_gap_at': gap, 'formation': 'unverified' if not sequence or (gap and csd_index is None) else 'none_observed',
             'variant': None, 'variant_status': 'not_established', 'outcome': 'not_applicable',
             'execution_status': 'not_assessed', 'risk_tier_unchanged': True,
             'cleanliness_is_separate_from_outcome': True,

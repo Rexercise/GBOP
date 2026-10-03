@@ -165,28 +165,36 @@ async def deliver_alerts(db,guild_id,owner_id,sender,role_check,now=None):
 
 def prepare_next_shift(db,fingerprints,now=None):
     """One changed asset/shift per tick; bounded retention and no model calls."""
-    from gbop_voice_web.market_data import read_feed, market_tool
+    from gbop_voice_web.market_data import read_feed, market_tool, latest_available_shift_date, history_bars
+    from datetime import timedelta
     now=int(time.time() if now is None else now)
     with db() as conn:
         assets=[r['asset'] for r in conn.execute('SELECT asset FROM gbop_market_feed ORDER BY asset').fetchall()]
-    jobs=[]
-    for asset in assets:
+    candidates=sorted(((fingerprints.get(('rotation',a,s),0),a,s) for a in assets for s in ('day','night')),key=lambda x:x[0])
+    selected=None
+    for _,asset,shift in candidates[:3]:
+        fingerprints[('rotation',asset,shift)]=now
         feed=read_feed(db,asset,now)
         if not feed.get('ok'):
             continue
-        bars=feed.get('bars_m1') or feed.get('bars',[])
-        for shift,first,last in [('day',9,12),('night',21,24)]:
-            relevant=[b for b in bars if first<=datetime.fromtimestamp(b['time'],NY).hour<last and b['time']<now]
-            if not relevant:
-                continue
-            recent=relevant[-1]; day=datetime.fromtimestamp(recent['time'],NY).date().isoformat()
-            token=(asset,day,shift,recent['time'],recent['open'],recent['high'],recent['low'],recent['close'])
-            key=(asset,day,shift)
-            if fingerprints.get(key)!=token:
-                jobs.append((fingerprints.get(('checked',)+key,0),key,token))
-    if not jobs:
+        try:
+            day=latest_available_shift_date(feed,shift,db)
+        except ValueError:
+            continue
+        begins=datetime.fromisoformat(day).replace(hour=7 if shift=='day' else 19,tzinfo=NY)
+        start=int(begins.timestamp()); end=int((begins+timedelta(hours=5)).timestamp())
+        bars,step=history_bars(db,feed,start,end)
+        if not bars:
+            continue
+        key=(asset,day,shift)
+        token=(asset,day,shift,hashlib.sha256(json.dumps(bars,separators=(',',':')).encode()).hexdigest(),now//300)
+        if fingerprints.get(key)==token:
+            continue
+        selected=(asset,day,shift,token)
+        break
+    if selected is None:
         return None
-    _,(asset,day,shift),token=min(jobs,key=lambda x:x[0])
+    asset,day,shift,token=selected
     result=market_tool(db,'review_market_session',{'asset':asset,'date_ny':day,'shift':shift})
     if not result.get('ok'):
         return None

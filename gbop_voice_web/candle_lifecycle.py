@@ -5,6 +5,7 @@ Retests and later closes are named by the exact reference tested. They never
 silently become a member's stop or the parent range's invalidation rule.
 """
 from datetime import datetime
+from gbop_voice_web.super_soup_classification import classify_super_soup
 from gbop_voice_web.candle_evidence import summarize, stamp, parse_time, next_boundary, timeframe
 
 VERSION = 'candle-lifecycle-2026-10-03'
@@ -145,7 +146,8 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
               'response_contract': 'Name the candle and its wick/body type first. Then give CSD, Super Soup, '
                   'reference retests, body closes, own objectives and parent-range invalidation separately. '
                   'Unconfirmed is not nonexistent. Body-disrespect evidence uses its stated level, '
-                  'not an assumed stop. Missing data means unverified. Times are candle intervals, not ticks.'}
+                  'not an assumed stop. Missing data means unverified. Times are candle intervals, not ticks. '
+                  'Use super_soup.classification for cleanliness, nested CRT variant, outcome and separate parent function.'}
     if not anchor.get('complete'):
         return result
     if not mapped:
@@ -187,6 +189,8 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
                     'both_boundaries_pierced_in_same_candle': row['high'] > anchor['high'] and row['low'] < anchor['low']}
             if body:
                 fact.update(_follow(row, side, rows[i+1:], bars, anchor, end, step, invalid_at, mapped))
+                fact['super_soup']['classification'] = classify_super_soup(
+                    row, side, rows[i+1:], bars, anchor, end, step, invalid_at, mapped)
             else:
                 fact.update(csd={'status': 'not_a_model1_body_candle'},
                             objectives_after_formation=_objectives(bars, parse_time(row['end_ny']), end,
@@ -218,6 +222,9 @@ def lifecycle_summary(result):
             parts.append('CSD or its timing remains unresolved in the available evidence.')
         if body['super_soup']['status'] == 'observed_before_csd':
             parts.append(f"A Super Soup returned inside that candle at {_clock(body['super_soup']['evidence']['return_candle']['bar_close_ny'])}, before CSD.")
+        classification = body['super_soup'].get('classification', {})
+        if classification.get('formation') in ('clean', 'unclean'):
+            parts.append(f"Super Soup formation was {classification['formation']}; its Model 1-range CRT outcome was {classification['outcome'].replace('_', ' ')}. Parent-range objectives are assessed separately.")
         if body['body_reference_retest']['evidence']:
             r = body['body_reference_retest']['evidence']
             parts.append(f"Its body reference was retested in the {_clock(r['bar_open_ny'])}–{_clock(r['bar_close_ny'])} candle.")

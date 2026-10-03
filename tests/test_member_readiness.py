@@ -68,7 +68,9 @@ class MemberAccessTests(unittest.TestCase):
                                      ('gbop_voice_web/server.py', 'run_tool', 'OWNER_USER_ID')]:
             tool = Mock(return_value={'ok': True})
             ns = dict(member_access_error=member_access_error, db=self.db, GTOP_GUILD_ID=1,
-                      MARKET_NAMES={'get_market_price'}, market_tool=tool, **{owner_name: 99})
+                      MARKET_NAMES={'get_market_price'}, market_tool=tool,
+                      WATCH_NAMES={'manage_market_watch','get_prepared_market_brief'},
+                      watch_tool=tool, **{owner_name: 99})
             invoke = function(path, name, ns)
             result = invoke(14, 'get_market_price', {'user_id': 99, 'guild_id': 2})
             self.assertFalse(result['ok'])

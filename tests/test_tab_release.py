@@ -239,3 +239,30 @@ class TabIntegrationTests(unittest.TestCase):
         self.assertEqual(latest_available_shift_date(feed,'day'),'2026-10-02')
 
 if __name__=='__main__': unittest.main()
+
+class RetainedHistoryTests(unittest.TestCase):
+    def test_latest_date_uses_history_when_live_snapshot_has_no_shift_candles(self):
+        from gbop_voice_web.market_data import latest_available_shift_date
+        conn=sqlite3.connect(':memory:'); conn.row_factory=sqlite3.Row
+        conn.execute('CREATE TABLE gbop_market_history(asset TEXT,symbol TEXT,step INTEGER,day_utc INTEGER,payload TEXT)')
+        conn.execute('INSERT INTO gbop_market_history VALUES (?,?,?,?,?)',('NAS100','USTECm',300,T//86400*86400,json.dumps([{'time':T}])))
+        conn.commit()
+        try:
+            feed={'asset':'NAS100','symbol':'USTECm','bars':[{'time':T+7*3600}],'bars_m1':[]}
+            self.assertEqual(latest_available_shift_date(feed,'day',lambda:conn),'2026-10-02')
+        finally:
+            conn.close()
+    def test_no_soup_yet_is_unknown_not_absent(self):
+        self.assertEqual(classify([])['formation'],'unverified')
+    def test_watch_dispatch_ignores_forged_member_and_checks_access(self):
+        from test_member_readiness import function
+        from unittest.mock import Mock
+        for path,name,owner in [('bot.py','ai_execute_tool','GTOP_OWNER_USER_ID'),('gbop_voice_web/server.py','run_tool','OWNER_USER_ID')]:
+            watched=Mock(return_value={'ok':True})
+            ns={'member_access_error':Mock(return_value=None),'db':object(),'GTOP_GUILD_ID':1,owner:99,'WATCH_NAMES':{'manage_market_watch'},'watch_tool':watched}
+            invoke=function(path,name,ns)
+            args={'action':'list','user_id':99,'guild_id':2}
+            self.assertTrue(invoke(10,'manage_market_watch',args)['ok'])
+            self.assertEqual(watched.call_args.args[1:4],(1,10,99))
+            ns['member_access_error'].return_value='revoked'; watched.reset_mock()
+            self.assertFalse(invoke(10,'manage_market_watch',args)['ok']); watched.assert_not_called()

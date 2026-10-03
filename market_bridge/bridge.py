@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import certifi
 
 ROOT = Path(__file__).resolve().parent
-ASSETS = {'NAS100', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
+ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
 
 
 def load_config(path):
@@ -24,8 +24,8 @@ def load_config(path):
     if not isinstance(token, str) or len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
         raise ValueError('Bridge token must contain at least 32 characters.')
     symbols = config.get('symbols', {})
-    if not isinstance(symbols, dict) or not 1 <= len(symbols) <= 8:
-        raise ValueError('Configure 1–8 exact broker symbols.')
+    if not isinstance(symbols, dict) or not 1 <= len(symbols) <= len(ASSETS):
+        raise ValueError('Configure 1–9 exact broker symbols, including SPX only with its verified broker mapping.')
     for asset, symbol in symbols.items():
         if asset not in ASSETS:
             raise ValueError('Use canonical GBOP asset names in symbols.')
