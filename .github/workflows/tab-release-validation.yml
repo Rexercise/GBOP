@@ -1,0 +1,48 @@
+name: TAB release validation
+on:
+  push:
+    branches: [fix/tab-market-release-20261003]
+permissions:
+  contents: write
+concurrency:
+  group: tab-release-validation
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Inspect integration points
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          for name in ('bot.py','gbop_voice_web/server.py','gbop_voice_web/voice_runtime.py'):
+              text=Path(name).read_text(); lines=text.splitlines()
+              print('\nINTEGRATION',name)
+              for n in ast.walk(ast.parse(text)):
+                  if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)) and any(w in n.name.lower() for w in ('tool','ready','setup','init','scheduler','notification','access')):
+                      print(n.lineno,n.end_lineno,n.name)
+              for i,line in enumerate(lines,1):
+                  if any(w in line for w in ('MARKET_TOOLS','MARKET_NAMES','market_tool(', 'MARKET_PROMPT','_init_market','create_task(', 'can_use_gbop','member_access_error')):
+                      print(i,line)
+          PY
+      - name: Install test dependencies
+        run: pip install httpx==0.28.1 fastapi==0.116.1
+      - name: Apply exact branch-only integration patch
+        if: ${{ hashFiles('tools/apply_tab_release.py') != '' }}
+        run: python tools/apply_tab_release.py
+      - name: Compile and run full regression suite
+        run: |
+          python -m compileall -q bot.py gbop_voice_web
+          python -m unittest discover -s tests
+      - name: Commit validated integration and remove temporary workflow
+        if: ${{ hashFiles('tools/apply_tab_release.py') != '' }}
+        run: |
+          rm tools/apply_tab_release.py .github/workflows/tab-release-validation.yml
+          git add bot.py gbop_voice_web tests tools/apply_tab_release.py .github/workflows/tab-release-validation.yml
+          git -c user.name='GBOP release validation' -c user.email='noreply@github.com' commit -m 'Apply validated TAB integration and remove release helper'
+          git push origin HEAD:fix/tab-market-release-20261003
