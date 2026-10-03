@@ -46,6 +46,7 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(r['boneless_reference']['open'], 197)
         self.assertEqual(r['origin_model1']['open'], 99)
         self.assertFalse(r['boneless_reference']['local_purge_observed'])
+        self.assertEqual(r['boneless_reference']['identity_basis'], 'smt_time_aligned')
         self.assertEqual(r['boneless_reference']['csd_status'],'not_assessed')
     def test_wick_only_divergence_does_not_fabricate_model1(self):
         p = fixture(); p[0]['bars'][15]['close'] = 99

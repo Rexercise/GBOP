@@ -88,7 +88,8 @@ def attach_paired_model1(review, data, anchors, tf):
                 continue
             reference = {
                 'identity': 'Model 1 candle (SMT-inherited reference)',
-                'identity_basis': 'same_time_as_correlated_body_purge',
+                'identity_basis': 'smt_time_aligned',
+                'identity_detail': 'same_time_as_correlated_body_purge',
                 'asset': assets[peer], 'timeframe': mapped,
                 'bar_open_ny': candle['start_ny'], 'bar_close_ny': candle['end_ny'],
                 'identified_at_ny': model['identified_at_ny'],
