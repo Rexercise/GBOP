@@ -21,6 +21,9 @@ NY = ZoneInfo('America/New_York')
 SHIFT_TOOLS = {'review_market_session', 'get_prepared_market_brief'}
 SCOPED_TOOLS = SHIFT_TOOLS | {'list_market_shifts', 'review_market_crt',
                               'review_market_smt', 'inspect_market_candles'}
+DETAIL_SCOPE_KEYS = ('asset', 'anchor_start_ny', 'anchor_timeframe', 'through_ny')
+DETAIL_NULL_ARGS = ('confirmation_timeframe', 'blessed_thief_timeframe',
+                    'blessed_thief_from_ny', 'detail_candle_start_ny', 'detail_from_ny')
 
 
 def contextual_tools(tools):
@@ -39,7 +42,9 @@ def contextual_tools(tools):
             'it means yesterday New York, never the latest retained night. '
             'Use latest only for a NEW generic last/latest available shift request; '
             'set shift=null unless the member explicitly names day or night. '
-            'A continued detail request cannot change asset, date, shift, timeframe or cutoff.')
+            'A continued detail request cannot change asset, date, shift, timeframe or cutoff. '
+            'For focused Model 1/CSD/Super Soup/objective questions call review_market_crt; '
+            'set detail_candle_start_ny for a named candle.')
         params = tool['parameters']
         params['properties']['context_action'] = {
             'type': 'string', 'enum': ['continue', 'switch', 'latest', 'last_night']}
@@ -167,7 +172,9 @@ def _text_intent(text, selected, now):
         fields['shift'] = 'night' if night else 'day'
     # Explicit range changes, not arbitrary prices/numbers in a question.
     anchor = re.search(r'\b(1[0-2]|0?[1-9])(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\s*(?:candle|range|anchor)\b', text)
-    if anchor:
+    if anchor and (anchor[2] in (None, '00')) and not (
+            re.search(r'\b(?:model\s*(?:1|one)|super\s*soup|csd|m(?:1|5|15|30))\b', text)
+            and not re.search(r'\b(?:range|anchor|h1)\b', text)):
         day_value = fields.get('date_ny') or (selected or {}).get('date_ny')
         if day_value:
             hour = int(anchor[1]) % 12 + (12 if anchor[3].startswith('p') else 0)
@@ -195,6 +202,102 @@ def _text_intent(text, selected, now):
     return {'action': 'switch' if changed or whole_shift else 'continue', 'fields': fields}
 
 
+def _detail_intent(text, previous=None):
+    """Only actual current user text; audio callers must not synthesize a transcript."""
+    text = text.lower().strip()
+    terms = r'(?:model\s*(?:1|one)|super\s*soup|csd|wick(?:[ -]soup)?|body[ -](?:soup|purge))'
+    if (re.search(r'\b(?:define|definition|meaning of|explain the concept)\b', text)
+            or re.search(r'\bwhat (?:is|are) (?:a |an |the )?' + terms + r'\s*[?.!]*$', text)
+            or re.search(r'\bwhat does ' + terms + r' mean\b', text)
+            or re.fullmatch(r'(?:explain|what is) (?:a |an |the )?' + terms + r'(?: in general)?[?.!]*', text)):
+        return None
+    if re.search(r'\b(?:whole|entire) shift\b|\b(?:new|latest|last) shift\b', text):
+        return None
+    purpose = next((purpose for pattern, purpose in (
+        (r'\bsuper\s*soup\b', 'super_soup'),
+        (r'\bcsd\b|change (?:in|of) state of delivery', 'csd'),
+        (r'\bmodel\s*(?:1|one)\b', 'model1'),
+        (r'\b(?:wick|body)[ -](?:soup|purge)\b|\bwick or body\b', 'purge_identity'),
+        (r'(?:how (?:far|close)|distance|points away|distance-to).*(?:midpoint|50%|target|objective|opposing liquidity|buy[ -]side|sell[ -]side)', 'objective_distance'),
+        (r'\bcandle (?:evidence|identity|details?)\b', 'candle_identity'))
+        if re.search(pattern, text)), None)
+    # Parent range clocks are not candidate identities. Multiple named candles
+    # need a deliberate selection; never silently pick the first quoted time.
+    iso_matches = list(re.finditer(r'20\d{2}-\d{2}-\d{2}t\d{2}:\d{2}(?::00)?(?:[+-]\d{2}:\d{2}|z)?', text))
+    clock_text = text
+    for match in reversed(iso_matches):
+        clock_text = clock_text[:match.start()] + ' ' * len(match[0]) + clock_text[match.end():]
+    clocks = []
+    for match in re.finditer(r'(?<![\w:])([01]?\d|2[0-3])(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)?(?![\w:])', clock_text):
+        if not match[2] and not match[3]:
+            continue
+        if re.match(r'\s*(?:h1\s*)?(?:range|anchor)\b', clock_text[match.end():]):
+            continue
+        value = (int(match[1]), int(match[2] or 0), match[3])
+        if value not in clocks:
+            clocks.append(value)
+    iso_values = list(dict.fromkeys(match[0] for match in iso_matches))
+    if purpose is None and clocks and re.search(r'\b(?:candle|wick|body|purge)\b', text):
+        purpose = 'candle_identity'
+    elliptical = previous and re.search(r'\b(?:it|its|that|this|same|one)\b', text) and re.search(
+        r'\b(?:did|was|were|when|why|how|what|which|show|confirm|perform|deliver|reach|target|midpoint|correct|sure)\b', text)
+    if not purpose and not elliptical:
+        return None
+    focus = deepcopy(previous or {})
+    focus['query_purpose'] = purpose or previous['query_purpose']
+    if re.search(r'\b(?:another|different|other)\b', text):
+        focus['require_other_identity'] = True
+        focus['excluded_candle_start_ny'] = (focus.get('detail_candle_start_ny')
+                                            or focus.get('excluded_candle_start_ny'))
+        focus.pop('detail_candle_start_ny', None)
+        focus.pop('candle_clock', None)
+        focus.pop('direction', None)
+    direction = re.search(r'\b(bullish|bearish)\b', text)
+    if direction:
+        if focus.get('direction') != direction[1]:
+            focus.pop('detail_candle_start_ny', None)
+            focus.pop('candle_clock', None)
+        focus['direction'] = direction[1]
+    tf = re.search(r'\b(m(?:1|5|15|30)|h[14]|d1)\b', text)
+    if tf and not re.search(r'\b(?:range|anchor)\b', text):
+        focus['confirmation_timeframe'] = tf[1].upper()
+    focus.pop('ambiguous_candles', None)
+    if len(iso_values) + len(clocks) > 1:
+        focus['ambiguous_candles'] = True
+    elif iso_values:
+        focus.pop('candle_clock', None)
+        focus['detail_candle_start_ny'] = iso_values[0].upper()
+    elif clocks:
+        focus['candle_clock'] = clocks[0]
+        focus.pop('detail_candle_start_ny', None)
+    return focus
+
+
+def _detail_index(result):
+    """Bounded routing references, not another copy of lifecycle evidence."""
+    review = result.get('review') or {}
+    if isinstance(review.get('review'), dict):
+        review = review['review']
+    rows = (review.get('shift_story') or {}).get('ranges')
+    if rows is None:
+        rows = [review] if review.get('anchor') else []
+    found = []
+    for row in rows[:4]:
+        anchor = row.get('anchor_start_ny') or (row.get('anchor') or {}).get('start_ny')
+        seen = set()
+        facts = (row.get('candle_lifecycle') or {}).get('purge_candles', [])
+        facts = facts or (row.get('model1') or {}).get('candles', [])
+        for fact in facts[:48]:
+            candle = fact.get('bar_open_ny')
+            identity = (candle, fact.get('purge_type'), fact.get('direction'))
+            if not anchor or not candle or identity in seen:
+                continue
+            seen.add(identity)
+            found.append({'anchor_start_ny': anchor, 'bar_open_ny': candle,
+                          **{k: fact[k] for k in ('timeframe', 'purge_type', 'direction') if k in fact}})
+    return found
+
+
 class MarketConversation:
     def __init__(self, owner=None):
         self.owner = owner  # Set only by authenticated entry points; never tool arguments.
@@ -207,6 +310,10 @@ class MarketConversation:
         self.evidence = None
         self.pending = None
         self.intent = None
+        self.detail_focus = None
+        self._required_detail = None
+        self._detail_retrieved_generation = -1
+        self._detail_index = []
         self._lock = threading.RLock()
 
     def begin_turn(self, text=None, *, now=None, client_turn=None):
@@ -219,6 +326,7 @@ class MarketConversation:
                 self.client_turn = client_turn
             self.generation += 1
             self.pending = None
+            previous_scope = self.requested or self.selected or {}
             self.intent = (_text_intent(text, self.requested or self.selected, time.time() if now is None else now)
                            if text is not None else None)
             if self.intent is not None and self.intent['fields']:
@@ -229,7 +337,92 @@ class MarketConversation:
                     for key in ('anchor_start_ny', 'anchor_timeframe', 'through_ny'):
                         if key not in self.intent['fields']:
                             self.requested.pop(key, None)
+            scope_changed = any((self.requested or {}).get(k) != previous_scope.get(k)
+                                for k in ('asset', 'date_ny', 'shift', 'anchor_start_ny'))
+            previous_focus = None if scope_changed else self.detail_focus
+            self._required_detail = (_detail_intent(text, previous_focus) if text is not None else None)
+            # A new topic or explicit switch must not inherit an old candle identity.
+            if text is not None:
+                self.detail_focus = deepcopy(self._required_detail)
             return self.generation
+
+    def required_evidence_request(self):
+        # Deterministic text retrieval includes no-tool model replies.
+        # Audio begin_turn(None) has no transcript; its routing remains model-dependent.
+        from gbop_voice_web.candle_evidence import parse_time
+        with self._lock:
+            if self.closed or self._required_detail is None:
+                return None
+            focus = deepcopy(self._required_detail)
+            target = deepcopy(self.requested or self.selected or {})
+            index = deepcopy(self._detail_index)
+            same_scope = self.selected and all(target.get(k) == self.selected.get(k)
+                                               for k in ('asset', 'date_ny', 'shift'))
+            explicit_anchor = 'anchor_start_ny' in (self.intent or {}).get('fields', {})
+            previously_detailed = (self.evidence or {}).get('source_tool') == 'review_market_crt'
+        base = {'tool': 'review_market_crt', 'query_purpose': focus['query_purpose']}
+        def unresolved(message):
+            return {**base, 'args': None, 'status': 'market_detail_scope_required', 'error': message}
+        if focus.get('ambiguous_candles'):
+            return unresolved('Several candle openings were named. Which exact candle should I inspect first?')
+        if (self.intent or {}).get('action') == 'ambiguous':
+            return unresolved('Clarify the requested range before retrieving focused candle evidence.')
+        if target.get('asset') and target.get('date_ny') and target.get('shift'):
+            target = {**_selection(target['asset'], target['date_ny'], target['shift']), **target}
+        if not all(target.get(k) for k in DETAIL_SCOPE_KEYS):
+            return unresolved('Which asset, New York date and range should I inspect? No exact prior scope is established.')
+        try:
+            lo, hi = parse_time(target['anchor_start_ny']), parse_time(target['through_ny'])
+            if 'candle_clock' in focus:
+                hour, minute, suffix = focus.pop('candle_clock')
+                if suffix:
+                    hours = [hour % 12 + (12 if suffix.startswith('p') else 0)] if 1 <= hour <= 12 else []
+                else:
+                    hours = sorted({hour, hour + 12} if 1 <= hour <= 11 else {hour})
+                start_day, end_day = datetime.fromtimestamp(lo, NY), datetime.fromtimestamp(hi, NY)
+                candidates = {int(day.replace(hour=h, minute=minute, second=0, microsecond=0).timestamp())
+                              for day in (start_day, end_day) for h in hours if h < 24}
+                candidates = sorted(t for t in candidates if lo <= t < hi)
+                if len(candidates) != 1:
+                    return unresolved('Specify the exact candle opening with AM/PM inside the selected range and cutoff.')
+                focus['detail_candle_start_ny'] = _stamp(candidates[0])
+            exact = focus.get('detail_candle_start_ny')
+            if exact:
+                exact = focus['detail_candle_start_ny'] = _stamp(parse_time(exact))
+                if not lo <= parse_time(exact) < hi:
+                    return unresolved('The named candle is outside the selected range/cutoff; clarify the requested range.')
+            # The overview may contain several independent parent ranges. A known
+            # candle is routed by its actual range, never guessed from its hour.
+            candidates = index if same_scope else []
+            if exact:
+                candidates = [row for row in candidates if parse_time(row['bar_open_ny']) == parse_time(exact)]
+            elif focus.get('direction'):
+                candidates = [row for row in candidates if row.get('direction') == focus['direction']
+                              and row.get('purge_type') == 'body_soup']
+            else:
+                candidates = []
+            if focus.get('require_other_identity') and not exact:
+                excluded = focus.get('excluded_candle_start_ny')
+                candidates = [row for row in candidates if row['bar_open_ny'] != excluded]
+            if explicit_anchor or previously_detailed:
+                candidates = [row for row in candidates if row['anchor_start_ny'] == target['anchor_start_ny']]
+            anchors = {row['anchor_start_ny'] for row in candidates}
+            if len(anchors) > 1:
+                return unresolved('That candle or direction belongs to multiple parent ranges. Which range do you mean?')
+            if not exact and len({row['bar_open_ny'] for row in candidates}) > 1:
+                return unresolved('Several candles match that direction in the selected range. Which candle opening do you mean?')
+            if focus.get('require_other_identity') and not exact and not candidates:
+                return unresolved('Which other candle opening do you mean? The previous identity cannot stand in for another Model 1.')
+            if candidates:
+                target['anchor_start_ny'] = candidates[0]['anchor_start_ny']
+                if len(candidates) == 1 and not exact:
+                    focus['detail_candle_start_ny'] = candidates[0]['bar_open_ny']
+            args = {key: target[key] for key in DETAIL_SCOPE_KEYS}
+            args.update({key: focus.get(key) for key in DETAIL_NULL_ARGS})
+            args['context_action'] = 'continue'
+            return {**base, 'status': 'ready', 'args': args}
+        except (ValueError, TypeError, KeyError, OverflowError):
+            return unresolved('The exact candle or range time is invalid or ambiguous; clarify its opening and timeframe.')
 
     def invalidate(self, *, client_turn=None):
         with self._lock:
@@ -240,6 +433,8 @@ class MarketConversation:
             self.generation += 1
             self.pending = None
             self.intent = None
+            self._required_detail = None
+            self.detail_focus = None
 
     def advance_client_turn(self, client_turn):
         # A cancellation notification can arrive after delegation for that same
@@ -265,6 +460,8 @@ class MarketConversation:
                 return ''
             snapshot = {'requested_context': self.requested, 'selection': self.selected,
                         'verified_evidence': self.evidence}
+            if self._required_detail is not None:
+                snapshot['required_evidence_request'] = self.required_evidence_request()
             if self.requested and self.requested != self.selected:
                 snapshot['warning'] = ('Requested context has no matching verified evidence yet. '
                                        'Do not answer it from the previous selection; retrieve the exact requested scope.')
@@ -275,6 +472,9 @@ class MarketConversation:
                 'with context_action=continue, preserving asset/date/shift and cutoff. '
                 'In this review, "what about Young Lefty?" means retrieve review_market_crt '
                 'for this asset/date at 7AM (day) or 7PM (night), not a definition or chart request. '
+                'Focused Model 1, wick/body identity, CSD, Super Soup and objective-distance '
+                'follow-ups require review_market_crt, with the exact named candle when given. '
+                'A coarse overview or remembered answer does not satisfy a focused evidence request. '
                 'Do not replace midpoint-only delivery with full opposing-objective delivery. '
                 'Use these scope/evidence IDs; if detail is missing, retrieve it in this same scope. '
                 'For an explicit member change outside this scope use context_action=switch. For a NEW last/latest '
@@ -303,6 +503,24 @@ class MarketConversation:
         if name not in SCOPED_TOOLS:
             return runner(name, arguments)
         args = dict(arguments)
+        required = self.required_evidence_request()
+        with self._lock:
+            if (self._detail_retrieved_generation == ticket
+                    and name in {'review_market_smt', 'inspect_market_candles'}):
+                required = None  # Scoped supplementary evidence after required CRT, not an overview bypass.
+        if required:
+            if required['args'] is None:
+                return {'ok': False, **required}
+            if name != required['tool']:
+                scope = self.requested or self.selected or {}
+                specific_range = (scope.get('date_ny') and scope.get('shift') and
+                    any(required['args'].get(k) != _selection(scope['asset'], scope['date_ny'], scope['shift'])[k]
+                        for k in ('anchor_start_ny', 'anchor_timeframe', 'through_ny')))
+                return {'ok': False, 'status': 'selected_range_requires_detail' if specific_range else 'market_detail_required',
+                        'next_tool': required['tool'], 'next_arguments': required['args'],
+                        'query_purpose': required['query_purpose'],
+                        'error': 'Retrieve the exact focused evidence before answering. A coarse overview cannot establish this fact.'}
+            args.update(required['args'])
         action = args.pop('context_action', 'continue')
         if action not in {'continue', 'switch', 'latest', 'last_night'}:
             return {'ok': False, 'error': 'Use context_action continue, switch, latest, or last_night.'}
@@ -393,6 +611,9 @@ class MarketConversation:
                 except (ValueError, KeyError, TypeError) as exc:
                     return {'ok': False, 'status': 'market_context_mismatch',
                             'expected_context': target, 'error': str(exc)}
+            if required:
+                target.update({k: required['args'][k] for k in DETAIL_SCOPE_KEYS})
+                asset = target['asset']
             args['asset'] = asset
             if name in SHIFT_TOOLS:
                 original = _selection(asset, target['date_ny'], target['shift'])
@@ -457,6 +678,21 @@ class MarketConversation:
                                 'error': 'Returned candle evidence does not match the selected market range.'}
                 if name in SHIFT_TOOLS | {'review_market_crt'}:
                     previous_evidence = self.evidence if self.selected == target else None
+                    if name in SHIFT_TOOLS or self.selected is None or any(
+                            self.selected.get(k) != target.get(k) for k in ('asset', 'date_ny', 'shift')):
+                        self._detail_index = _detail_index(result)
+                    elif name == 'review_market_crt':
+                        fresh = _detail_index(result)
+                        self._detail_index = ([row for row in self._detail_index
+                            if row['anchor_start_ny'] != target['anchor_start_ny']] + fresh)[:192]
+                    if name == 'review_market_crt':
+                        self._detail_retrieved_generation = ticket
+                        self.detail_focus = {'query_purpose': (required or {}).get('query_purpose', 'candle_identity'),
+                            **{k: args[k] for k in ('detail_candle_start_ny', 'confirmation_timeframe') if args.get(k)}}
+                        if required:
+                            result = {**result, 'focused_evidence_request': deepcopy(required)}
+                    elif self.intent is None or self._required_detail is None:
+                        self.detail_focus = None
                     self.selected = deepcopy(target)
                     self.requested = deepcopy(target)
                     self.evidence = self._evidence(name, result, target)

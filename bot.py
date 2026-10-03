@@ -5453,6 +5453,13 @@ def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None)
         content_items.append({"type": "input_image", "image_url": photo["image_url"]})
     input_items.append({"role": "user", "content": content_items})
 
+    from gbop_voice_web.market_prefetch import prefetch_market_evidence
+    prefetched = prefetch_market_evidence(market_context,
+        lambda name, values: ai_execute_tool(user_id, name, values), market_generation)
+    if not market_context.current(market_generation):
+        return 'This request was superseded by newer speech.'
+    if prefetched:
+        input_items.append({'role': 'developer', 'content': prefetched})
     base_instructions = GTOP_AI_PROMPT + "\n\n" + member_state
     instructions = base_instructions + market_context.prompt()
 
