@@ -22,10 +22,12 @@ class BonelessKnowledgeTests(unittest.TestCase):
         self.assertIn("partner's visible purge supplies the functional purge context", CANONICAL_KNOWLEDGE)
         self.assertIn("gold is the boneless side", CANONICAL_KNOWLEDGE)
         self.assertIn("bullish counterpart reverses the sides", CANONICAL_KNOWLEDGE)
+        self.assertIn("Boneless is an ADJECTIVE", CANONICAL_KNOWLEDGE)
+        self.assertNotIn("Gold completed the boneless SMT objective", CANONICAL_KNOWLEDGE)
 
     def test_delivery_uses_own_objective_and_preserves_chronology(self):
         self.assertIn("ITS OWN selected range", CANONICAL_KNOWLEDGE)
-        self.assertIn("Gold completed the boneless SMT objective", CANONICAL_KNOWLEDGE)
+        self.assertIn("Gold was boneless and completed its sell-side objective", CANONICAL_KNOWLEDGE)
         self.assertIn("A midpoint touch alone is midpoint delivery", CANONICAL_KNOWLEDGE)
         self.assertIn("A partner reaching its own objective does not prove", CANONICAL_KNOWLEDGE)
         self.assertIn("Later invalidation does not erase earlier SMT", CANONICAL_KNOWLEDGE)
@@ -36,6 +38,14 @@ class BonelessKnowledgeTests(unittest.TestCase):
         self.assertIn("uncertain chronology, or an unverified target touch mean unverified", CANONICAL_KNOWLEDGE)
         self.assertIn("Boneless is a structural descriptor, not a new execution model or risk tier", CANONICAL_KNOWLEDGE)
         self.assertIn("Do not claim continuous monitoring, pre-analysis", CANONICAL_KNOWLEDGE)
+
+    def test_proactive_coaching_is_time_aware_not_hindsight(self):
+        self.assertIn("Volunteer relevant verified SMT context without waiting", CANONICAL_KNOWLEDGE)
+        self.assertIn("A post-entry SMT cannot be presented as a missed pre-entry observation", CANONICAL_KNOWLEDGE)
+        self.assertIn("SMT alone does not prove why a trade lost", CANONICAL_KNOWLEDGE)
+        self.assertIn("Objective completion does not guarantee continuation", CANONICAL_KNOWLEDGE)
+        self.assertIn("NAS100/SPX", CANONICAL_KNOWLEDGE)
+        self.assertIn("never pretend an SPX feed is connected", CANONICAL_KNOWLEDGE)
 
     def test_model1_identity_correction_is_preserved(self):
         self.assertIn("Model 1 candle identification is separate from subsequent CSD/CISD confirmation", CANONICAL_KNOWLEDGE)
