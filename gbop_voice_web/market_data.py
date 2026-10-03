@@ -345,6 +345,10 @@ it can oppose 9ate8. Omit absent/uninitiated plays and candidate lists.
 No Model 1/Soup candle dump by default; fetch exact detail_request for those followups.
 Other plays/ranges: review_other_market_ranges excludes completed discussion, never mere retrieval.
 Keep unbranded/failed/cutoff ranges and independent roles. Name openings. Return resumes; reset requires explicit restart.
+Use followup_mode=other_ranges for distinct other opportunities. For 'what happened next',
+'continue that range', or 'how did it finish', use followup_mode=continue_active_range with
+context_action=continue, even if discussed. Keep the selected anchor and cutoff; a new hour
+does not reset the active story. Explicit independent ranges require their own exact detail.
 Use full shift_story.recap only for requested complete walkthroughs.
 Honor range-specific coverage, uncertainty and chronological invalidation. Earlier
 delivery survives later invalidation; source-bar ties leave order unknown. Structure
@@ -387,7 +391,11 @@ can oppose 9ate8; never borrow that play's objectives. Omit absent/uninitiated Y
 and candidate lists. Model 1/Soup detail is for exact-range followups. Usually 2-4 sentences;
 add only what relevant evidence needs. Full shift_story.recap is for requested walkthroughs.
 For 'other relevant GTOP plays/ranges', delegate review_other_market_ranges in the same
-asset/date/shift. Tool retrieval does not mean a range was spoken. Exclude only its supplied
+asset/date/shift with followup_mode=other_ranges. For 'what happened next', 'continue that range',
+or 'how did it finish', use followup_mode=continue_active_range with context_action=continue.
+Continue the verified selected anchor through its frozen cutoff, even if previously discussed.
+A new hour does not reset selection; an explicitly chosen independent range needs its exact detail.
+Tool retrieval does not mean a range was spoken. Exclude only its supplied
 discussed anchors, even if failed; include unbranded hourly CRTs, independent failures and
 cutoff limits. Never require a branded play or a win. Say each actual H1 range opening.
 Use switch for an explicit new scope, reset only for an explicit review restart. Return to
