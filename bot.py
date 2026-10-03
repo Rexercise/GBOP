@@ -17,6 +17,8 @@ from gbop_voice_web.discord_controls import (
     private_room_autojoin_allowed,
 )
 from db_compat import db
+from gbop_voice_web.member_access import member_access_error
+from gbop_voice_web.voice_policy import build_voice_instructions
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
 from gbop_voice_web.member_intelligence import (
     INTELLIGENCE_PROMPT,
@@ -5399,6 +5401,9 @@ GTOP_AI_PROMPT += (
 
 
 def ai_execute_tool(user_id: int, name: str, args: dict):
+    denial = member_access_error(db, GTOP_GUILD_ID, user_id, GTOP_OWNER_USER_ID)
+    if denial:
+        return {"ok": False, "error": denial}
     if name in MARKET_NAMES:
         return market_tool(db, name, args)
     if name in TRADE_ASSIST_NAMES:
@@ -5655,19 +5660,19 @@ GBOP_REALTIME_VOICE = os.getenv("GBOP_REALTIME_VOICE", "marin")
 
 try:
     GBOP_REALTIME_MAX_OUTPUT_TOKENS = int(
-        os.getenv("GBOP_REALTIME_MAX_OUTPUT_TOKENS", "700")
+        os.getenv("GBOP_REALTIME_MAX_OUTPUT_TOKENS", "1400")
     )
 except ValueError:
-    GBOP_REALTIME_MAX_OUTPUT_TOKENS = 700
+    GBOP_REALTIME_MAX_OUTPUT_TOKENS = 1400
 
 GBOP_REALTIME_MAX_OUTPUT_TOKENS = max(
     128,
     min(GBOP_REALTIME_MAX_OUTPUT_TOKENS, 4096),
 )
 
-GBOP_VAD_EAGERNESS = os.getenv("GBOP_VAD_EAGERNESS", "high").strip().lower()
+GBOP_VAD_EAGERNESS = os.getenv("GBOP_VAD_EAGERNESS", "medium").strip().lower()
 if GBOP_VAD_EAGERNESS not in {"low", "medium", "high", "auto"}:
-    GBOP_VAD_EAGERNESS = "high"
+    GBOP_VAD_EAGERNESS = "medium"
 
 GBOP_RT_SESSIONS = {}
 GBOP_RT_OUTPUT_MANAGERS = {}
@@ -5987,35 +5992,11 @@ class GBOPRealtimeSession:
         self.rate_limit_recovery = VoiceRateLimitRecovery(self)
 
     def instructions(self):
-        member_state = ai_member_context(self.member.id)
-
-        return (
-            GTOP_AI_PROMPT
-            + "\n\n# LIVE DISCORD VOICE MODE\n"
-            + "- This is a dedicated GBOP voice channel. Treat clear speech from an authorized member as addressed to you.\n"
-            + "- GTOP CANON above is the source of truth. Never substitute generic trading definitions for it.\n"
-            + "- GTOP definition questions: answer in 1-2 short sentences. A whole-shift review is different: use the market tool's shift_recap or shift_story.recap and cover every selected range in 4-7 concise sentences, including later variants and objective delivery.\n"
-            + "- Give the answer first. Do not repeat the user's question or recite background they did not request.\n"
-            + "- Example: one inside bar before manipulation = Variant 4; two or more = Variant 5.\n"
-            + "- Skip filler preambles for direct answers. Do not say 'hmm', 'let me think', or narrate internal processing.\n"
-            + "- Speak naturally. Do not read markdown syntax, headings, tables, or long lists aloud.\n"
-            + "- While the member is trading, keep acknowledgements brief and ask only for missing required trade details. Never invent fills, prices, risk, or results.\n"
-            + "- Use the market tools for current/historical prices and CRT evidence. Use the member tools for their trades, journal, risk profile and recaps.\n"
-            + "- You log member-reported executions; you cannot place broker orders or see their live positions.\n"
-            + "- Discord and browser share this member's saved records. Before changing an existing trade or journal, fetch its current state; never duplicate it just because the member switched devices or voice interfaces.\n"
-            + "- CURRENT MEMBER STATE below is a startup snapshot. Newer tool results override it. Fetch current records before describing open trades or updating them. Older conversation turns may be trimmed; retrieve saved details rather than guessing.\n"
-            + "- Everyone in this Discord channel can hear you. Do not volunteer private journal history or personal risk details; use the DM delivery tools when requested.\n"
-            + "- For photo input, tell the member to DM the image to GBOP. For pausing listening, tell them to use /gbop action:pause; resume uses /gbop action:resume.\n"
-            + "- If exactly one fact is missing for an action, ask only for that fact.\n"
-            + "- If audio is unclear, ask one short clarification instead of guessing.\n"
-            + "- Never claim a database action occurred unless its tool returned success.\n"
-            + "- Risk violations are warn-and-save.\n"
-            + "- If the member starts speaking while you are talking, stop the old response immediately and follow the newest speech.\n"
-            + "- After an interruption, do not resume the cancelled answer unless the member asks you to.\n\n"
-            + "- When tools are disabled for a rate-limit recovery response, answer the latest unanswered request briefly from verified conversation evidence and existing tool outputs. Do not perform or claim new actions. If required evidence is missing, explain that the request could not be completed and ask the member to repeat it; never invent prices or results.\n"
-            + "# CURRENT MEMBER STATE\n"
-            + member_state
-        )
+        # Do not pin journal prose/history in every voice response. All current
+        # records remain available through the unchanged member-scoped tools.
+        profile = get_profile(db, GTOP_GUILD_ID, self.member.id)
+        member_state = market_clock() + "\n" + profile_context(profile)
+        return build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, member_state)
 
     def session_update(self):
         return {
@@ -6432,6 +6413,10 @@ class GBOPRealtimeSession:
                 receiver = asyncio.create_task(self.receiver_loop())
 
                 update = await asyncio.to_thread(self.session_update)
+                print("[GBOP-VOICE-POLICY] compact-v1 instructions_chars=",
+                      len(update["session"]["instructions"]), "tools=", len(update["session"]["tools"]),
+                      "max_output_tokens=", GBOP_REALTIME_MAX_OUTPUT_TOKENS,
+                      "vad_eagerness=", GBOP_VAD_EAGERNESS)
                 print("[GBOP-RT-CONTEXT] instructions_chars=", len(update['session']['instructions']),
                       "history_token_limit=", VOICE_TRUNCATION['token_limits']['post_instructions'])
                 await self.send_event(update)
