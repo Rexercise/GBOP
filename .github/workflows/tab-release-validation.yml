@@ -10,6 +10,8 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,13 +23,24 @@ jobs:
         run: |
           python tools/apply_tab_release.py
           python tools/tab_release_refinements.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('market_bridge/bridge.py'); t=p.read_text()
+          assert "ASSETS = {'NAS100', 'US30'" in t
+          t=t.replace("ASSETS = {'NAS100', 'US30'", "ASSETS = {'NAS100', 'SPX', 'US30'")
+          t=t.replace('not 1 <= len(symbols) <= 8', 'not 1 <= len(symbols) <= len(ASSETS)')
+          t=t.replace('Configure 1–8 exact broker symbols.', 'Configure 1–9 exact broker symbols, including SPX only with its verified broker mapping.')
+          p.write_text(t)
+          with Path('gbop_voice_web/TAB_RELEASE.md').open('a') as f:
+              f.write('\nSPX collector support is included in this source release, but changing the hosted bot does not update the separate Windows collector or its config.json. SPX availability must be confirmed from received broker history; no substitute symbol is invented.\n')
+          PY
       - name: Compile and run full regression suite
         run: |
-          python -m compileall -q bot.py gbop_voice_web
+          python -m compileall -q bot.py gbop_voice_web market_bridge
           python -m unittest discover -s tests
       - name: Commit validated integration and remove temporary workflow
         run: |
           rm tools/apply_tab_release.py tools/tab_release_refinements.py .github/workflows/tab-release-validation.yml
-          git add bot.py gbop_voice_web tests tools/apply_tab_release.py tools/tab_release_refinements.py .github/workflows/tab-release-validation.yml
+          git add bot.py gbop_voice_web market_bridge tests tools/apply_tab_release.py tools/tab_release_refinements.py .github/workflows/tab-release-validation.yml
           git -c user.name='GBOP release validation' -c user.email='noreply@github.com' commit -m 'Apply validated TAB integration and remove release helpers'
           git push origin HEAD:fix/tab-market-release-20261003
