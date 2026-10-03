@@ -111,7 +111,8 @@ class VoiceReleaseTests(unittest.TestCase):
         self.assertEqual(prompt.count(MARKET_PROMPT), 1)
         self.assertIn('explicit member confirmation', prompt)
         self.assertIn('WARN + SAVE', prompt)
-        self.assertIn('tools-disabled rate-limit recovery', prompt)
+        self.assertIn('Recovery retains approved read tools', prompt)
+        self.assertIn('not trade/journal writes', prompt)
         self.assertIn('get_ss_review', prompt)
         self.assertIn('sent_count', prompt)
 
