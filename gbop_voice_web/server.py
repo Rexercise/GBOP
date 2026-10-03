@@ -1,3 +1,4 @@
+from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches
 
 import asyncio
 import math
@@ -108,6 +109,7 @@ async def initialize_persistent_journal_features():
     await asyncio.to_thread(init_coach, db)
     await asyncio.to_thread(init_intelligence, db)
     await asyncio.to_thread(init_market, db)
+    await asyncio.to_thread(init_watches, db)
     print("[GBOP-WEB] durable photo/journal + member intelligence + market storage initialized.")
 
 
@@ -949,6 +951,7 @@ TOOLS.extend(COACH_TOOLS)
 TOOLS.extend(INTELLIGENCE_TOOLS)
 TOOLS.extend(TRADE_ASSIST_TOOLS)
 TOOLS.extend(MARKET_TOOLS)
+TOOLS.extend(WATCH_TOOLS)
 TOOLS.extend(JOURNAL_RECALL_TOOLS)
 for _recall_tool in TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
@@ -966,6 +969,8 @@ def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
         return {"ok": False, "error": denial}
     if name == 'send_journal_history':
         return send_journal_history(db, GTOP_GUILD_ID, user_id, args)
+    if name in WATCH_NAMES:
+        return watch_tool(db, GTOP_GUILD_ID, user_id, OWNER_USER_ID, name, args)
     if name in MARKET_NAMES:
         return market_tool(db, name, args)
     if name in TRADE_ASSIST_NAMES:

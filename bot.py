@@ -1,3 +1,4 @@
+from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches
 from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT
 import os
 import logging
@@ -4103,6 +4104,7 @@ def _init_coach_db():
 
 def _init_market_db():
     init_market(db)
+    init_watches(db)
 
 
 def _init_intelligence_db():
@@ -4145,6 +4147,8 @@ async def setup_hook():
 @client.event
 async def on_ready():
     global GBOP_CHECKIN_TASK
+    from gbop_voice_web.market_watch_runtime import start_watch_runtime
+    start_watch_runtime(client, db, GTOP_GUILD_ID, GTOP_OWNER_USER_ID, GTOP_MEMBER_ROLE_ID)
 
     if GBOP_CHECKIN_TASK is None or GBOP_CHECKIN_TASK.done():
         GBOP_CHECKIN_TASK = asyncio.create_task(_post_shift_checkin_loop())
@@ -5362,6 +5366,7 @@ GBOP_AI_TOOLS.extend(COACH_TOOLS)
 GBOP_AI_TOOLS.extend(INTELLIGENCE_TOOLS)
 GBOP_AI_TOOLS.extend(TRADE_ASSIST_TOOLS)
 GBOP_AI_TOOLS.extend(MARKET_TOOLS)
+GBOP_AI_TOOLS.extend(WATCH_TOOLS)
 GBOP_AI_TOOLS.extend(JOURNAL_RECALL_TOOLS)
 for _recall_tool in GBOP_AI_TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
@@ -5386,6 +5391,8 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
         return {"ok": False, "error": denial}
     if name == 'send_journal_history':
         return send_journal_history(db, GTOP_GUILD_ID, user_id, args)
+    if name in WATCH_NAMES:
+        return watch_tool(db, GTOP_GUILD_ID, user_id, GTOP_OWNER_USER_ID, name, args)
     if name in MARKET_NAMES:
         return market_tool(db, name, args)
     if name in TRADE_ASSIST_NAMES:

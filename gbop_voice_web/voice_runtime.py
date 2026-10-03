@@ -9,10 +9,10 @@ READ_ONLY_RECOVERY_NAMES = frozenset({
     'get_member_dashboard', 'get_shift_plans', 'get_performance_review',
     'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_trade_assist',
     'list_trade_photos', 'get_market_price', 'review_market_session',
-    'review_market_crt', 'inspect_market_candles', 'review_market_smt',
+    'review_market_crt', 'inspect_market_candles', 'review_market_smt', 'get_prepared_market_brief',
 })
 PRIVATE_DELIVERY_NAMES = frozenset({'send_journal_history', 'send_trade_photos'})
-RECOVERY_NAMES = READ_ONLY_RECOVERY_NAMES | PRIVATE_DELIVERY_NAMES
+RECOVERY_NAMES = READ_ONLY_RECOVERY_NAMES | PRIVATE_DELIVERY_NAMES | frozenset({'manage_market_watch'})
 
 
 def recovery_options(session):
@@ -38,6 +38,8 @@ async def guarded_voice_tool(session, name, args, call_id, runner):
         cache = session._tool_call_results = {}
     if call_id in cache:
         return cache[call_id]
+    if getattr(session, '_recovery_active', False) and name == 'manage_market_watch' and args.get('action') not in ('list', 'cancel'):
+        return {'ok': False, 'error': 'New watches are not started during recovery. Existing watches can be listed or cancelled.'}
     if getattr(session, '_recovery_active', False) and name not in RECOVERY_NAMES:
         return {'ok': False, 'error': 'Record changes are disabled during recovery. Check saved state before requesting the action again.'}
     deliveries = getattr(session, '_delivery_results', None)
@@ -124,6 +126,16 @@ def compact_voice_tool_result(name, result):
 
     def page(value):
         if isinstance(value, dict):
+            relations = value.get('following_candle_relations')
+            if isinstance(relations, list) and len(relations) > 3:
+                value['following_candle_relations'] = relations[:3]
+                value['next_relation_detail_start_ny'] = relations[3].get('bar_open_ny')
+                value['following_relation_count'] = len(relations)
+            sequels = value.get('following_candles')
+            if isinstance(sequels, list) and len(sequels) > 3:
+                value['following_candles'] = sequels[:3]
+                value['following_candles_truncated'] = True
+                value['following_detail_note'] = 'Only first three sequels shown; classified event timestamps retained. Request inspect_market_candles for additional candle OHLC.'
             rows = value.get('candles')
             # Only raw candle-query tables have this pagination contract.
             # model1.candles contains identified events with candle_open_ny;
