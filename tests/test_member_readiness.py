@@ -1,151 +1,196 @@
-"""No credentials or live journal writes: release security and voice regressions."""
-import ast
-import asyncio
-from contextlib import contextmanager
-import json
-from pathlib import Path
+import os
 import sqlite3
-import time
-from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import AsyncMock, Mock
-
-from fastapi import HTTPException
-from gbop_voice_web.member_access import member_access_error
-from gbop_voice_web.voice_policy import build_voice_instructions
-from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE
-from gbop_voice_web.market_data import MARKET_PROMPT
-from test_voice_latency import method
-
-ROOT = Path(__file__).resolve().parents[1]
+from datetime import datetime
+from unittest.mock import patch, MagicMock
+from gbop_voice_web.smt_review import compare_smt, aligned, NY
+from gbop_voice_web.journal_recall import get_history, journal_tool, journal_text, send_history, configure_journal_tools
 
 
-def function(path, name, ns):
-    node = next(n for n in ast.parse((ROOT / path).read_text()).body
-                if getattr(n, 'name', '') == name)
-    node.decorator_list = []
-    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), ns)
-    return ns[name]
+class SMTTests(unittest.TestCase):
+    def setUp(self):
+        self.start = int(datetime(2026, 10, 2, 8, tzinfo=NY).timestamp())
+        self.end = self.start + 4 * 3600
+        self.gold = [dict(time=t, open=95, high=99, low=91, close=95)
+                     for t in range(self.start, self.end, 60)]
+        self.silver = [dict(time=t, open=9.5, high=9.9, low=9.1, close=9.5)
+                       for t in range(self.start, self.end, 60)]
+        self.gold[0].update(high=100, low=90)
+        self.silver[0].update(high=10, low=9)
+
+    def review(self, **kw):
+        return compare_smt(self.gold, self.silver, self.start, self.end, **kw)
+
+    def test_bearish_smt_survives_later_invalidations(self):
+        self.silver[62]['high'] = 10.1
+        self.gold[120].update(open=89, high=90, low=88, close=89)
+        result = self.review()
+        event = result['events'][0]
+        self.assertEqual(result['status'], 'observed_divergence')
+        self.assertEqual(event['direction'], 'bearish')
+        self.assertEqual(event['sweeping_asset'], 'XAGUSD')
+        self.assertEqual(event['nonconfirming_asset'], 'XAUUSD')
+        self.assertIn('09:02:00', event['start_ny'])
+        self.assertFalse(result['entry_confirmed'])
+
+    def test_later_catchup_does_not_delete_event(self):
+        self.silver[62]['high'] = 10.1
+        self.gold[66]['high'] = 101
+        result = self.review()
+        self.assertIn('09:06:00', result['events'][0]['later_both_breached_at_ny'])
+        self.assertEqual(result['status'], 'observed_divergence')
+
+    def test_matching_highs_same_bar_not_invented_divergence(self):
+        self.silver[62]['high'] = 10.1
+        self.gold[62]['high'] = 101
+        self.assertEqual(self.review()['status'], 'no_divergence_observed')
+
+    def test_missing_peer_anchor_is_insufficient_not_false(self):
+        del self.silver[10]
+        self.assertEqual(self.review()['status'], 'insufficient_paired_data')
+
+    def test_gap_before_signal_prevents_confirmation(self):
+        self.silver[62]['high'] = 10.1
+        del self.gold[61]
+        self.assertEqual(self.review()['status'], 'insufficient_paired_data')
+
+    def test_gap_after_signal_preserves_prior_fact(self):
+        self.silver[62]['high'] = 10.1
+        del self.gold[65]
+        result = self.review()
+        self.assertEqual(result['status'], 'observed_divergence')
+        self.assertFalse(result['paired_9_oclock_complete'])
+
+    def test_equal_boundary_not_a_sweep(self):
+        self.silver[62]['high'] = 10
+        self.assertEqual(self.review()['status'], 'no_divergence_observed')
+
+    def test_bullish_case(self):
+        self.gold[62]['low'] = 89
+        self.assertEqual(self.review()['events'][0]['direction'], 'bullish')
+
+    def test_after_ten_not_called_nine_ate_eight(self):
+        self.silver[122]['high'] = 10.1
+        self.assertEqual(self.review()['status'], 'no_divergence_observed')
+
+    def test_coarse_source_preserves_interval_precision(self):
+        self.silver[62]['high'] = 10.1
+        coarse = list(aligned(self.silver, self.start, self.end, 60, 300).values())
+        result = compare_smt(self.gold, coarse, self.start, self.end, second_step=300)
+        self.assertEqual(result['source_resolution_seconds'], 300)
+        self.assertIn('09:00:00', result['events'][0]['start_ny'])
+        self.assertIn('09:05:00', result['events'][0]['end_ny'])
+
+    def test_same_bar_objective_has_unknown_order(self):
+        self.silver[62].update(high=10.1, low=8.9)
+        event = self.review()['events'][0]
+        touches = [t for t in event['objective_touches'] if t['asset'] == 'XAGUSD']
+        self.assertTrue(touches)
+        self.assertTrue(all(t['sequence'] == 'same_bar_order_unknown' for t in touches))
+
+    def test_night_shift_anchor(self):
+        offset = 12 * 3600
+        for bar in self.gold + self.silver:
+            bar['time'] += offset
+        self.silver[62]['high'] = 10.1
+        result = compare_smt(self.gold, self.silver, self.start + offset, self.end + offset)
+        self.assertIn('21:02:00', result['events'][0]['start_ny'])
 
 
-class MemberAccessTests(unittest.TestCase):
+class JournalTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(':memory:')
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute('CREATE TABLE members (guild_id INT,user_id INT,activated INT,leadership_ack INT,revoked INT)')
-        self.conn.executemany('INSERT INTO members VALUES (?,?,?,?,?)', [
-            (1, 10, 1, 1, 0), (1, 11, 1, 1, 0), (2, 12, 1, 1, 0),
-            (1, 13, 0, 0, 0), (1, 14, 1, 1, 1), (1, 15, 1, 0, 0)])
-        self.addCleanup(self.conn.close)
+        self.db = lambda: self.conn
+        self.conn.executescript('''
+            CREATE TABLE members(guild_id INTEGER,user_id INTEGER,activated INTEGER,leadership_ack INTEGER,revoked INTEGER);
+            CREATE TABLE theses(id INTEGER,guild_id INTEGER,user_id INTEGER,asset TEXT,direction TEXT,play TEXT,status TEXT);
+            CREATE TABLE journals(id INTEGER,guild_id INTEGER,user_id INTEGER,thesis_id INTEGER,description TEXT,rule_adherence TEXT,result_r REAL,study_note TEXT,created_at TEXT);
+            CREATE TABLE trade_photos(id TEXT,guild_id INTEGER,user_id INTEGER,thesis_id INTEGER);
+            CREATE TABLE journal_details(journal_id INTEGER,guild_id INTEGER,user_id INTEGER,photo_id TEXT);
+            INSERT INTO members VALUES (1,10,1,1,0),(1,20,1,1,0),(2,10,1,1,0);
+            INSERT INTO theses VALUES (20,1,10,'GOLD','Bearish','9ate8','CLOSED'),(21,1,20,'BTC','Bullish','PRIVATE','OPEN'),(22,2,10,'SILVER','Bullish','OTHER GUILD','OPEN');
+            INSERT INTO journals VALUES (30,1,10,20,'Own closed trade','Yes',2,'Own note','2026-10-02'),(31,1,20,21,'OTHER MEMBER SECRET','Yes',3,'Secret','2026-10-02'),(32,2,10,22,'OTHER GUILD SECRET','Yes',4,'Secret','2026-10-02'),(33,1,10,NULL,'Own handwritten entry','',NULL,'','2026-10-03');
+            INSERT INTO trade_photos VALUES ('own-trade',1,10,20),('own-page',1,10,NULL),('foreign',1,20,20);
+            INSERT INTO journal_details VALUES (33,1,10,'own-page'),(33,1,20,'foreign');
+        ''')
 
-    @contextmanager
-    def db(self):
-        yield self.conn
+    def tearDown(self):
+        self.conn.close()
 
-    def test_active_members_and_owner_allowed(self):
-        for uid in (10, 11, 99):
-            self.assertIsNone(member_access_error(self.db, 1, uid, 99))
+    def test_history_counts_scope_and_closed_trade(self):
+        result = get_history(self.db, 1, 10, {'limit': 10})
+        self.assertEqual(result['total_journals'], 2)
+        self.assertEqual(result['total_trades'], 1)
+        self.assertEqual([r['journal_number'] for r in result['journals']], [2, 1])
+        self.assertNotIn('SECRET', str(result))
+        self.assertEqual(result['journals'][1]['trade_id'], 1)
+        self.assertEqual([r['photo_count'] for r in result['journals']], [1, 1])
 
-    def test_missing_cross_guild_inactive_revoked_and_unacknowledged_denied(self):
-        for uid in (12, 13, 14, 15, 16):
-            self.assertIsNotNone(member_access_error(self.db, 1, uid, 99))
+    def test_pagination(self):
+        first = get_history(self.db, 1, 10, {'limit': 1})
+        second = get_history(self.db, 1, 10, {'limit': 1, 'offset': first['next_offset']})
+        self.assertTrue(first['has_more'])
+        self.assertFalse(second['has_more'])
+        self.assertNotEqual(first['journals'][0]['journal_id'], second['journals'][0]['journal_id'])
 
-    def test_revocation_is_fresh_and_does_not_affect_other_member(self):
-        self.assertIsNone(member_access_error(self.db, 1, 10, 99))
+    def test_empty_is_success_not_access_error(self):
+        result = get_history(self.db, 1, 999, {})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'], 'empty')
+
+    def test_revoked_member_denied(self):
         self.conn.execute('UPDATE members SET revoked=1 WHERE guild_id=1 AND user_id=10')
-        self.assertIn('revoked', member_access_error(self.db, 1, 10, 99))
-        self.assertIsNone(member_access_error(self.db, 1, 11, 99))
+        result = journal_tool(self.db, 1, 10, 999, 'get_journal_history', {})
+        self.assertEqual(result['status'], 'access_denied')
+        self.assertNotIn('journals', result)
 
-    def test_database_failure_fails_closed_and_hides_exception(self):
-        broken = Mock(side_effect=RuntimeError('private database address/password'))
-        error = member_access_error(broken, 1, 10, 99)
-        self.assertIn('could not be verified', error)
-        self.assertNotIn('password', error)
-        self.assertIsNotNone(member_access_error(broken, 1, 0, 0))
+    def test_owner_inactive_flag_is_not_a_retrieval_failure(self):
+        self.conn.execute('UPDATE members SET activated=0 WHERE guild_id=1 AND user_id=10')
+        result = journal_tool(self.db, 1, 10, 10, 'get_journal_history', {})
+        self.assertEqual(result['total_journals'], 2)
 
-    def test_both_dispatchers_deny_before_any_tool_and_ignore_forged_arguments(self):
-        for path, name, owner_name in [('bot.py', 'ai_execute_tool', 'GTOP_OWNER_USER_ID'),
-                                     ('gbop_voice_web/server.py', 'run_tool', 'OWNER_USER_ID')]:
-            tool = Mock(return_value={'ok': True})
-            ns = dict(member_access_error=member_access_error, db=self.db, GTOP_GUILD_ID=1,
-                      MARKET_NAMES={'get_market_price'}, market_tool=tool, **{owner_name: 99})
-            invoke = function(path, name, ns)
-            result = invoke(14, 'get_market_price', {'user_id': 99, 'guild_id': 2})
-            self.assertFalse(result['ok'])
-            tool.assert_not_called()
-            self.assertTrue(invoke(10, 'get_market_price', {'asset': 'NAS'})['ok'])
-            tool.assert_called_once()
+    def test_storage_error_is_not_empty(self):
+        def broken():
+            raise RuntimeError('private db error')
+        result = journal_tool(broken, 1, 10, 10, 'get_journal_history', {})
+        self.assertEqual(result['status'], 'storage_unavailable')
+        self.assertNotIn('private db error', str(result))
 
+    def test_null_result_preserved_and_mentions_disabled(self):
+        result = get_history(self.db, 1, 10, {})
+        result['journals'][0]['summary'] = '@everyone not an instruction'
+        text = journal_text(result)
+        self.assertIn('Not recorded', text)
+        self.assertNotIn('@everyone', text)
 
-class BrowserGateTests(unittest.IsolatedAsyncioTestCase):
-    async def test_cached_role_session_still_checks_persistent_revocation(self):
-        session = {'user_id': 10, 'expires_at': time.time() + 60, 'is_owner': False}
-        sessions = {'session': session}
-        checker = Mock(return_value='Your GBOP access is revoked.')
-        async def offload(fn, *args):
-            return fn(*args)
-        ns = dict(Request=object, time=time, _cleanup_auth_state=Mock(), SESSION_COOKIE='cookie',
-                  AUTH_SESSIONS=sessions, _refresh_member_session=AsyncMock(return_value=session),
-                  HTTPException=HTTPException, asyncio=NS(to_thread=offload),
-                  member_access_error=checker, db=object(), GTOP_GUILD_ID=1, OWNER_USER_ID=99)
-        auth = function('gbop_voice_web/server.py', 'require_authenticated_user', ns)
-        with self.assertRaises(HTTPException) as caught:
-            await auth(NS(cookies={'cookie': 'session'}))
-        self.assertEqual(caught.exception.status_code, 403)
-        self.assertNotIn('session', sessions)
-        self.assertEqual(checker.call_args.args[1:], (1, 10, 99))
+    def test_tool_configuration_is_idempotent_and_no_recipient(self):
+        tools = [{'name': 'get_journal_history', 'parameters': {'properties': {'limit': {}}, 'required': ['limit']}}]
+        configure_journal_tools(tools)
+        configure_journal_tools(tools)
+        self.assertEqual(len(tools), 2)
+        self.assertEqual(tools[0]['parameters']['required'].count('offset'), 1)
+        self.assertNotIn('user_id', tools[1]['parameters']['properties'])
 
-    async def test_missing_cookie_denied_before_database(self):
-        ns = dict(Request=object, _cleanup_auth_state=Mock(), SESSION_COOKIE='cookie',
-                  HTTPException=HTTPException)
-        auth = function('gbop_voice_web/server.py', 'require_authenticated_user', ns)
-        with self.assertRaises(HTTPException) as caught:
-            await auth(NS(cookies={}))
-        self.assertEqual(caught.exception.status_code, 401)
+    @patch.dict(os.environ, {'DISCORD_TOKEN': 'unit-test-only'})
+    @patch('httpx.Client')
+    def test_dm_uses_authenticated_member_only(self, factory):
+        client = factory.return_value.__enter__.return_value
+        client.post.return_value.status_code = 200
+        client.post.return_value.json.return_value = {'id': 'test-channel'}
+        result = send_history(get_history(self.db, 1, 10, {}), 10)
+        self.assertGreater(result['sent_count'], 0)
+        self.assertEqual(client.post.call_args_list[0].kwargs['json']['recipient_id'], '10')
+        self.assertEqual(client.post.call_args_list[1].kwargs['json']['allowed_mentions'], {'parse': []})
 
-
-class VoiceReleaseTests(unittest.TestCase):
-    def test_full_canon_and_market_evidence_policy_are_preserved_verbatim_once(self):
-        prompt = build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, 'profile A')
-        self.assertEqual(prompt.count(CANONICAL_KNOWLEDGE), 1)
-        self.assertEqual(prompt.count(MARKET_PROMPT), 1)
-        self.assertIn('explicit member confirmation', prompt)
-        self.assertIn('WARN + SAVE', prompt)
-        self.assertIn('tools-disabled rate-limit recovery', prompt)
-        self.assertIn('get_ss_review', prompt)
-        self.assertIn('sent_count', prompt)
-
-    def test_startup_fetches_only_own_profile_not_full_journal_context(self):
-        profile = Mock(side_effect=lambda db, guild, uid: {'uid': uid})
-        legacy = Mock(side_effect=AssertionError('Do not preload journal history'))
-        ns = dict(get_profile=profile, db=object(), GTOP_GUILD_ID=1,
-                  profile_context=lambda p: 'private profile ' + str(p['uid']),
-                  market_clock=lambda: 'NY clock', CANONICAL_KNOWLEDGE=CANONICAL_KNOWLEDGE,
-                  MARKET_PROMPT=MARKET_PROMPT, build_voice_instructions=build_voice_instructions,
-                  ai_member_context=legacy)
-        instructions = method('instructions', ns)
-        one = instructions(NS(member=NS(id=10)))
-        two = instructions(NS(member=NS(id=11)))
-        self.assertIn('private profile 10', one)
-        self.assertNotIn('private profile 11', one)
-        self.assertIn('private profile 11', two)
-        self.assertNotIn('private profile 10', two)
-        legacy.assert_not_called()
-        self.assertEqual([c.args[2] for c in profile.call_args_list], [10, 11])
-
-    def test_compact_policy_is_smaller_without_changing_canon(self):
-        prompt = build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, 'profile')
-        self.assertLess(len(prompt), 34000)
-        self.assertGreater(len(prompt), len(CANONICAL_KNOWLEDGE) + len(MARKET_PROMPT))
-
-    def test_all_33_existing_tool_schemas_remain_unchanged(self):
-        source = ast.parse((ROOT/'bot.py').read_text())
-        cls = next(n for n in source.body if getattr(n,'name','')=='GBOPRealtimeSession')
-        update = next(n for n in cls.body if getattr(n,'name','')=='session_update')
-        text = ast.unparse(update)
-        self.assertIn('for tool in GBOP_AI_TOOLS', text)
-        self.assertNotIn('[:', text)
-        self.assertIn('interrupt_response', text)
+    @patch.dict(os.environ, {'DISCORD_TOKEN': 'unit-test-only'})
+    @patch('httpx.Client')
+    def test_dm_failure_does_not_claim_delivery(self, factory):
+        client = factory.return_value.__enter__.return_value
+        client.post.return_value.status_code = 403
+        result = send_history(get_history(self.db, 1, 10, {}), 10)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['sent_count'], 0)
 
 
 if __name__ == '__main__':

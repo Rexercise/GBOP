@@ -1,0 +1,34 @@
+name: Apply and validate member readiness fix
+on:
+  push:
+    branches: [fix/member-readiness-20261003]
+    paths: [scripts/apply_member_readiness.py]
+permissions:
+  contents: write
+jobs:
+  apply-reviewed-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/member-readiness-20261003
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install existing test dependencies
+        run: pip install httpx==0.28.1 fastapi==0.116.1
+      - name: Apply reviewed source anchors
+        run: python scripts/apply_member_readiness.py
+      - name: Compile application and test regression suite
+        run: |
+          python -m compileall -q bot.py gbop_voice_web tests
+          python -m unittest discover -s tests
+      - name: Commit validated patch to test branch only
+        run: |
+          git config user.name 'GBOP release checks'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bot.py gbop_voice_web/server.py gbop_voice_web/market_data.py gbop_voice_web/voice_policy.py gbop_voice_web/voice_runtime.py
+          git rm scripts/apply_member_readiness.py .github/workflows/apply-member-readiness.yml
+          git commit -m 'Wire verified SMT, member journal delivery and safe read-only voice recovery'
+          git push origin HEAD:fix/member-readiness-20261003
