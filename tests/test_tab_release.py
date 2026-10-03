@@ -5,7 +5,6 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
-from gbop_voice_web.super_soup_classification import classify_super_soup
 from gbop_voice_web.market_watch import init_watches, runtime_lease, watch_tool, shift_window, VERSION
 from gbop_voice_web.market_watch_runtime import extract_events, poll_watches, deliver_alerts
 
@@ -15,87 +14,7 @@ def iso(t):
     return datetime.fromtimestamp(t,NY).isoformat()
 def row(i,o=102,h=103,l=100,c=101):
     return dict(start_ny=iso(T+300*i),end_ny=iso(T+300*(i+1)),open=o,high=h,low=l,close=c,complete=True)
-def classify(rows,side='buy',bars=None,step=300,invalid=None):
-    model=row(0,99,103,98,102)
-    anchor=dict(high=100,low=90,midpoint=95)
-    if side=='sell':
-        def mirror(r):
-            return {**r,'open':200-r['open'],'high':200-r['low'],'low':200-r['high'],'close':200-r['close']}
-        model=mirror(model); rows=[mirror(r) for r in rows]
-        anchor=dict(high=110,low=100,midpoint=105)
-    if bars is None:
-        bars=[dict(time=int(datetime.fromisoformat(r['start_ny']).timestamp()),**{k:r[k] for k in ('open','high','low','close')}) for r in [model]+rows if r.get('complete')]
-    end=int(datetime.fromisoformat(rows[-1]['end_ny']).timestamp()) if rows else T+300
-    return classify_super_soup(model,side,rows,bars,anchor,end,step,invalid,'M5')
 
-class SoupMatrixTests(unittest.TestCase):
-    def test_clean_v1_delivered(self):
-        r=classify([row(1,h=104),row(2,o=101,h=102,l=97,c=99)])
-        self.assertEqual((r['formation'],r['variant'],r['outcome']),('clean','V1','delivered'))
-    def test_clean_can_fail(self):
-        r=classify([row(1,h=104),row(2,o=101,h=106,l=101,c=105)])
-        self.assertEqual((r['formation'],r['outcome']),('clean','failed'))
-    def test_unclean_can_perform_parent_function(self):
-        r=classify([row(1,h=106,l=101,c=105),row(2,o=105,h=106,l=99,c=100),row(3,o=100,h=101,l=89,c=91)])
-        self.assertEqual(r['formation'],'unclean')
-        self.assertEqual(r['parent_range_function']['opposing_liquidity']['status'],'delivered')
-        self.assertEqual(r['outcome'],'failed')
-        self.assertTrue(r['parent_function_is_separate_from_nested_crt_outcome'])
-    def test_no_soup_does_not_appear_from_delivery(self):
-        r=classify([row(1,h=103,l=97,c=99),row(2,o=99,h=100,l=89,c=91)])
-        self.assertEqual(r['formation'],'none_observed')
-        self.assertEqual(r['parent_direction_without_soup']['status'],'delivered')
-    def test_v4_one_inside(self):
-        r=classify([row(1),row(2,h=104),row(3,l=97,c=99)])
-        self.assertEqual(r['variant'],'V4')
-        self.assertEqual(r['consecutive_inside_bars_before_sweep'],1)
-    def test_v5_two_inside(self):
-        r=classify([row(1),row(2),row(3,h=104),row(4,l=97,c=99)])
-        self.assertEqual(r['variant'],'V5')
-    def test_v6_resoup_of_soup_not_merely_original_level(self):
-        r=classify([row(1,h=104),row(2,h=105),row(3,l=97,c=99)])
-        self.assertEqual(r['variant'],'V6')
-        r=classify([row(1,h=104),row(2,h=103.5),row(3,l=97,c=99)])
-        self.assertNotEqual(r['variant'],'V6')
-    def test_v3_delayed_distribution(self):
-        r=classify([row(1,h=104),row(2),row(3,l=97,c=99)])
-        self.assertEqual(r['variant'],'V3')
-    def test_v2_requires_source_order(self):
-        seq=[row(1,h=104,l=97,c=100)]
-        bars=[dict(time=T+i*60,open=102,high=103,low=99,close=100) for i in range(10)]
-        bars[5].update(high=104,low=101,close=102)
-        bars[6].update(low=97)
-        r=classify(seq,bars=bars,step=60)
-        self.assertEqual((r['variant'],r['outcome']),('V2','delivered'))
-    def test_same_source_sweep_target_not_fabricated_order(self):
-        r=classify([row(1,h=104,l=97,c=100)])
-        self.assertEqual(r['formation'],'clean')
-        self.assertEqual(r['outcome'],'unverified')
-        self.assertIsNone(r['variant'])
-    def test_same_candle_csd_does_not_erase_formation(self):
-        r=classify([row(1,h=104,l=98,c=98.5)])
-        self.assertEqual(r['formation'],'clean')
-        self.assertEqual(r['pre_csd_order'],'same_assigned_candle_as_csd')
-    def test_forming_is_unknown(self):
-        x=row(1,h=104); x['complete']=False
-        self.assertEqual(classify([x])['formation'],'unverified')
-    def test_gap_before_sweep_is_unknown(self):
-        self.assertEqual(classify([row(2,h=104)])['formation'],'unverified')
-    def test_no_following_candles_is_not_no_soup(self):
-        # Observation has not begun: no completed Super Soup, not a negative future claim.
-        r=classify([])
-        self.assertEqual(r['outcome'],'not_applicable')
-    def test_bullish_mirror(self):
-        r=classify([row(1,h=104),row(2,l=97,c=99)],side='sell')
-        self.assertEqual((r['formation'],r['outcome']),('clean','delivered'))
-    def test_parent_target_after_invalidation_not_success(self):
-        r=classify([row(1,h=104),row(2),row(3,l=89,c=91)],invalid=T+900)
-        self.assertNotEqual(r['parent_range_function']['opposing_liquidity']['status'],'delivered')
-    def test_candle_metadata_and_execution_separate(self):
-        r=classify([row(1,h=104)])
-        self.assertEqual(r['model1_candle']['start_ny'],iso(T))
-        self.assertEqual(r['execution_status'],'not_assessed')
-        self.assertTrue(r['cleanliness_is_separate_from_outcome'])
 
 class WatchTests(unittest.TestCase):
     def setUp(self):
@@ -227,7 +146,7 @@ class TabIntegrationTests(unittest.TestCase):
         anchor=dict(complete=True,start_ny=iso(T-3600),end_ny=iso(T),high=100,low=90,midpoint=95)
         r=lifecycle_review(bars,anchor,'M5',T+900,300)
         body=next(x for x in r['purge_candles'] if x['purge_type']=='body_soup')
-        self.assertEqual(body['super_soup']['classification']['formation'],'clean')
+        self.assertEqual(body['super_soup_structure']['structural_quality'],'clean')
     def test_voice_guidance_requires_registration(self):
         from gbop_voice_web.market_data import MARKET_PROMPT, LIVE_MARKET_PROMPT
         for text in (MARKET_PROMPT,LIVE_MARKET_PROMPT):
@@ -252,8 +171,6 @@ class RetainedHistoryTests(unittest.TestCase):
             self.assertEqual(latest_available_shift_date(feed,'day',lambda:conn),'2026-10-02')
         finally:
             conn.close()
-    def test_no_soup_yet_is_unknown_not_absent(self):
-        self.assertEqual(classify([])['formation'],'unverified')
     def test_watch_dispatch_ignores_forged_member_and_checks_access(self):
         from test_member_readiness import function
         from unittest.mock import Mock

@@ -173,6 +173,8 @@ def attach_lifecycle(review, bars, end, step):
     view = lifecycle_review(bars, review['anchor'], review.get('assigned_timeframe', 'M5'),
                             end, step, parse_time(invalid) if invalid else None)
     model = review.get('model1', {})
+    model.pop('lifecycle', None)  # authoritative details are in candle_lifecycle
+    model.pop('assigned_range_purges', None)
     sequels = {x['model1_candle_open_ny']: x for x in model.get('lifecycles', [])}
     for fact in view.get('purge_candles', []):
         sequel = sequels.get(fact['bar_open_ny']) if fact['purge_type'] == 'body_soup' else None

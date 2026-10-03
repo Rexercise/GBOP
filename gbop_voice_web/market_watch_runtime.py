@@ -47,12 +47,12 @@ def extract_events(result):
                 add('csd',csd['evidence']['confirmed_at_ny'],identity,
                     f"CSD closed through Model 1 body-open level {csd['reference_level']}; Model 1 {candle['bar_open_ny']}")
             soup = candle.get('super_soup',{})
-            cls = soup.get('classification',{})
+            cls = candle.get('super_soup_structure',{})
             # Same-candle soup/CSD is preserved for discussion, not a pre-CSD alert.
             if soup.get('status')=='observed_before_csd' and soup.get('evidence'):
                 ret = soup['evidence']['return_candle']
                 add('super_soup',ret['bar_close_ny'],identity,
-                    f"Super Soup of Model 1 {candle['bar_open_ny']}; {cls.get('formation','observed')} formation; variant {cls.get('variant') or 'distribution unresolved'}; success assessed separately")
+                    f"Super Soup of Model 1 {candle['bar_open_ny']}; {cls.get('structural_quality','observed')} formation; variant {','.join(v['code'] for v in cls.get('variants',[])) or 'distribution unresolved'}; success assessed separately")
             for name, objective in candle.get('objectives_after_formation',{}).items():
                 if objective.get('status')=='observed_after_event' and objective.get('first_touch'):
                     hit=objective['first_touch']

@@ -126,6 +126,11 @@ def compact_voice_tool_result(name, result):
 
     def page(value):
         if isinstance(value, dict):
+            relations = value.get('following_candle_relations')
+            if isinstance(relations, list) and len(relations) > 3:
+                value['following_candle_relations'] = relations[:3]
+                value['next_relation_detail_start_ny'] = relations[3].get('bar_open_ny')
+                value['following_relation_count'] = len(relations)
             sequels = value.get('following_candles')
             if isinstance(sequels, list) and len(sequels) > 3:
                 value['following_candles'] = sequels[:3]
