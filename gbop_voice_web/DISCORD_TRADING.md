@@ -31,6 +31,21 @@ Upload pictures by DM or an @mention with attachments; voice cannot receive imag
 For private journal conversations use DMs. Requested photo delivery goes to the
 requesting member's DMs, subject to their Discord privacy settings.
 
+Slow Discord voice lookups send at most one brief private text status after four
+seconds. Fast lookups stay quiet; blocked DMs do not stop the lookup. Status does
+not generate additional model speech or speak over the member. Speaking again,
+pausing or leaving cancels pending feedback and replies. An action already sent
+to storage or Discord cannot be rolled back by interruption; GBOP retains its
+delivery outcome instead of automatically repeating it.
+
+Temporary AI rate limits allow at most two reply retries for the same request,
+with bounded backoff and jitter. A private notice describes the pending retry;
+it does not promise that capacity will become available. A new spoken request
+cancels the old retry. Cooldowns longer than the automatic retry window are not
+shortened. Journal/photo reads and deduplicated private deliveries remain
+available during recovery; new record changes remain disabled. No model, quota,
+subscription or paid resource changes are made by recovery.
+
 ## Controls
 
 | Command | Effect |
@@ -58,7 +73,7 @@ slots; a busy slot is never taken from another room. The room setup, move result
 readiness and any error are shown only to the requesting member.
 
 Private-room members can also open their room and join voice directly. No second slash
-command is required, including on later visits through the channel list. Entering
+command is required. Run `/meet` again after a temporary room has cleared. Entering
 the room starts listening and streams the owner's speech to OpenAI, as disclosed
 in the room response. Auto-join is restricted to the authorized room owner and
 rooms whose private permissions remain intact. Admin visits, bot joins and
@@ -66,7 +81,23 @@ mute/deafen changes do not start or resume a session. A paused session stays pau
 until the member explicitly resumes or leaves and re-enters their private room.
 
 Pausing one member does not pause others. Leaving closes that member's AI
-session. GBOP disconnects when no human members remain; private rooms persist.
+session immediately. In a private room GBOP disconnects when its owner leaves,
+even if an administrator is visiting; a shared call disconnects only after its
+last human leaves. Receive/playback, model tasks and session state stop before
+network cleanup. Other members' rooms and bots are not interrupted.
+
+New GBOP-created rooms are temporary and voice-only (text posting disabled).
+After hang-up, an empty room is removed once Discord confirms disconnect and
+GBOP verifies empty text history. `/meet` creates the next room. Saved profiles,
+journals and photos are unchanged. Rooms with any people, messages, changed
+permissions or uncertain history are retained. Existing rooms, including rooms
+from before a bot restart, are not inferred to be disposable from their name or
+ACL alone. `/gbop action:status` shows a concise retention reason; GBOP does not
+send repeated cleanup DMs. Missing delete/history permissions never keep AI work
+running. No automatic cleanup erases channel text. Discord has no atomic
+"check occupants/history and delete" endpoint, so cleanup rechecks cached gateway
+state immediately before deletion; administrators can bypass text restrictions.
+Live Discord voice/disconnect and permission behavior should be smoke-tested.
 One bot identity serves one voice channel per server. An optional helper identity
 provides a second independent room without moving the primary bot. When both slots
 are busy, the member gets the browser option. An @mention saying “join me” points
@@ -84,12 +115,22 @@ requesting member and configured bots, and does not grant other member roles.
 Server owners/administrators retain Discord's normal override access. A visiting
 administrator can speak with the member, but GBOP accepts AI input only from the
 room's member. This prevents their speech from being logged as the member's trade.
-Room ownership comes from its exclusive member permission overwrite, not its name.
-Rooms are never deleted automatically; a restart does not lose their owner ACL.
+The exclusive member permission overwrite identifies the owner for voice routing.
+Automatic deletion additionally requires the runtime's record of creating that
+room; names and ACLs alone are insufficient. `/meet` prefers a tracked temporary
+room and, when only older rooms exist, creates one without changing the old rooms.
+Repeated meetings reuse that tracked room. The meeting reply and status identify
+preserved older rooms. Without Manage Channels, `/meet` can reuse an already
+correct private legacy room and explains that it stays after hang-up; it does not
+change legacy permissions. `/gbop action:room` keeps its existing-room behavior.
+After a restart, prior rooms become untracked and are preserved; the next `/meet`
+creates a new temporary room when permissions allow. Durable provenance across
+restarts is not implemented.
 
 ## Two simultaneous Discord rooms: one-time owner setup
 
 1. Give the primary GBOP role **Manage Channels**, **View Channels**, **Connect**,
+   **Read Message History** (to verify empty text before temporary-room cleanup),
    **Speak** and **Move Members** (for `/meet`'s automatic member move). If an existing category overrides these, create rooms at the
    server root (the default here) or fix the category permissions.
 2. In the Discord Developer Portal, create a second application/bot such as

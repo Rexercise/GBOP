@@ -9,7 +9,7 @@ from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.member_access import member_access_error
 
 NY = ZoneInfo('America/New_York')
-VERSION = 'tab-watch-2026-10-03'
+VERSION = 'tab-watch-shift-availability-2026-10-03'
 TABLES = ('gbop_market_watches', 'gbop_market_alerts', 'gbop_watch_runtime', 'gbop_prepared_shifts')
 SCHEMA = [
     '''CREATE TABLE IF NOT EXISTS gbop_market_watches (
@@ -87,23 +87,39 @@ def watch_tool(db, guild_id, user_id, owner_id, name, args, now=None):
         return {'ok': False, 'error': denial}
     try:
         if name == 'get_prepared_market_brief':
-            from gbop_voice_web.market_data import asset_name
+            from gbop_voice_web.market_data import asset_name, market_tool, unavailable_response
             asset = asset_name(args.get('asset'))
             shift = args.get('shift') or 'day'
             if shift not in ('day', 'night'):
                 raise ValueError('Use day or night.')
+            if args.get('date_ny'):
+                options = market_tool(db, 'list_market_shifts', {'asset': asset, 'date_ny': args['date_ny']}, now=now)
+                if not options.get('ok'):
+                    return options
+                requested = next(r for r in options['shifts'] if r['shift'] == shift)
+                if not requested['reviewable']:
+                    return unavailable_response(requested, options)
             with db() as conn:
                 if args.get('date_ny'):
-                    row = conn.execute('SELECT * FROM gbop_prepared_shifts WHERE asset=? AND date_ny=? AND shift=? AND version=?',
-                                       (asset, args['date_ny'], shift, VERSION)).fetchone()
+                    rows = conn.execute('SELECT * FROM gbop_prepared_shifts WHERE asset=? AND date_ny=? AND shift=? AND version=?',
+                                        (asset, args['date_ny'], shift, VERSION)).fetchall()
                 else:
-                    row = conn.execute('SELECT * FROM gbop_prepared_shifts WHERE asset=? AND shift=? AND version=? ORDER BY date_ny DESC LIMIT 1',
-                                       (asset, shift, VERSION)).fetchone()
+                    rows = conn.execute('SELECT * FROM gbop_prepared_shifts WHERE asset=? AND shift=? AND version=? ORDER BY date_ny DESC LIMIT 180',
+                                        (asset, shift, VERSION)).fetchall()
+            row, review = None, None
+            for candidate in rows:
+                payload = json.loads(candidate['payload'])
+                availability = payload.get('availability') or {}
+                if (availability.get('reviewable') and availability.get('temporal_status') == 'completed'
+                        and availability.get('date_ny') == candidate['date_ny']
+                        and availability.get('shift') == shift and availability.get('asset') == asset):
+                    row, review = candidate, payload
+                    break
             if not row:
-                return {'ok': False, 'status': 'not_prepared', 'next_action': 'Use review_market_session; do not invent a prepared review.'}
+                return {'ok': False, 'status': 'not_prepared', 'next_action': 'Call list_market_shifts before offering reviews; review_market_session can read a supported shift. Never invent availability.'}
             return {'ok': True, 'asset': asset, 'date_ny': row['date_ny'], 'shift': shift,
                     'prepared_at_epoch': row['prepared_at'], 'age_seconds': now-row['prepared_at'],
-                    'review': json.loads(row['payload']),
+                    'availability': review['availability'], 'review': review,
                     'limits': 'Saved closed-candle briefing. Refresh review_market_session for newer candles or exact follow-up evidence.'}
         if name != 'manage_market_watch':
             return {'ok': False, 'error': 'Unknown watch tool.'}
@@ -184,7 +200,7 @@ WATCH_TOOLS = [
         'shift': {'type':['string','null'],'enum':['day','night',None]},
         'anchor_start_ny': {'type':['string','null']}, 'anchor_timeframe': {'type':['string','null']},
         'watch_id': {'type':['string','null']}}),
-    schema('get_prepared_market_brief', 'Read the automatically prepared closed-candle GTOP shift briefing, including paired SMT when available. This is a saved preparation, not a current quote. Use review_market_session to refresh it or inspect exact candles. Null date reads the latest stored shift for this asset.', {
+    schema('get_prepared_market_brief', 'Read the automatically prepared closed-candle GTOP shift briefing, including paired SMT when available. This is a saved preparation, not a current quote. Use review_market_session to refresh it or inspect exact candles. Null date reads the latest completed usable stored shift for this asset. Empty/unsupported saved reviews are excluded.', {
         'asset': {'type':'string'}, 'date_ny': {'type':['string','null']},
         'shift': {'type':'string','enum':['day','night']}}),
 ]

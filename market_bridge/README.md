@@ -98,3 +98,49 @@ Conversation behavior, shared by Discord text/voice and browser voice:
 Daily, weekly and monthly boundaries must match the member's chart. Do not equate
 New York midnight with a broker session boundary. Incomplete data and market
 closures are explicitly reported; they do not prove that a setup did not happen.
+
+## Broker-session evidence and feed freshness
+
+The current Python collector does **not** provide a verified broker-session
+calendar. GBOP therefore returns `broker_session.status: unknown`, `source: null`
+and `closure_reason: null`. This is an explicit limitation, not an assertion that
+the market is open. Weekend dates, missing candles, old quotes, a connected
+terminal and `trade_mode` do not establish why prices stopped arriving.
+
+`feed_health` describes the latest snapshot for the requested asset separately:
+
+- `recent_snapshot_and_quote`: both capture and quote are at most 120 seconds old.
+- `recent_snapshot_stale_quote`: the collector supplied a recent snapshot with an
+  old quote. The receiver has evidence of that snapshot, not of market closure
+  or a specific broker/feed fault.
+- `stale_snapshot`: no recent capture is available; its cause remains unverified.
+- `no_snapshot`: this asset has no stored snapshot.
+- `timestamp_ahead`: a capture or quote is ahead of server time.
+
+These observations do not explain gaps in a historical review. Existing `status`
+and `is_live` behavior is unchanged: a recent upload never makes an old quote live.
+Historical candle reviews remain usable when their own coverage is sufficient.
+No Windows collector update, new credential or trading permission is required for
+this server-side explanation. Runtime closed/open session detection is not enabled.
+
+### Sources checked on 2026-10-03
+
+- [MetaQuotes Python API](https://www.mql5.com/en/docs/python_metatrader5) lists no
+  quote/trade-session schedule function. [symbol_info](https://www.mql5.com/en/docs/python_metatrader5/mt5symbolinfo_py)
+  exposes symbol properties, not the separate session schedule API.
+- MQL5's [SymbolInfoSessionTrade](https://www.mql5.com/en/docs/marketinformation/symbolinfosessiontrade)
+  and [SymbolInfoSessionQuote](https://www.mql5.com/en/docs/marketinformation/symbolinfosessionquote)
+  return weekday sessions. Their API alone is not a dated holiday calendar, and
+  quote sessions must not be confused with permission to place trades. No MQL
+  program or additional executable has been installed or run for this feature.
+- [Exness instrument trading hours](https://get.exness.help/hc/en-us/articles/4405235684498-Instrument-trading-hours)
+  offers instrument/date/timezone selection and says its schedule includes known
+  holidays, maintenance and DST. It identifies the trading-server timezone as
+  UTC+0. This official page is a manual reference, **not** an ingested schedule or
+  evidence that a particular requested window was closed.
+
+A future calendar integration must verify the broker symbol and applicable dates,
+distinguish quote/trade restrictions, retain provenance and timezone, and expire
+stale evidence. Holiday overrides and schedule changes require refresh handling;
+outside verified coverage it must return unknown. This change adds no scraping,
+guessed weekly schedule, new service or paid dependency.
