@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import json
 import sqlite3
 import unittest
 from unittest.mock import patch, MagicMock
@@ -78,9 +79,39 @@ class PhotoTests(unittest.TestCase):
             self.assertEqual(photos.send_photos(self.db,10,20,{})['sent_count'],1)
             self.assertEqual(client.post.call_args_list[0].kwargs['json'],{'recipient_id':'20'})
             self.assertIn('files[0]',client.post.call_args_list[1].kwargs['files'])
+            payload=json.loads(client.post.call_args_list[1].kwargs['data']['payload_json'])
+            self.assertIn('**Final R:** +3R',payload['embeds'][0]['description'])
+            self.assertNotIn('result_r',payload['embeds'][0]['description'])
             client.post.side_effect=[channel,MagicMock(status_code=403)]
             result=photos.send_photos(self.db,10,20,{})
             self.assertFalse(result['ok']); self.assertEqual(result['sent_count'],0)
+    @patch.dict('os.environ',{'DISCORD_TOKEN':'test'})
+    def test_grouped_delivery_keeps_requester_bytes_and_partial_count(self):
+        self.tag()
+        second=photos.save_upload(self.db,10,20,'attachment-2',b'\xff\xd8\xffsecond')
+        photos.annotate(self.db,10,20,dict(photo_id=second['photo_id'],trade_number=1,
+                       analysis='Second chart',tier=None,play='Custom',asset='XAUUSD'))
+        photos.save_upload(self.db,10,30,'foreign',b'\xff\xd8\xffother-member')
+        with patch('httpx.Client') as cls:
+            client=cls.return_value.__enter__.return_value
+            channel=MagicMock(status_code=200); channel.json.return_value={'id':'private'}
+            client.post.side_effect=[channel,MagicMock(status_code=200),MagicMock(status_code=200)]
+            result=photos.send_photos(self.db,10,20,{'trade_number':1})
+            self.assertEqual(result['sent_count'],2)
+            calls=client.post.call_args_list[1:]
+            descriptions=[]
+            for call in calls:
+                self.assertEqual(call.args[0],'/channels/private/messages')
+                payload=json.loads(call.kwargs['data']['payload_json'])
+                filename,data,mime=call.kwargs['files']['files[0]']
+                self.assertEqual(payload['embeds'][0]['image']['url'],'attachment://'+filename)
+                self.assertNotIn(b'other-member',data)
+                descriptions.append(payload['embeds'][0]['description'])
+            self.assertEqual(sum('**Final R:**' in value for value in descriptions),1)
+            client.post.side_effect=[channel,MagicMock(status_code=200),MagicMock(status_code=429)]
+            result=photos.send_photos(self.db,10,20,{'trade_number':1})
+            self.assertFalse(result['ok'])
+            self.assertEqual(result['sent_count'],1)
     def test_pagination(self):
         for i in range(6):
             photos.save_upload(self.db,10,20,str(i),b'\xff\xd8\xffexample')

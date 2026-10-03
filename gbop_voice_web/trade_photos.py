@@ -175,6 +175,7 @@ def search(db,guild_id,user_id,args,include_bytes=False):
 
 def send_photos(db,guild_id,user_id,args):
     import httpx
+    from gbop_voice_web.photo_recall import recall_cards
     result = search(db,guild_id,user_id,args,include_bytes=True)
     if not result['ok'] or not result['photos']:
         return {**result,'sent_count':0}
@@ -186,19 +187,10 @@ def send_photos(db,guild_id,user_id,args):
         channel = client.post('/users/@me/channels',json={'recipient_id':str(user_id)})
         if channel.status_code >= 300:
             return {'ok':False,'sent_count':0,'error':'Unable to open your DMs. Check your Discord privacy settings.'}
-        for p in result['photos']:
-            ext = {'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}[p['mime']]
-            caption = f"Trade #{p['trade_number']}" if p['trade_number'] else 'Unlinked journal picture'
-            caption += f" | {p['asset']} | {p['play']} | {p['entry_model']} | Tier {p['tier'] or 'unknown'}\n{p['analysis'][:1000]}"
-            if p.get('trade_details'):
-                caption += "\nTrade: " + json.dumps(p['trade_details'],ensure_ascii=False)
-            if p.get('handwritten_journals'):
-                caption += '\nJournal entries: ' + json.dumps(p['handwritten_journals'],ensure_ascii=False)
-            if p.get('journal'):
-                caption += "\nJournal: " + json.dumps(p['journal'],ensure_ascii=False)
+        for p, filename, payload in recall_cards(result['photos'],result['has_more']):
             response = client.post(f"/channels/{channel.json()['id']}/messages",
-                data={'payload_json':json.dumps({'content':caption[:1900],'allowed_mentions':{'parse':[]}})},
-                files={'files[0]':(f"trade-photo-{p['id']}.{ext}",base64.b64decode(p['image_base64']),p['mime'])})
+                data={'payload_json':json.dumps(payload)},
+                files={'files[0]':(filename,base64.b64decode(p['image_base64']),p['mime'])})
             if response.status_code >= 300:
                 return {'ok':False,'sent_count':sent,'error':'Discord could not deliver all photos. DMs may be disabled or rate limited.'}
             sent += 1
