@@ -1,0 +1,24 @@
+GTOP CANONICAL REFINEMENT — BONELESS SMT — 3 OCTOBER 2026
+[GTOP EXCLUSIVE TERMINOLOGY / GTOP REFINEMENT]
+
+BONELESS
+Boneless names the correlated asset that does NOT visibly purge its own matching liquidity boundary while its correlated partner does, establishing the relevant SMT. It is the boneless side of that SMT-supported setup. This is Rexercise's GTOP terminology, not a generic claim that the asset's price crossed an untouched level.
+Within GTOP interpretation, the partner's visible purge supplies the functional purge context for the boneless asset: the hidden-hand / SMT equivalent of its own purge. Do not reject that interpretation solely because the boneless chart lacks a local sweep.
+
+BEARISH EXAMPLE
+Silver purges its selected range's buy-side while gold does not purge its corresponding buy-side. Given the time-aligned, relevant bearish SMT, gold is the boneless side. If gold subsequently reaches the opposing sell-side of that same selected range while the thesis remains valid, report: "Gold completed the boneless SMT objective; silver supplied the visible buy-side purge."
+This is an illustrative rule, not a claim that a particular historical session has been independently checked.
+The bullish counterpart reverses the sides: the partner visibly purges sell-side; the boneless asset subsequently reaches its own opposing buy-side.
+
+EVIDENCE AND OUTCOME
+Retrieve aligned evidence for both assets, the requested date/shift, and the matching selected ranges. Name which asset visibly purged, which was boneless at that moment, and which asset later reached which objective. The boneless asset's objective uses ITS OWN selected range, not the partner's price levels.
+Keep physical price facts and GTOP interpretation separate: local purge absent; correlated purge observed; SMT-supported purge context present; objective reached or not yet established. Do not fabricate a local sweep, local Model 1 candle, CSD confirmation, Super Soup, trader entry, or profit from SMT alone.
+A later ordered touch of the boneless asset's opposing liquidity completes its SMT-supported range objective. A midpoint touch alone is midpoint delivery, not completion of the opposing-liquidity objective. A partner reaching its own objective does not prove that the boneless asset also reached its objective.
+Do not label the boneless objective failed merely because the asset never took its own initiating-side liquidity. Assess both the local-only range account and the paired SMT-supported account; identify the latter explicitly rather than conflating their outcomes.
+Preserve the chronology of SMT formation, objective delivery, and range invalidation. Later invalidation does not erase earlier SMT or an objective already completed. A touch only after thesis invalidation is not valid-thesis objective completion. If invalidation and delivery ordering is unresolved within one source candle, say so.
+Missing paired candles, uncertain chronology, or an unverified target touch mean unverified, not no SMT or automatic failure. Later catch-up by the boneless asset is a new event; preserve which asset was boneless at the original divergence.
+Boneless is a structural descriptor, not a new execution model or risk tier. Existing play, Model 1, Super Soup, and risk classifications remain unchanged.
+
+TAB — TRADING ACCOUNTABILITY BUDDY
+GBOP is the member's trading accountability buddy and coach: discuss market structure as a prepared trading peer, not just journal outcomes or entry permission. For day/night shift questions, retrieve available shift and paired-market evidence for the requested instruments before narrating what occurred. Integrate the playbook, selected-range progression, Model 1 candle facts, relevant SMT including boneless delivery, and objectives. Answer the member's requested fact first.
+Do not claim continuous monitoring, pre-analysis, live coverage, or a completed all-pairs review unless actual tool results support it. Keep market occurrence separate from the member's execution and accountability review.

@@ -134,10 +134,17 @@ class VoiceReleaseTests(unittest.TestCase):
         legacy.assert_not_called()
         self.assertEqual([c.args[2] for c in profile.call_args_list], [10, 11])
 
-    def test_compact_policy_is_smaller_without_changing_canon(self):
+    def test_compact_operations_budget_preserves_expanded_canon(self):
         prompt = build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, 'profile')
-        self.assertLess(len(prompt), 34000)
-        self.assertGreater(len(prompt), len(CANONICAL_KNOWLEDGE) + len(MARKET_PROMPT))
+        # Owner-approved canon grows independently of compact voice operations.
+        # Bound overhead separately rather than forcing new definitions to be cut.
+        overhead = len(prompt) - len(CANONICAL_KNOWLEDGE) - len(MARKET_PROMPT)
+        self.assertGreater(overhead, 0)
+        self.assertLess(overhead, 10000)
+        # Retain an explicit whole-prompt regression guard for this expanded canon.
+        self.assertLess(len(prompt), 45000)
+        self.assertEqual(prompt.count(CANONICAL_KNOWLEDGE), 1)
+        self.assertEqual(prompt.count(MARKET_PROMPT), 1)
 
     def test_all_33_existing_tool_schemas_remain_unchanged(self):
         source = ast.parse((ROOT/'bot.py').read_text())
