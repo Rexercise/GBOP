@@ -44,6 +44,10 @@ def _voice_market_context(context, *, evidence_ref=None):
     # stays in the server context/tool contract and is irrelevant to this page.
     if out.get('source_tool') == 'review_market_crt':
         out.pop('discussion_context', None)
+    elif isinstance(out.get('discussion_context'), dict):
+        out['discussion_context']['response_contract'] = (
+            'Only completed delivery marks discussion. other_ranges excludes discussed opportunities; '
+            'continue_active_range retains the selected story. Keep this asset/date/shift/cutoff.')
     if evidence_ref:
         out['evidence_ref'] = evidence_ref
         out['snapshot_note'] = ('Repeated conversation recap/outcomes omitted; use the supplied review '
@@ -359,6 +363,8 @@ def shift_voice_synopsis(result):
         'kind': 'shift_synopsis', 'detail_omitted': True,
         'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
         'note': 'Default short synopsis only. Do not infer absence from omission. '
+                'Follow active_range_context through later candles to its conclusion and shift_end; '
+                'hourly candles do not automatically become new selected ranges. '
                 'Every named range remains recoverable through range_index detail_request; '
                 'specify detail_candle_start_ny for Model 1/CISD/Soup. '
                 'Seven is independent and can oppose eight. Raw verified context is retained.'}
@@ -413,7 +419,10 @@ def voice_tool_payload(name, result):
         out['market_context'] = _voice_market_context(out.get('market_context'), evidence_ref='#/review')
         out['voice_view'] = {'kind': 'other_range_followup', 'detail_omitted': True,
                             'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
-                            'note': 'Remaining ranges only, in chronology. Speak explicit range openings. '
+                            'note': 'Follow the supplied mode: continue_active_range retains the active story; '
+                                    'other_ranges adds distinct opportunities after the continuity bridge. '
+                                    'Preserve active_range_context, genuine transitions and shift_end. '
+                                    'Independent range thesis differs from candle body direction. Speak explicit range openings. '
                                     'Retrieval is not discussion; completed playback is acknowledged separately.'}
         if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
             return _bounded_error({'ok': False, 'status': 'voice_other_ranges_budget_exceeded',

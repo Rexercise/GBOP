@@ -11,24 +11,135 @@ from gbop_voice_web.candle_evidence import parse_time
 from gbop_voice_web.candle_naming import candle_label, source_timeframe
 from gbop_voice_web.shift_narrative import directional_outcome
 from gbop_voice_web.smt_reference import closing_candle
+from gbop_voice_web.active_range_story import selected_range_story, shift_end_state
 
 
 SYNOPSIS_CONTRACT = (
-    'Default shift answer: use spoken_summary, briefly. Lead with 9ate8 direction/verdict, '
-    'supported variant or pending, and its own 50%/opposing delivery/invalidation. '
-    'Then only relevant named ranges in chronology. Young Lefty is independently evaluated '
-    'on seven: mention only supplied relevant evidence; it can oppose 9ate8. '
-    'Omitted candidates are not absent. Model 1, CISD, Soup and detailed candle questions '
-    'require the exact range detail_request; never infer fills from delivery.')
+    'Use spoken_summary briefly: 9ate8 direction, variant and own objectives first; '
+    'Young Lefty is independent. Follow active_range_context through later hours and '
+    'conclusion to shift_end. Only next_selected_range changes the anchor, never a new '
+    'hour or objective delivery. Candle body direction differs from an independent '
+    'range thesis. Omission is not absence. Model 1/CISD/Soup needs exact detail_request; '
+    'delivery never proves a fill.')
 
 OTHER_RANGES_CONTRACT = (
     'Answer the other-ranges follow-up using spoken_summary and ranges in chronology. '
-    'Previously discussed anchors are excluded even when they failed; do not repeat them. '
+    'Previously discussed anchors are excluded from new opportunities even when they failed. '
+    'Carry active_range_context as a brief continuity bridge without repeating old failed plays. '
+    'Finish the selected anchor through manipulation, return, development and delivery or '
+    'invalidation before independent candidates. An hourly candle body direction differs from '
+    'that hour\'s independent range thesis. Use next_selected_range only for a real transition. '
+    'In continue_active_range mode, explain that anchor and any actual next selected range; '
+    'do not substitute other opportunities. Preserve shift_end and the final close. '
     'An unbranded H1 CRT is still relevant: play=null never means absent. '
     'Keep each range\'s own direction, variant, objectives, invalidation and selection role. '
     'Independent context is not a selected-range transition. A range closing at the cutoff '
     'has no later delivery evidence. Say the explicit H1 range opening for each range '
     'actually discussed; retrieval alone is not a completed spoken response.')
+
+
+def _active_context(story, records, anchor_start_ny=None):
+    anchor = anchor_start_ny or story.get('active_anchor_ny')
+    row = next((r for r in story.get('ranges', []) if r['anchor_start_ny'] == anchor), None)
+    if not row:
+        return None
+    if row.get('role') != 'selected_range':
+        if anchor_start_ny:
+            raise ValueError('The named range is independent context; retrieve its exact range detail '
+                             'instead of changing the selected-range story.')
+        return None
+    fact = _paired_fact(row, records, _local_fact(row))
+    return selected_range_story(story, row, fact)
+
+
+def _continuity_bridge(context):
+    """Short reference for an already-discussed anchor, preserving its key ending."""
+    name = f"{_clock(context['anchor_start_ny'])} H1 range"
+    parts = [f'The selected {name} remains the reference for this sequence.']
+    for hour in context['hourly_development']:
+        actions = []
+        if hour.get('purge'):
+            actions.append(f"swept its {hour['purge']['side']}-side")
+            if hour.get('candle_science') in ('wick_above', 'wick_below', 'both_sides_wicked', 'inside_range'):
+                actions.append(f"closed {hour.get('candle_body_direction') or ''} back inside".replace('  ', ' '))
+        for key, label in (('midpoint', '50%'), ('opposing_liquidity',
+                'sell-side' if context.get('direction') == 'bearish' else 'buy-side')):
+            event = hour.get(key)
+            if event:
+                actions.append(f"delivered its {label} in " + candle_label(event['bar_open_ny'],
+                    source_timeframe(event.get('precision_seconds'))))
+        if actions:
+            parts.append(f"The {_clock(hour['candle_start_ny'])} H1 candle " + ' and '.join(actions) + '.')
+    codes = [v['code'] for v in context.get('variant', {}).get('labels', [])]
+    if codes:
+        parts.append('/'.join(codes) + ' is supported by the completed H1 sequence'
+                     + (f" at {_clock(context['variant_known_at_ny'])}." if context.get('variant_known_at_ny') else '.'))
+    if context.get('invalidated_at_ny'):
+        parts.append(f"The range was invalidated at {_clock(context['invalidated_at_ny'])}"
+                     + (' after recorded delivery.' if context['conclusion']['status'] == 'opposing_liquidity_delivered' else '.'))
+    if context.get('next_selected_range'):
+        nxt = context['next_selected_range']
+        parts.append(f"Only then did {_clock(nxt['to_anchor_ny'])} H1 become selected at {_clock(nxt['confirmed_at_ny'])}.")
+    elif context['still_selected_at_cutoff']:
+        parts.append('No later selected range replaced it in this shift.')
+    return ' '.join(parts)
+
+
+def _short_selected_summary(context):
+    """Default answer is short; source purge/return detail remains structured."""
+    name = f"{_clock(context['anchor_start_ny'])} H1 range"
+    parts = [f'The {name} stayed selected.']
+    for hour in context['hourly_development']:
+        actions = []
+        if hour.get('purge'):
+            actions.append(f"swept its {hour['purge']['side']}-side")
+            if hour.get('candle_science') in ('wick_above', 'wick_below', 'both_sides_wicked', 'inside_range'):
+                actions.append(f"closed {hour.get('candle_body_direction') or ''} back inside".replace('  ', ' '))
+        for key, label in (('midpoint', '50%'), ('opposing_liquidity',
+                'sell-side' if context.get('direction') == 'bearish' else 'buy-side')):
+            event = hour.get(key)
+            if event:
+                actions.append(f"delivered {label} in {_clock(event['bar_open_ny'])} "
+                               f"{source_timeframe(event.get('precision_seconds')) or 'source'}")
+        if actions:
+            parts.append(f"{_clock(hour['candle_start_ny'])} H1 " + ', then '.join(actions) + '.')
+    labels = [v['code'] for v in context.get('variant', {}).get('labels', [])]
+    if labels:
+        parts.append('/'.join(labels) + ' at the completed '
+                     + (f"{_clock(context['variant_known_at_ny'])} H1 close."
+                        if context.get('variant_known_at_ny') else 'H1 close.'))
+    elif context['conclusion']['status'] == 'pending_at_review_cutoff':
+        parts.append('Its outcome and variant remain pending at the cutoff.')
+    elif context['conclusion']['status'] == 'unverified':
+        parts.append('Its outcome remains unverified.')
+    if context.get('invalidated_at_ny'):
+        parts.append(f"Invalidated at {_clock(context['invalidated_at_ny'])}"
+                     + (' after recorded delivery.' if context['conclusion']['status'] == 'opposing_liquidity_delivered' else '.'))
+    if context.get('next_selected_range'):
+        nxt = context['next_selected_range']
+        parts.append(f"{_clock(nxt['to_anchor_ny'])} H1 then became selected at {_clock(nxt['confirmed_at_ny'])}"
+                     + ('; no later evidence before the cutoff.' if nxt.get('at_review_cutoff') else '.'))
+    return ' '.join(parts)
+
+
+def _compact_active_context(context):
+    if not context:
+        return None
+    out = _pick(context, ('anchor_start_ny', 'selected_at_ny', 'selected_through_ny',
+        'still_selected_at_cutoff', 'direction', 'invalidated_at_ny', 'variant_known_at_ny', 'next_selected_range'))
+    out['conclusion'] = _pick(context['conclusion'], ('status', 'known_at_ny'))
+    out['hourly_development'] = []
+    for hour in context['hourly_development']:
+        item = _pick(hour, ('candle_start_ny', 'candle_body_direction', 'candle_science', 'return_inside'))
+        # Exact purge/objective intervals are already in this anchor's ranges
+        # fact. Preserve the hour's relationship without a second interval copy.
+        if hour.get('purge'):
+            item['purge_side'] = hour['purge']['side']
+        for key in ('midpoint', 'opposing_liquidity'):
+            if hour.get(key):
+                item[key + '_delivered'] = True
+        out['hourly_development'].append(item)
+    return out
 
 
 def _pick(value, keys):
@@ -211,7 +322,8 @@ def build_shift_synopsis(review, asset=None):
                     (row.get('role') == 'selected_range' or item['outcome'] == 'opposing_liquidity_delivered'))
         if relevant:
             facts.append(item)
-            sentences.append(_sentence(item))
+            continuity = selected_range_story(story, row, item)
+            sentences.append(_short_selected_summary(continuity) if continuity else _sentence(item))
     if not story.get('coverage', {}).get('complete') or not story.get('progression_complete'):
         sentences.append('Missing or unfinished candles limit the affected ranges.')
     # Every named range, including an uninitiated seven, remains recoverable on
@@ -224,13 +336,17 @@ def build_shift_synopsis(review, asset=None):
                   'asset': asset, 'context_action': 'continue', 'anchor_start_ny': start,
                   'anchor_timeframe': 'H1', 'through_ny': story['end_ny']}}}
              for start, label, role in sorted(anchors)]
+    ending = shift_end_state(story)
+    sentences.append(ending['spoken_summary'])
     return {'spoken_summary': ' '.join(sentences), 'ranges': facts, 'range_index': index,
+            'active_range_context': _compact_active_context(_active_context(story, records)),
+            'shift_end': {k: v for k, v in ending.items() if k != 'spoken_summary'},
             'young_lefty_evaluated': True, 'young_lefty_relevant': young_relevant,
             'coverage_complete': story.get('coverage', {}).get('complete', False),
             'through_ny': story['end_ny'], 'response_contract': SYNOPSIS_CONTRACT}
 
 
-def build_other_ranges(review, asset=None, discussed=()):
+def build_other_ranges(review, asset=None, discussed=(), *, continue_active=False, anchor_start_ny=None):
     """Remaining evidence in hourly order, not just named or winning setups.
 
     This is an explicit follow-up view; the short default synopsis remains
@@ -241,12 +357,46 @@ def build_other_ranges(review, asset=None, discussed=()):
     excluded = set(discussed)
     records = story.get('recap', {}).get('paired_interpretation', [])
     synopsis = build_shift_synopsis(review, asset)
+    active = _active_context(story, records, anchor_start_ny if continue_active else None)
+    ending = shift_end_state(story)
+    if continue_active:
+        if active is None:
+            raise ValueError('The active range is unverified because the selected-range progression is incomplete.')
+        path, current = [], active
+        while current.get('next_selected_range'):
+            current = _active_context(story, records, current['next_selected_range']['to_anchor_ny'])
+            if current is None:
+                break
+            path.append(current)
+        return {'mode': 'continue_active_range', 'spoken_summary': ' '.join(
+                    [active['spoken_summary']] + [r['spoken_summary'] for r in path] + [ending['spoken_summary']]),
+                'ranges': [], 'active_range_context': active, 'next_selected_context': path,
+                'shift_end': ending, 'excluded_discussed_anchors': sorted(excluded),
+                'all_ranges_discussed': False, 'through_ny': story['end_ny'],
+                'coverage_complete': story.get('coverage', {}).get('complete', False),
+                'response_contract': OTHER_RANGES_CONTRACT}
+    # A newly selected cutoff range has no later development. Preserve the
+    # preceding story and its genuine transition before independent candidates.
+    # Likewise keep a discussed unbranded selected range's completion bridge
+    # when a later selected range is still an undisclosed opportunity.
+    if active and active.get('selected_at_ny') == story['end_ny']:
+        prior = next((t['from_anchor_ny'] for t in story.get('range_transitions', [])
+                      if t['to_anchor_ny'] == active['anchor_start_ny']), None)
+        if prior:
+            active = _active_context(story, records, prior)
+    discussed_selected = [r for r in story.get('ranges', []) if r.get('role') == 'selected_range'
+        and r['anchor_start_ny'] in excluded and r.get('label') != '9ate8']
+    if discussed_selected:
+        prior = max(discussed_selected, key=lambda r: r['anchor_start_ny'])
+        active = _active_context(story, records, prior['anchor_start_ny'])
     facts = [deepcopy(row) for row in synopsis['ranges'] if row.get('play') == 'Young Lefty']
     for row in story.get('ranges', []):
         play = row.get('label') if row.get('label') in {'9ate8', 'Young Lefty'} else None
         facts.append(_paired_fact(row, records, _local_fact(row, play)))
     index = {row['anchor_start_ny']: row for row in synopsis['range_index']}
     remaining, sentences = [], []
+    if active and active['anchor_start_ny'] in excluded:
+        sentences.append(_continuity_bridge(active))
     for fact in sorted(facts, key=lambda row: row['anchor_start_ny']):
         anchor = fact['anchor_start_ny']
         if anchor in excluded:
@@ -259,13 +409,20 @@ def build_other_ranges(review, asset=None, discussed=()):
                     'review cutoff; no later setup or delivery evidence is available.')
         else:
             fact['observation_status'] = 'observed' if fact['coverage_complete'] else 'incomplete'
-            text = _sentence(fact, young=fact.get('play') == 'Young Lefty')
+            row = next((r for r in story['ranges'] if r['anchor_start_ny'] == anchor), None)
+            continuity = selected_range_story(story, row, fact) if row else None
+            text = (continuity['spoken_summary'] if continuity and not fact.get('play') else
+                    _sentence(fact, young=fact.get('play') == 'Young Lefty'))
+            if fact['role'] == 'independent_range_context' and not fact.get('play'):
+                text = 'Separately, treating this candle as an independent range: ' + text
         remaining.append(fact)
         sentences.append(text)
     if not remaining:
         sentences.append('All retained ranges in this shift have already been discussed. '
                          'Name a range to revisit it, or explicitly start the review over.')
-    return {'spoken_summary': ' '.join(sentences), 'ranges': remaining,
+    sentences.append(ending['spoken_summary'])
+    return {'mode': 'other_ranges', 'spoken_summary': ' '.join(sentences), 'ranges': remaining,
+            'active_range_context': active, 'shift_end': ending,
             'excluded_discussed_anchors': sorted(excluded),
             'all_ranges_discussed': not remaining,
             'through_ny': story['end_ny'], 'coverage_complete': story.get('coverage', {}).get('complete', False),
