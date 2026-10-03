@@ -215,6 +215,8 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None):
     # Include a qualifying candle that closes at invalidation; exclude anything
     # formed afterward. Later failure never changes the identity already observed.
     result['model1'] = model1_evidence(bars, anchor, mapped, invalid_at or end, step)
+    from gbop_voice_web.purge_lifecycle import attach_lifecycles
+    attach_lifecycles(bars, anchor, mapped, end, step, result['model1'], invalid_at)
     from gbop_voice_web.super_soup_evidence import enrich_model1
     enrich_model1(bars, anchor, result['model1'], end, step, invalid_at)
     first = {}
