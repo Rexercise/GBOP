@@ -17,3 +17,11 @@ One changed asset/shift is prepared per scan in rotation, with paired evidence w
 Automated regression covers candle identity, clean/delivered, clean/failed, unclean/functional, no soup, V1–V6, gaps, same-bar uncertainty, member separation, stale feeds, cancellation, restarts, access revocation and ambiguous delivery. Human voice acceptance is separate: ask about the same NAS Model 1, its subsequent candles and Super Soup; then request the latest journal/photos. Do not broaden member access based only on a server health check.
 
 SPX collector support is included in this source release, but changing the hosted bot does not update the separate Windows collector or its config.json. SPX availability must be confirmed from received broker history; no substitute symbol is invented.
+
+## Blessed Thief sequence
+
+Selected CRT reviews and prepared shift briefs include Blessed Thief opening-price evidence for the manipulation candle and every later selected-timeframe candle until the opposing objective or parent invalidation. The default is the CRT timeframe, not the Model 1 confirmation mapping. Ask for another candle timeframe explicitly. Each candle's open remains reviewable across later candles; no entry is assumed at its opening time.
+
+`review_market_crt` accepts nullable `blessed_thief_timeframe` and `blessed_thief_from_ny`. Detail pages contain at most 12 levels; continue with `next_candle_start_ny`, retaining the original anchor, timeframe and through-time. Voice retains these analytical rows and their cursor. Prepared briefs preserve their summary if the existing 128 KiB cap requires omitting detail.
+
+Evidence records source intervals, directional returns/reclaims, parent and local open-excursion extremes, objective status and thesis validity. Same-source-bar manipulation/trigger/objective order and missing coverage remain unresolved. An observed analytical condition is never a member fill, a placed stop or realized R. Synthetic tests cover bullish/bearish later candles, arbitrary timeframes, pagination, missing opens, gap-through-price, objective/invalidation cutoffs, voice and saved-brief retention.

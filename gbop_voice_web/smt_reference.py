@@ -1,5 +1,6 @@
 """GTOP candle naming and paired Model 1 identity, without inferred local sweeps."""
 from datetime import datetime, timedelta
+from gbop_voice_web.candle_naming import candle_label, closure_label
 from gbop_voice_web.candle_evidence import (
     ASSIGNED, NY, model1_evidence, next_boundary, parse_time, stamp, summarize,
 )
@@ -27,7 +28,7 @@ def closing_candle(close_ny, tf='H1', open_ny=None):
     close_ny = stamp(int(close.timestamp()))
     return {'timeframe': tf, 'candle_open_ny': open_ny,
             'candle_close_ny': close_ny,
-            'spoken_label': f"the {clock(open_ny)} {tf} candle's close (at {clock(close_ny)} New York)"}
+            'spoken_label': closure_label(open_ny, tf)}
 
 
 def attach_paired_model1(review, data, anchors, tf):
@@ -143,9 +144,8 @@ def reconcile_paired_recap(review, asset):
             identity = event.get('paired_model1', {})
             if boneless and identity.get('status') == 'identified':
                 ref = identity['boneless_reference']
-                text += (f" Its SMT-inherited Model 1 is the {clock(ref['bar_open_ny'])} "
-                         f"{ref['timeframe']} candle, matching the partner's body-purge candle, "
-                         f"identified on its close at {clock(ref['bar_close_ny'])}.")
+                text += (f" Its SMT-inherited Model 1 is {candle_label(ref['bar_open_ny'], ref['timeframe'])}, "
+                         "identified on its closure and matching the partner's body-purge candle.")
             if outcome.get('status') == 'objective_complete_while_range_valid':
                 text += (f" It completed its own opposing-liquidity objective at {outcome['level']} "
                          f"in the candle opening {clock(outcome['touch_bar_open_ny'])}, "
@@ -176,7 +176,7 @@ def reconcile_paired_recap(review, asset):
         'Do not label the overall boneless 9ate8 failed from a later local Model 1 failure. '
         'Use each own objective_status: correlation alone does not establish target completion. '
         'Keep local Model 1 and SMT-inherited Model 1 identities distinct. '
-        'Name all candles by opening time and state the closing clock time separately.')
+        'Name candles by opening time; say the closure of that candle. Give closing timestamps only when requested.')
     for row in story.get('ranges', []):
         row['paired_interpretation'] = [r for r in records if r['anchor_start_ny'] == row.get('anchor_start_ny')]
     return review

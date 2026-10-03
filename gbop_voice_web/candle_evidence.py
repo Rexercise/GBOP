@@ -176,7 +176,8 @@ def model1_evidence(bars, anchor, mapped, end, step):
     return result
 
 
-def crt_review(bars, start, end, tf, step, confirmation_tf=None):
+def crt_review(bars, start, end, tf, step, confirmation_tf=None,
+               blessed_thief_tf=None, blessed_thief_from=None):
     tf = timeframe(tf)
     anchor_end = next_boundary(start, tf)
     if not anchor_end <= end or end - start > 90 * 86400 + 3600:
@@ -192,7 +193,10 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None):
               'status': 'insufficient_closed_candles', 'events': [],
               'limits': 'Candle observations only. No automatic PD-array, MOB, SMT, execution or member exit inference. '
                         'Model 1 candle identity is independent of later CSD, Super Soup and execution.'}
+    from gbop_voice_web.blessed_thief_evidence import blessed_thief_review
     if not anchor['complete']:
+        result['blessed_thief'] = blessed_thief_review(
+            bars, anchor, tf, end, step, candle_tf=blessed_thief_tf, page_from=blessed_thief_from)
         result['model1'] = model1_evidence(bars, anchor, mapped, end, step)
         return result
     following = [b for b in bars if anchor_end <= b['time'] and b['time'] + step <= end]
@@ -261,6 +265,8 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None):
     if invalid_at:
         result['status'] = 'invalidated_by_close'
         result['invalidated_at_ny'] = stamp(invalid_at)
+    result['blessed_thief'] = blessed_thief_review(
+        bars, anchor, tf, end, step, invalid_at, blessed_thief_tf, blessed_thief_from)
     result['range_still_valid_in_available_closes'] = invalid_at is None
     events.sort(key=lambda e: e.get('bar_open_ny', e.get('confirmed_at_ny', '')))
     return result

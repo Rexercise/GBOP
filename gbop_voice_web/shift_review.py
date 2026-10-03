@@ -125,7 +125,7 @@ def review_shift(bars, day, shift, step=300):
                        'direction_observed': direction, 'invalidated_at_ny': invalid,
                        'entry_confirmed': False, 'execution_status': 'not_assessed',
                        'entry_confirmed_scope': evidence['entry_confirmed_scope'],
-                       'model1': evidence['model1'], 'objectives': objectives,
+                       'model1': evidence['model1'], 'blessed_thief': evidence['blessed_thief'], 'objectives': objectives,
                        'events': events, 'sweep_detail': sweep_detail, 'm5_body_evidence': body_facts,
                        'observation_coverage': evidence.get('observation_coverage')})
     for row in ranges:

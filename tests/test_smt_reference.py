@@ -27,7 +27,9 @@ class ReferenceTests(unittest.TestCase):
     def test_hourly_name_is_open_not_close(self):
         c = closing_candle('2026-10-02T11:00:00-04:00')
         self.assertIn('10:00 AM H1 candle', c['spoken_label'])
-        self.assertIn('11:00 AM', c['spoken_label'])
+        self.assertEqual(c['spoken_label'], 'the closure of the 10:00 AM H1 candle')
+        self.assertNotIn('11:00 AM', c['spoken_label'])
+        self.assertEqual(c['candle_close_ny'], '2026-10-02T11:00:00-04:00')
         self.assertNotIn('11:00 AM H1 candle', c['spoken_label'])
     def test_night_midnight_names_previous_candle(self):
         c = closing_candle('2026-10-03T00:00:00-04:00')
