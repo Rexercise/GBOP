@@ -62,7 +62,7 @@ class PurgeLifecycleTests(unittest.TestCase):
         self.assertEqual(r['lifecycles'][0]['super_soup']['status'],'no_subsequent_closed_candle')
         self.assertEqual(r['csd_status'],'not_assessed')
     def test_partial_assigned_candle_not_used(self):
-        e=evaluate([bar(1,102,104,100,101)],end=T+450)['lifecycles'][0]
+        e=evaluate([bar(1,102,104,100,101)],end=T+420)['lifecycles'][0]
         self.assertIsNone(e['next_assigned_candle'])
         self.assertIsNone(e['super_soup']['sweep'])
     def test_bullish_mirror(self):
