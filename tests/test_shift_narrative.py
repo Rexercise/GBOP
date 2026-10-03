@@ -21,7 +21,8 @@ class ShiftNarrativeTests(unittest.TestCase):
         r = self.review(fixture())
         self.assertEqual([x['code'] for x in r['ranges'][1]['variant_evidence']['labels']], ['V1'])
         recap = r['recap']
-        self.assertIn('9ate8 failed, but price later reached buy-side of the 9:00 AM H1 range', recap['headline'])
+        self.assertTrue(recap['headline'].startswith('The 9:00 AM H1 range completed its bullish buy-side objective'))
+        self.assertNotIn('9ate8 failed', recap['headline'])
         self.assertEqual(len(recap['selected_range_chapters']), 2)
         text = recap['selected_range_chapters'][1]['text']
         for fact in ['10:00 AM', 'selected range', 'sell-side', 'buy-side of the 9:00 AM H1 range', 'V1 Textbook']:

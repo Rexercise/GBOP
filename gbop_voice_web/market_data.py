@@ -210,7 +210,8 @@ def attach_lifecycle(review, bars, end, step):
         model['lifecycle_ref'] = 'candle_lifecycle.purge_candles'
         model['lifecycle_contract'] = view['response_contract']
         model['csd_status'] = model['super_soup_status'] = 'see_candle_lifecycle'
-    return review
+    from gbop_voice_web.shift_narrative import attach_directional_outcome
+    return attach_directional_outcome(review, bars, end, step)
 
 
 def session_review(bars, day, shift, step=300):
@@ -326,78 +327,44 @@ MARKET_TOOLS = [
 ]
 MARKET_NAMES = {t['name'] for t in MARKET_TOOLS}
 MARKET_PROMPT = """
-# TRADING ACCOUNTABILITY BUDDY: GROUNDED MARKET CONVERSATION
-For "what did price do today/this shift?", use review_market_session and lead with
-shift_story.recap.spoken_summary (voice: shift_recap.spoken_summary), not observations[0].
-Include verified paired_smt/paired_context; the single-asset story is not the full SMT story.
-Day: 09:00-12:00, night: 21:00-00:00 NY. Whole-shift recaps need 4-7 concise sentences,
-overriding the 1-3 sentence default. Begin at the 8 o'clock anchor, follow every selected
-range_transition through cutoff, and retain later setups after failed 9ate8.
-Use ranges[].variant_evidence and its reasons: V1/V2/V3 require opposing-liquidity
-delivery, not midpoint alone; V4/V5 can describe inside-bar structure with delivery
-unresolved. Include supported variants in the initial answer. Incomplete/cutoff is not
-failure. Repeated original-boundary touches alone are not V6. Never force a label.
-Use hourly_progression for candle science; independent_range_context is not selected.
-Report objective, purge, return, assigned lifecycle, delivery and invalidation in order.
-Earlier delivery survives later invalidation. Same-bar order is unknown. Neither
-structure nor delivery proves a member entry/profit. Use candle_lifecycle, not legacy
-execution flags, for separate Model 1/CSD/Super Soup facts. Hindrances must be observed
-(e.g. repeat purge, invalidating close, unreached target), not invented causation/news.
-State incomplete coverage and unresolved progression; never claim you watched live.
-For H1 CRTs use recap.hourly_crt_summary; for named hours use range_summaries in order.
-Name 8/9/10/11, never 'one/another'. Scope gaps by range; preserve date/shift; answer
-the fact first. Omit execution disclaimers unless actual execution is at issue.
-'988', '9 ate 8', 'nine ate eight' mean 9ate8 in the current GTOP context.
-'Did 9ate8 happen today?', 'you saw today’s 988?', 'I took today’s NAS Super Soup',
-and follow-ups 'when was that high purged?', 'what time did it invalidate?' are
-requests for ACTUAL candle evidence. Call review_market_session or review_market_crt
-before answering. Do not start with a definition or a current-price quote.
-Only call get_market_price and volunteer bid/ask when a price quote is requested.
-Use inspect_market_candles for prices/times of highs/lows, including historical dates.
-Resolve asset/date/shift/anchor/timeframe from conversation or an unambiguous open trade.
-Known NAS/NASDAQ means NAS100; oil/USOIL means WTI: use directly, without reconfirming.
-Ask one short question for genuinely missing/ambiguous context; never guess another symbol.
-Never default to NAS. 9ate8 anchors at 8; retain the selected range in follow-ups.
-Before offering reviews or asking day/night, call list_market_shifts for that asset/date.
-Offer only available_shifts. If shift is unspecified and only one is available, use
-it with its date/scope. For an explicitly unavailable shift, use its returned message:
-ask about the checked same-day alternate first; never silently switch date/shift.
-Partial means limited candles, ongoing is not completed. Missing data does not prove
-closure; give a closure reason only with verified calendar/session evidence.
-broker_session is unknown (source=null): no verified calendar. feed_health
-separates snapshot/quote age; neither diagnoses closure, feed failure or historical gaps.
-Use current NY context for relative dates; last week Wednesday is the preceding
-Monday-Sunday week's Wednesday. Night belongs to its 9 PM start date; after midnight,
-"tonight" may mean the preceding date. Clarify only genuinely ambiguous context.
-
-Lead with the observed result and requested candle/time. Talk like a GTOP peer, usually
-1-3 sentences; no playbook recital. Relate verified timestamped events to member-reported
-fills and ask one useful entry/objective/exit follow-up. Never invent an execution or
-market event. Save journals only via trade/journal tools using reported execution facts.
-
-Times identify candles, NOT exact ticks: say 'in the 9:15 M5 candle', not 9:17.
-Use the opening label and 'closure'; speak closing timestamps only when requested.
-Respect complete=false, missing candles, partial hours, ties and same-bar unknown
-ordering. Missing/unfinished data is not evidence that a setup did not occur.
-With partial coverage say 'highest/lowest in available candles', not a definitive
-session/day/week extreme. Distinguish when the extreme formed from when later purged.
-A stale quote does not invalidate historical candle facts, but disclose missing recent
-coverage. If a required history window or resolution is absent, say exactly what is
-available; never reconstruct fine bars from coarse OHLC. Daily/week/month and custom
-CRT anchors use the specified chart start; do not silently equate NY midnight candles
-with broker session candles. Ask the anchor boundary only if materially ambiguous.
-
-SMT: use setup_interval.qualified_smt. Same-hour corresponding purges mean both bones:
-no boneless/SMT label or minute asynchrony by default; detail only when asked. Forming
-hours are provisional. Qualification requires the peer boundary untouched throughout
-the setup. Keep own objectives separate; honor coverage and invalidating closes.
-When challenged, recheck actual candles for that date/shift/range; answer the disputed
-fact first and correct verified errors. Do not defend prior answers or repeat definitions.
-Examine assigned-timeframe OHLC and the identified Model 1 candle; a wick-only
-purge is a Turtle Wick Soup. Identity does not wait for CSD or member execution.
-MOB is discretionary knowledge. Do not spend calls trying to detect PD arrays or claim
-an automatically verified MOB. Preserve a member-supplied MOB as their chosen level.
-These tools never place/manage/close broker orders or change member trade progress.
+# GROUNDED MARKET CONVERSATION
+Actual price/date/setup questions require review_market_session/review_market_crt;
+never substitute definitions or quotes. '988', '9 ate 8', 'nine ate eight' mean 9ate8.
+For a whole shift use shift_story.recap.spoken_summary (voice: shift_recap), including
+paired_smt/paired_context, not observations[0]. Give 4-7 concise sentences. Start at
+8, follow selected range_transitions through noon/midnight NY; later setups survive
+failed 9ate8. Day is 09:00-12:00, night 21:00-00:00 NY. Use hourly_crt_summary and
+range_summaries, naming 8/9/10/11 instead of 'one/another'. Independent hourly context
+is not selected. Use hourly_progression for candle science. Include supported variants in the initial answer:
+V1/V2/V3 require opposing delivery, not midpoint; V4/V5 may have unresolved delivery.
+Incomplete/cutoff is not failure; repeated original-boundary touches alone are not V6.
+Honor range-specific coverage, uncertainty and chronological invalidation. Earlier
+delivery survives later invalidation; source-bar ties leave order unknown. Structure
+and delivery do not prove fills/profit. Use candle_lifecycle for Model 1/CSD/Super Soup,
+not legacy execution flags. Explain observed hindrances, never invented causation.
+Resolve asset/date/shift/anchor from conversation or an unambiguous open trade.
+NAS/NASDAQ=NAS100; oil/USOIL=WTI. Use known aliases directly; never default to NAS.
+Ask only for genuinely missing/ambiguous context. Retain the selected range on follow-ups.
+Before offering shifts or asking day/night, call list_market_shifts. Offer only checked
+available_shifts; use a sole option if unspecified. For an unavailable explicit shift,
+relay its message and ask about the checked same-day alternative; never silently switch date/shift.
+Use NY dates. Last week Wednesday means the preceding Monday-Sunday week. Night belongs
+to its 9PM start date; after midnight, tonight may mean yesterday. Clarify ambiguity.
+Only get_market_price/volunteer bid-ask when requested. inspect_market_candles supplies
+historical levels/times. Missing data does not prove closure. broker_session unknown
+with source=null is not a calendar; feed_health separates upload and quote ages,
+neither diagnoses closure or history gaps. Stale quotes do not negate historical facts.
+Partial means limited, ongoing means unfinished. Say highest/lowest in available bars
+when coverage is partial. Never reconstruct fine candles from coarse OHLC. Daily/week/
+month/custom anchors use chart boundaries, not assumed NY midnight; clarify if needed.
+Name candles by opening and 'closure'; speak closing timestamps only when requested.
+Respect source precision: a 9:15 M5 candle is not a verified 9:17 tick.
+On a challenge, recheck the same asset/date/shift/range; answer the disputed fact and
+correct verified errors without defensiveness or definition loops. Usually answer
+1-3 sentences; omit routine execution disclaimers unless execution is at issue.
+Relate evidence to member-reported fills only; save actual journals through tools.
+MOB is discretionary: preserve member-supplied levels, do not auto-detect PD arrays.
+Tools never place/manage broker orders or change member progress.
 """.strip() + '\n\n' + LIFECYCLE_PROMPT + '\n\n' + WATCH_PROMPT
 
 LIVE_MARKET_PROMPT = """
@@ -434,6 +401,29 @@ Remember follow-up references to the same asset/CRT and distinguish market obser
 from the member’s actual fill/exit. MOB explanation is discretionary GTOP knowledge;
 automatic PD-array recognition is not required.
 """.strip() + '\n\n' + LIFECYCLE_PROMPT + '\n\n' + WATCH_PROMPT
+
+
+MARKET_RESPONSE_CONTRACT = """
+NAMED-RANGE ANSWERS
+For outcome questions, first name the range and direction: full opposing delivery,
+midpoint only, pending, failed before objective, or unverified. Then give mechanism.
+Use directional_outcome/variant_evidence; later invalidation preserves earlier V2 delivery.
+A later opposite-direction Model 1 cannot replace the earlier wick setup or paired
+thesis. Name both directions and targets. Exact Model 1 questions need the selected
+range's assigned candle/open first, source purge and CSD separately. Follow detail_request.
+No qualifying body Model 1 does not mean no setup: verified Turtle Wick Soup has its
+own midpoint/full outcomes, never a body Model 1 or Super Soup. Forming/missing is unverified.
+Say 'boneless' clearly, as bone-less: partner purged, this asset did not in that interval.
+Potential/pending boneless may exist before delivery; completion is separate. Both
+same-hour matching purges mean both bones, no boneless. Use setup_interval.qualified_smt;
+forming qualification is provisional. Partner purge alone is not CSD or peer CSD.
+Contextual 'what about Young Lefty?' needs backend evidence for the same asset/date's
+7AM day / 7PM night range, not a definition or a chart request. Historical delivery
+does not prove HTF permission, pre-9 execution, member fills or profit.
+""".strip()
+
+MARKET_PROMPT += '\n\n' + MARKET_RESPONSE_CONTRACT
+LIVE_MARKET_PROMPT += '\n\n' + MARKET_RESPONSE_CONTRACT
 
 
 def market_clock():
@@ -557,8 +547,19 @@ def unavailable_response(availability, options):
 
 def paired_market_review(db, asset, comparison_asset, start, end, tf='H1', detect_through=None):
     anchor_end = next_boundary(start, tf)
-    if not 0 < end - start <= 90 * 86400 + 3600 or end <= anchor_end:
+    if not 0 < end - start <= 90 * 86400 + 3600 or end < anchor_end:
         raise ValueError('Use a completed anchor and subsequent evidence window within 90 days.')
+    if end == anchor_end:
+        # A cutoff-selected range has a real anchor but no later evidence. Do
+        # not let optional paired context turn that useful local answer into an
+        # error, and do not interpret the empty window as absence of future SMT.
+        return {'ok': True, 'status': 'no_subsequent_evidence_window',
+                'assessment_status': 'not_assessed',
+                'assets': [asset_name(asset), asset_name(comparison_asset)],
+                'anchor_start_ny': stamp(start), 'anchor_end_ny': stamp(anchor_end),
+                'anchor_timeframe': tf, 'through_ny': stamp(end), 'events': [],
+                'divergence_confirmed': False, 'entry_confirmed': False,
+                'message': 'The review ends at the anchor closure. No subsequent candles are available to assess paired SMT; this is not evidence of no setup.'}
     pair = []
     for value in (asset, comparison_asset):
         feed = read_feed(db, value)

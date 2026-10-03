@@ -4,7 +4,7 @@ import json
 
 from gbop_voice_web.candle_evidence import parse_time
 from gbop_voice_web.voice_runtime import compact_voice_tool_result
-from gbop_voice_web.voice_payload import _paired, _pick
+from gbop_voice_web.voice_payload import _bounded_error, _factor_review, _paired, _pick, _voice_market_context
 
 DETAIL_CHARACTER_BUDGET = 32000
 
@@ -29,12 +29,13 @@ def crt_voice_detail(result):
     index = [_pick(fact, ('identity', 'purge_type', 'timeframe', 'bar_open_ny',
         'bar_close_ny', 'purged_side')) for fact in facts]
     def error(status, message):
-        return {'ok': False, 'status': status, 'asset': compact.get('asset'),
-            **({'market_context': compact['market_context']} if 'market_context' in compact else {}),
+        return _bounded_error({'ok': False, 'status': status, 'asset': compact.get('asset'),
+            **({'market_context': _voice_market_context(compact['market_context'])} if 'market_context' in compact else {}),
             'anchor_start_ny': anchor.get('start_ny'), 'through_ny': cutoff,
             'identity_index': index, 'message': message,
-            'detail_request': {'tool': 'review_market_crt', 'args': base_args},
-            'backend_remaining_from_ny': lifecycle.get('next_identity_open_ny')}
+            'detail_request': {'tool': 'review_market_crt', 'args': {
+                **base_args, 'detail_candle_start_ny': focus, 'detail_from_ny': cursor}},
+            'backend_remaining_from_ny': lifecycle.get('next_identity_open_ny')}, DETAIL_CHARACTER_BUDGET)
     try:
         if focus and cursor:
             return error('ambiguous_detail_selection', 'Choose one exact candle or one page cursor, not both.')
@@ -63,6 +64,8 @@ def crt_voice_detail(result):
                       if selected and parse_time(fact['bar_open_ny']) > parse_time(selected)), None)
     out = {key: deepcopy(value) for key, value in compact.items()
            if key not in ('review', 'voice_detail_selection')}
+    if 'market_context' in out:
+        out['market_context'] = _voice_market_context(out['market_context'], evidence_ref='#/review')
     out['review'] = {key: deepcopy(value) for key, value in review.items() if key not in (
         'model1', 'assigned_candles', 'candle_lifecycle', 'paired_smt', 'recap', 'blessed_thief')}
     view = out['review']
@@ -116,7 +119,23 @@ def crt_voice_detail(result):
         view['blessed_thief'] = _pick(bt, ('status', 'timeframe', 'window_end_ny', 'next_candle_start_ny'))
         view['blessed_thief']['detail_omitted'] = True
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
-        return error('voice_detail_budget_exceeded',
+        # Repeated coverage extrema are not lifecycle evidence. Keep exact
+        # anchor OHLC/first extremes and all gaps/precision, not last occurrences.
+        for key in ('high_last_seen', 'low_last_seen', 'high_occurrences', 'low_occurrences'):
+            view['anchor'].pop(key, None)
+        for key in ('observation_coverage', 'range_observation_coverage'):
+            if key in view and 'same_evidence_as' not in view[key]:
+                view[key] = _pick(view[key], ('start_ny', 'end_ny', 'complete',
+                    'source_resolution_seconds', 'bar_count', 'missing_bar_count', 'coverage_note'))
+        out['voice_detail_page']['coverage_extrema_omitted'] = (
+            'Repeated observation extrema and last anchor occurrences omitted; '
+            'anchor OHLC, first extremes, source gaps and all lifecycle event times remain.')
+    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
+        _factor_review(out)
+    if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
+        failed = error('voice_detail_budget_exceeded',
             'This identity has more evidence than fits one voice page; its details were not sent. '
             'Request the named raw candle interval or a narrower review cutoff; do not infer missing lifecycle outcomes.')
+        failed['raw_candle_request'] = out['voice_detail_page']['raw_candle_request']
+        return _bounded_error(failed, DETAIL_CHARACTER_BUDGET)
     return out

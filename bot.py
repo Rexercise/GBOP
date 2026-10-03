@@ -6203,9 +6203,14 @@ class GBOPRealtimeSession:
         if work is not None and not work.current(scope):
             return
         original_chars = len(json.dumps(result))
-        output = json.dumps(voice_tool_payload(name, result), separators=(",", ":"))
+        voice_result = voice_tool_payload(name, result)
+        output = json.dumps(voice_result, separators=(",", ":"))
         print("[GBOP-RT-TOOL]", name, "duration_ms=", round((time.monotonic() - started_at) * 1000),
               "result_chars=", original_chars, "voice_chars=", len(output))
+        from gbop_voice_web.market_scope_log import market_scope_log
+        scope_log = market_scope_log(name, args, result, voice_result)
+        if scope_log is not None:
+            print("[GBOP-MARKET-SCOPE]", json.dumps(scope_log, separators=(",", ":")))
 
         sent = await self.send_event(
             {

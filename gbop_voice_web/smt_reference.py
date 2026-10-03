@@ -1,6 +1,6 @@
 """GTOP candle naming and paired Model 1 identity, without inferred local sweeps."""
 from datetime import datetime, timedelta
-from gbop_voice_web.candle_naming import candle_label, closure_label, source_timeframe
+from gbop_voice_web.candle_naming import candle_label, closure_label, source_timeframe, range_label
 from gbop_voice_web.candle_evidence import (
     ASSIGNED, NY, model1_evidence, next_boundary, parse_time, stamp, summarize,
 )
@@ -53,6 +53,8 @@ def attach_paired_model1(review, data, anchors, tf):
                     'purge_asset': event['swept_asset'],
                     'boneless_asset': event['nonconfirming_asset'],
                     'local_body_purge_inferred': False,
+                    'partner_csd': {'status': 'not_assessed'},
+                    'thesis_support_status': 'purge_only_csd_unverified',
                     'csd_status': 'not_assessed', 'execution_status': 'not_assessed'}
         event['paired_model1'] = identity
         setup = event.get('setup_interval', {})
@@ -114,6 +116,15 @@ def attach_paired_model1(review, data, anchors, tf):
                 'execution_status': 'not_assessed',
             }
             identity.update(status='identified', origin_model1=model, boneless_reference=reference)
+            from gbop_voice_web.candle_lifecycle import lifecycle_review
+            origin_lifecycle = lifecycle_review(data[origin], anchors[origin], mapped,
+                                               search_end, step, valid_end if valid_end < end else None)
+            origin_fact = next((f for f in origin_lifecycle.get('purge_candles', [])
+                                if f['bar_open_ny'] == model['bar_open_ny']
+                                and f['purged_side'] == side and f['purge_type'] == 'body_soup'), {})
+            identity['partner_csd'] = origin_fact.get('csd', {'status': 'not_assessed'})
+            identity['thesis_support_status'] = ('partner_model1_and_csd_confirmed'
+                if identity['partner_csd']['status'] == 'confirmed' else 'partner_model1_csd_not_confirmed')
             break
         if identity['status'] == 'not_observed_while_smt_valid' and not review.get('paired_coverage_complete'):
             identity['status'] = 'unverified_incomplete_paired_coverage'
@@ -122,6 +133,7 @@ def attach_paired_model1(review, data, anchors, tf):
             'Its own OHLC is real; only timing and directional purge context come from the partner. '
             'Do not substitute a later opposite-direction local Model 1. '
             'CSD, Super Soup, retests and delivery must be assessed on this asset independently; '
+            'partner_csd records actual partner confirmation; a purge alone never proves CSD. '
             'unassessed confirmation never negates the inherited candle identity.')
     return review
 
@@ -161,7 +173,9 @@ def reconcile_paired_recap(review, asset):
         if not source.get('ok'):
             continue
         for event in source.get('events', []):
-            if event.get('setup_interval', {}).get('qualified_smt') is False:
+            setup = event.get('setup_interval', {})
+            potential = setup.get('potential_smt', False)
+            if setup.get('qualified_smt') is False and not potential:
                 continue
             key = (source.get('anchor_start_ny'), event['bar_open_ny'], event['side'])
             if key in seen or not event.get('anchors_valid_at_event'):
@@ -169,39 +183,50 @@ def reconcile_paired_recap(review, asset):
             seen.add(key)
             own = event.get('objective_status', {}).get(asset, {})
             outcome = own.get('opposing_liquidity', {})
-            boneless = event.get('boneless_asset', event['nonconfirming_asset']) == asset
+            boneless = (event.get('boneless_asset') or event.get('potential_boneless_asset')
+                        or (event['nonconfirming_asset'] if 'qualified_smt' not in setup else None)) == asset
             bounded = event.get('scope', {}).get('status') in ('peer_caught_up', 'execution_candle_invalidated_anchor')
-            kind = ('temporarily nonconfirming leg' if bounded else 'boneless leg') if boneless else 'visible-purge leg'
-            if bounded:
-                text = (f"In the early {event['direction']} divergence at {candle_label(event['bar_open_ny'], source_timeframe(event.get('precision_seconds')))}, "
-                        f"{event['swept_asset']} purged its own {event['side'].replace('_', ' ')} "
-                        f"while {event['nonconfirming_asset']} had not yet purged its matching boundary.")
-                text += ' ' + event_scope_summary(event)
+            kind = ('potential boneless leg' if potential else 'boneless leg') if boneless else 'visible-purge leg'
+            name = range_label({'start_ny': source['anchor_start_ny'],
+                                'timeframe': source.get('anchor_timeframe', 'H1')})
+            name = name[0].upper() + name[1:] + (' (9ate8)' if event['play_context'] == '9ate8' else '')
+            complete = outcome.get('status') == 'objective_complete_while_range_valid'
+            midpoint = own.get('midpoint', {})
+            side = 'sell-side' if event['direction'] == 'bearish' else 'buy-side'
+            if complete:
+                text = (f"{name} delivered {asset}'s {event['direction']} {side} objective "
+                        f"in {candle_label(outcome['touch_bar_open_ny'], source_timeframe(event.get('precision_seconds')))}, while the range was valid.")
+            elif midpoint.get('status') == 'objective_complete_while_range_valid':
+                text = (f"{name} reached {asset}'s {event['direction']} 50% (midpoint) objective; "
+                        f"full {side} delivery is {outcome.get('status', 'unverified').replace('_', ' ')}.")
             else:
-                text = (f"{asset} was the {kind} in {event['direction']} SMT-supported "
-                        f"{event['play_context']}; {event['swept_asset']} supplied the visible "
-                        f"{event['side'].replace('_', ' ')} purge.")
+                text = (f"{name}: {asset}'s {event['direction']} {side} objective is "
+                        f"{outcome.get('status', 'unverified').replace('_', ' ')}.")
+            text += (f" {asset} is the {kind}: {event['swept_asset']} supplied the "
+                     f"{event['side'].replace('_', ' ')} purge; {event['nonconfirming_asset']} did not during "
+                     + (f"the observed portion of the {clock(setup['start_ny'])} setup interval." if potential else
+                        f"the evaluated {clock(setup['start_ny'])} setup interval." if setup.get('start_ny') else 'the evaluated setup interval.'))
+            if potential:
+                text += ' Final setup qualification remains unverified until the interval is completely assessed.'
+            if bounded:
+                text += ' ' + event_scope_summary(event)
             identity = event.get('paired_model1', {})
             if boneless and identity.get('status') == 'identified':
                 ref = identity['boneless_reference']
                 text += (f" Its SMT-inherited Model 1 is {candle_label(ref['bar_open_ny'], ref['timeframe'])}, "
                          "matching the partner's body-purge candle in the qualified setup interval.")
-            if outcome.get('status') == 'objective_complete_while_range_valid':
-                objective = outcome.get('spoken_label', 'own opposing-liquidity objective')
-                text += (f" It completed its {objective} "
-                         f"in the candle opening {clock(outcome['touch_bar_open_ny'])}, "
-                         'while the range was valid.')
-                if boneless and not bounded:
-                    text += ' No local initiating-side purge was required.'
-            else:
-                text += ' Its ' + outcome.get('spoken_label', 'own full objective') + ' is ' + outcome.get('status', 'unverified').replace('_', ' ') + '.'
-            text += (' This historical divergence does not establish a shift-long boneless or supportive paired 9ate8 classification.'
-                     if bounded else ' A separate local-only failure does not erase this paired context or earlier delivery.')
+            if identity.get('partner_csd', {}).get('status') == 'confirmed':
+                csd = identity['partner_csd']['evidence']
+                text += f" The partner's actual CSD confirmed on {closure_label(csd['bar_open_ny'], identity['assigned_timeframe'])}; this supports the paired thesis."
+            if complete and outcome.get('range_invalidated_at_ny'):
+                text += ' Later range invalidation does not erase this completed directional delivery.'
+            text += ' A later opposite-direction local attempt has its own objective and outcome.'
             records.append({'anchor_start_ny': source.get('anchor_start_ny'),
                             'direction': event['direction'], 'asset_role': kind,
+                            'boneless_status': event.get('boneless_status'),
                             'play_context': event['play_context'],
                             'setup_interval': event.get('setup_interval', {}),
-                            'scope': event.get('scope', {}), 'historical_event_only': bounded,
+                            'scope': event.get('scope', {}), 'historical_event_only': False,
                             'objective_status': own, 'paired_model1': identity,
                             'spoken_summary': text})
     if not records:
@@ -221,11 +246,13 @@ def reconcile_paired_recap(review, asset):
     recap['paired_interpretation'] = records
     # The opening/primary paired event sets precedence. A later opposite-side
     # catch-up cannot suppress an earlier completed boneless delivery.
-    if records[0]['historical_event_only']:
+    local_delivered = story.get('directional_outcome', {}).get('status') == 'opposing_liquidity_delivered'
+    paired_delivered = records[0]['objective_status'].get('opposing_liquidity', {}).get('status') == 'objective_complete_while_range_valid'
+    if local_delivered and not paired_delivered:
         recap['headline'] = recap['local_only_headline'] or recap['local_only_spoken_summary']
         recap['spoken_summary'] = (recap['local_only_spoken_summary'] + ' Historical paired events: '
                                    + ' '.join(r['spoken_summary'] for r in records)).strip()
-        recap['evidence_precedence'] = 'local_chronology_then_bounded_paired_events'
+        recap['evidence_precedence'] = 'completed_local_delivery_then_paired_context'
     else:
         recap['headline'] = records[0]['spoken_summary']
         recap['spoken_summary'] = (' '.join(r['spoken_summary'] for r in records)
@@ -233,8 +260,10 @@ def reconcile_paired_recap(review, asset):
                if recap['local_only_spoken_summary'] else ''))
         recap['evidence_precedence'] = 'paired_delivery_then_local_chronology'
     recap['response_contract'] = (
-        'Follow evidence_precedence. A transient divergence or invalid execution-H1 close must not '
-        'override the local CRT chronology. Preserve event scope, later peer catch-up and both H1 closes. '
+        'Lead with named range, direction and outcome, then mechanism. Follow evidence_precedence. '
+        'The nonpurging leg may be potential/pending boneless from setup; completion is separate. '
+        'Same-interval dual purges forbid boneless. Preserve evaluated interval, later catch-up and H1 closes. '
+        'Partner Model 1 plus actual partner CSD can support the thesis; a purge alone never establishes CSD. '
         'Do not label the overall boneless 9ate8 failed from a later local Model 1 failure. '
         'Use each own objective_status: correlation alone does not establish target completion. '
         'Keep local Model 1 and SMT-inherited Model 1 identities distinct. '

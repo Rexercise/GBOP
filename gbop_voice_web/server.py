@@ -1148,6 +1148,7 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
             # Leave already-started work alone; never start a later queued call.
             if not market_context.current(market_generation):
                 return 'This request was superseded by newer speech.'
+            args = {}
             try:
                 args = json.loads(call.arguments)
                 if call.name in SCOPED_TOOLS:
@@ -1162,6 +1163,10 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
                     "error": f"{type(exc).__name__}: {exc}",
                 }
 
+            from gbop_voice_web.market_scope_log import market_scope_log
+            scope_log = market_scope_log(call.name, args, result)
+            if scope_log is not None:
+                print("[GBOP-MARKET-SCOPE]", json.dumps(scope_log, separators=(",", ":")))
             items.append(
                 {
                     "type": "function_call_output",

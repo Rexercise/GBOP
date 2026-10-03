@@ -51,7 +51,9 @@ def enrich_smt(review):
     passages = []
     for event in review['events']:
         qualified = event.get('setup_interval', {}).get('qualified_smt', True)
+        potential = event.get('setup_interval', {}).get('potential_smt', False)
         event['boneless_asset'] = event['nonconfirming_asset'] if qualified else None
+        event['potential_boneless_asset'] = event['nonconfirming_asset'] if potential else None
         event['boneless_is_asset_adjective'] = True
         event['local_purge_inferred_for_boneless_asset'] = False
         event['objective_status'] = {}
@@ -86,18 +88,30 @@ def enrich_smt(review):
                     states[name].update(objective_identity(name, event['direction'], {
                         'start_ny': review['anchor_start_ny'], 'timeframe': review.get('anchor_timeframe', 'H1')}))
             event['objective_status'][asset] = states
-        if not qualified:
+        own = event['objective_status'].get(event['nonconfirming_asset'], {})
+        complete = own.get('opposing_liquidity', {}).get('status') == 'objective_complete_while_range_valid'
+        full_status = own.get('opposing_liquidity', {}).get('status', '')
+        event['boneless_status'] = ('disqualified' if not qualified and not potential else
+            'potential_setup' if potential else 'completed_delivery' if complete else
+            'delivery_not_completed_before_invalidation' if full_status == 'not_completed_before_invalidation' else
+            'delivery_pending' if full_status == 'pending_at_review_cutoff' else 'delivery_unverified')
+        if not qualified and not potential:
             # Preserve raw observed prices/timing for deliberate inspection,
             # but do not turn minute asynchrony into recap/confluence evidence.
             continue
         bounded = event.get('scope', {}).get('status') in ('peer_caught_up', 'execution_candle_invalidated_anchor')
         context = 'early boundary divergence' if bounded else event['play_context']
+        qualifier = 'potential boneless' if potential else 'boneless'
+        observed_through = event.get('setup_interval', {}).get('observed_through_ny') or review.get('paired_through_ny')
         text = (f"Observed {event['direction']} {context}: {event['swept_asset']} visibly purged "
                 f"its {event['side'].replace('_', ' ')} in the candle opening {event['bar_open_ny']}; "
-                f"{event['boneless_asset']} was boneless at that point and had not taken its matching level.")
+                f"{event['nonconfirming_asset']} is the {qualifier} leg and had not taken its matching level "
+                + (f"through {observed_through}." if observed_through else 'in the evaluated setup evidence.'))
+        if potential:
+            text += ' The setup interval is unfinished or incompletely covered; its final qualification remains unverified.'
         if bounded:
             text += ' ' + event_scope_summary(event)
-            text += ' This early event is not a shift-long boneless or supportive paired 9ate8 classification.'
+            text += ' This later change bounds the nonpurging period; it does not erase an earlier qualified setup or delivery.'
         for asset, states in event['objective_status'].items():
             full = states.get('opposing_liquidity', {})
             mid = states.get('midpoint', {})
@@ -115,14 +129,16 @@ def enrich_smt(review):
                      'This is a same-time reference, not a visible local purge or inherited CSD confirmation.')
         passages.append(text)
     review['spoken_summary'] = ' '.join(passages)
-    review['response_contract'] = ('Use boneless_asset only when setup_interval.qualified_smt is true. '
+    review['response_contract'] = ('Use boneless_asset when setup_interval.qualified_smt is true; '
+        'use potential_boneless_asset only as provisional when setup_interval.potential_smt is true. '
+        'The nonpurging leg may be potential/pending boneless from setup; full delivery is a separate outcome. '
         'If both assets purge corresponding liquidity within the same setup interval, both have bones; '
         'different minutes do not establish boneless SMT. Forming/incomplete intervals are provisional. '
         'Do not mention disqualified minute timing in ordinary recaps or use it as confluence. Use objective_status '
         'for valid-thesis delivery; raw later touches may occur after invalidation. Later invalidation '
-        'or peer catch-up never erases the earlier event, but scope and execution_candles prevent '
-        'calling a transient divergence a whole-shift boneless or supportive paired 9ate8. '
-        'does not erase earlier SMT or delivery. Integrate these paired outcomes into the main shift recap; '
+        'or peer catch-up never erases an earlier qualified setup or delivery. Keep provisional '
+        'nonpurge evidence explicitly scoped to observed continuous candles, not missing future bars. '
+        'Integrate these paired outcomes into the main shift recap; '
         'a failed local opposite-direction attempt does not erase completed SMT delivery. '
         'For SMT-aligned Model 1 identity, retrieve the partner body-purge candle on the assigned timeframe '
         'and the boneless candle at the identical opening/closing interval. This is identity_basis=smt_time_aligned, '

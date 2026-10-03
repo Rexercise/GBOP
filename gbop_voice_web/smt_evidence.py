@@ -22,12 +22,14 @@ def align_bars(bars, source_step, step):
 def compare_ranges(left, right, start, anchor_end, through, timeframe='H1', detect_through=None):
     """Inputs: asset, symbol, bars, step for two positively correlated markets.
 
-    Source intervals establish raw timing observations. Boneless SMT requires
-    one matching boundary to remain unswept through the completed setup interval
-    on the selected anchor timeframe. Missing/forming intervals are provisional;
+    Source intervals establish raw timing observations and potential boneless
+    setups. Completed qualification requires one matching boundary to remain
+    unswept through the completed setup interval. Missing/forming intervals are provisional;
     same-interval catch-up disqualifies it, even at different source minutes.
     """
     detect_through = through if detect_through is None else min(through, detect_through)
+    opening = datetime.fromisoformat(stamp(start))
+    canonical_nineate8 = timeframe == 'H1' and opening.hour in (8, 20) and not (opening.minute or opening.second)
     step = max(left['step'], right['step'])
     assets = [left['asset'], right['asset']]
     result = dict(ok=True, status='insufficient_paired_evidence', assets=assets,
@@ -81,8 +83,7 @@ def compare_ranges(left, right, start, anchor_end, through, timeframe='H1', dete
                              peer_boundary=anchors[peer][boundary], peer_extreme_through_event=peer_extreme,
                              anchors_valid_at_event=all(v is None or v > t for v in invalidated),
                              entry_confirmed=False)
-                hour = datetime.fromisoformat(stamp(start)).hour
-                event['play_context'] = '9ate8' if timeframe == 'H1' and hour in (8, 20) and t < anchor_end + 3600 and event['anchors_valid_at_event'] else 'selected_range_SMT'
+                event['play_context'] = '9ate8' if canonical_nineate8 and t < anchor_end + 3600 and event['anchors_valid_at_event'] else 'selected_range_SMT'
                 result['events'].append(event)
                 emitted.add(side)
         if t + step == next_close:
@@ -95,7 +96,7 @@ def compare_ranges(left, right, start, anchor_end, through, timeframe='H1', dete
     # execution H1. Preserve both rather than promoting the first event to an
     # all-shift boneless identity. Incomplete H1s remain explicitly unverified.
     execution_candles = {}
-    if timeframe == 'H1' and datetime.fromisoformat(stamp(start)).hour in (8, 20):
+    if canonical_nineate8:
         execution_end = next_boundary(anchor_end, timeframe)
         for asset, bars, anchor in zip(assets, data, anchors):
             candle = summarize([b for b in bars if b['time'] + step <= through],
@@ -132,22 +133,28 @@ def compare_ranges(left, right, start, anchor_end, through, timeframe='H1', dete
         complete = matched[-1] + step >= interval_end
         peer_same_interval = first[side][peer] is not None and first[side][peer] < interval_end
         qualified = complete and not peer_same_interval and event['anchors_valid_at_event']
+        potential = not complete and not peer_same_interval and event['anchors_valid_at_event']
         event['setup_interval'] = {
             'timeframe': timeframe, 'start_ny': stamp(interval_start), 'end_ny': stamp(interval_end),
-            'complete': complete, 'qualified_smt': qualified,
+            'complete': complete, 'qualified_smt': qualified, 'potential_smt': potential,
+            'observed_through_ny': stamp(min(matched[-1] + step, interval_end,
+                first[side][peer] if first[side][peer] is not None else interval_end)),
             'status': 'both_assets_purged_same_setup_interval' if peer_same_interval else
                       'provisional_timing_asynchrony' if not complete else
                       'qualified_setup_interval_smt' if qualified else 'anchor_invalid_before_setup',
             'qualified_at_ny': stamp(interval_end) if qualified else None,
             'boneless_asset': event['nonconfirming_asset'] if qualified else None,
+            'potential_boneless_asset': event['nonconfirming_asset'] if potential else None,
             'own_purge_observed': {asset: value is not None and value < interval_end
                                    for asset, value in zip(assets, first[side])},
-            'response_contract': 'One asset is boneless only if its corresponding selected liquidity remains '
-                'unswept throughout the completed setup interval. Both purges in that interval mean both have '
-                'bones even at different minutes; minute asynchrony is not favorable SMT. A forming or missing '
-                'interval is provisional, never confirmed boneless. Keep disqualified timing detail out of '
+            'response_contract': 'The nonpurging leg may be potential boneless from setup onward; completed '
+                'setup qualification requires its corresponding liquidity unswept throughout the evaluated interval. '
+                'Delivery pending, midpoint-only and completed opposing delivery are separate outcomes. '
+                'Both purges in that interval mean both have bones even at different minutes. A forming or missing '
+                'interval remains provisional, never confirmed boneless. Keep disqualified timing detail out of '
                 'ordinary recaps/confluence; retain it only for an explicit timing investigation.'}
         event['boneless_asset'] = event['setup_interval']['boneless_asset']
+        event['potential_boneless_asset'] = event['setup_interval']['potential_boneless_asset']
         event['recap_eligible'] = qualified
         invalid_execution = any(c.get('anchor_valid_at_close') is False for c in execution_candles.values())
         event['scope'] = {
@@ -196,7 +203,7 @@ def compare_ranges(left, right, start, anchor_end, through, timeframe='H1', dete
             "Later invalidations do not erase that completed setup's divergence.")
         if bounded:
             result['spoken_summary'] += ' ' + event_scope_summary(e)
-            result['spoken_summary'] += ' This is not a shift-long boneless or supportive paired 9ate8 classification.'
+            result['spoken_summary'] += ' Later catch-up bounds the nonpurging period without erasing the completed qualifying setup.'
         for asset, objectives in e['objectives_after_divergence'].items():
             for name, objective in objectives.items():
                 if objective['first_later_touch_ny']:

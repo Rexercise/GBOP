@@ -173,7 +173,7 @@ class RetainedMarketReplayTests(unittest.TestCase):
         # A later opposite-direction transient event must not hide the earlier
         # completed bearish boneless delivery by promoting local failure first.
         self.assertEqual(recap['evidence_precedence'], 'paired_delivery_then_local_chronology')
-        self.assertIn('completed its sell-side of the 8:00 AM H1 range', recap['headline'])
+        self.assertIn("The 8:00 AM H1 range (9ate8) delivered XAUUSD's bearish sell-side objective", recap['headline'])
 
     def test_nas_clean_and_unclean_local_function_do_not_restore_crt_validity(self):
         row = selected(self.tool('NAS')['review'], '09:00')
