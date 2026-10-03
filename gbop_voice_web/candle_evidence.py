@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta
 import re
 from zoneinfo import ZoneInfo
+from gbop_voice_web.candle_naming import candle_label, range_label, source_timeframe, objective_identity
 
 NY = ZoneInfo('America/New_York')
 ASSIGNED = {'MN1': 'D1', 'W1': 'H4', 'D1': 'H1', 'H4': 'M15', 'H1': 'M5'}
@@ -94,6 +95,41 @@ def candle_query(bars, start, end, tf, step):
             'next_start_ny': stamp(cursor) if cursor < end else None}
 
 
+def assigned_purge_evidence(bars, anchor, mapped, purge, side, end, step):
+    """Name the verified containing assigned candle before source-minute detail.
+
+    Containment is not body-purge qualification and cannot imply later CSD.
+    Keep an incomplete or forming assigned candle unqualified.
+    """
+    result = {'assigned_timeframe': mapped, 'source_purge': interval(purge, step),
+              'status': 'assigned_timeframe_required'}
+    if not mapped:
+        return result
+    mapped = timeframe(mapped)
+    opening = parse_time(anchor['end_ny'])
+    duration = next_boundary(opening, mapped) - opening
+    if duration < step or duration % step:
+        result['status'] = 'resolution_unavailable'
+        return result
+    while next_boundary(opening, mapped) <= purge['time']:
+        opening = next_boundary(opening, mapped)
+    closing = next_boundary(opening, mapped)
+    candle = summarize(bars, opening, min(closing, end), step)
+    candle.update(start_ny=stamp(opening), end_ny=stamp(closing), timeframe=mapped)
+    candle['complete'] = candle['complete'] and closing <= end
+    level = anchor['high'] if side == 'buy' else anchor['low']
+    qualification = 'unverified_incomplete_assigned_candle'
+    if candle['complete']:
+        body = candle['open'] <= level < candle['close'] if side == 'buy' else candle['close'] < level <= candle['open']
+        wick = max(candle['open'], candle['close']) <= level if side == 'buy' else min(candle['open'], candle['close']) >= level
+        qualification = 'model1_body_purge' if body else 'wick_only' if wick else 'outside_or_returning_body'
+    text = (f"The assigned {candle_label(candle['start_ny'], mapped)[4:]} contains the {side}-side purge of "
+            f"{range_label(anchor)}; the precise source purge is in {candle_label(stamp(purge['time']), source_timeframe(step))}.")
+    result.update(status='containing_candle_identified', assigned_candle=candle,
+                  model1_qualification=qualification, csd_status='not_assessed', spoken_summary=text)
+    return result
+
+
 def model1_evidence(bars, anchor, mapped, end, step):
     """Identify body-purging candles, not future CSD or a member's execution.
 
@@ -107,7 +143,8 @@ def model1_evidence(bars, anchor, mapped, end, step):
               'csd_status': 'not_assessed', 'super_soup_status': 'not_assessed',
               'execution_status': 'not_assessed',
               'response_contract': 'These are Model 1 candles, not candidates. '
-                  'Identify their time, OHLC and purged range before discussing later confirmation. '
+                  'Name the assigned candle opening/timeframe FIRST, then purge_source_interval (M1 when available). '
+                  'Keep the containing candle, body-purge Model 1 and later CSD distinct. '
                   'Unassessed CSD/Super Soup/execution does not negate candle formation. '
                   'Later range failure does not erase an identified candle.'}
     if not anchor['complete']:
@@ -148,6 +185,8 @@ def model1_evidence(bars, anchor, mapped, end, step):
                 'sell' if candle['close'] < anchor['low'] <= candle['open'] else None)
         if side:
             level = anchor['high'] if side == 'buy' else anchor['low']
+            purge = next(b for b in following[left:index] if
+                         (b['high'] > level if side == 'buy' else b['low'] < level))
             fact = {'identity': 'Model 1 candle', 'timeframe': mapped,
                     'bar_open_ny': candle['start_ny'], 'bar_close_ny': candle['end_ny'],
                     'identified_at_ny': candle['end_ny'], 'complete': True,
@@ -156,6 +195,7 @@ def model1_evidence(bars, anchor, mapped, end, step):
                     'purged_range_start_ny': anchor['start_ny'],
                     'purged_range_end_ny': anchor['end_ny'],
                     'purged_side': side, 'purged_level': level,
+                    'purge_source_interval': interval(purge, step),
                     'direction': 'bearish' if side == 'buy' else 'bullish',
                     'body_cross_and_close_through_level': True,
                     'source_resolution_seconds': step, 'exact_tick_time_known': False}
@@ -185,6 +225,7 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
     if (end - start) / (anchor_end - start) > 512:
         raise ValueError('Narrow this review to at most 512 anchor-timeframe candles.')
     anchor = summarize(bars, start, anchor_end, step)
+    anchor['timeframe'] = tf
     mapped = timeframe(confirmation_tf) if confirmation_tf else ASSIGNED.get(tf)
     result = {'anchor_timeframe': tf, 'assigned_timeframe': mapped, 'anchor': anchor,
               'timezone': 'America/New_York', 'entry_confirmed': False,
@@ -216,6 +257,8 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
                            'confirmed_at_ny': stamp(stop), 'close': candle['close'], 'timeframe': tf})
             break
         cursor = stop
+    # Later gaps cannot undo complete evidence during this range's valid window.
+    result['range_observation_coverage'] = summarize(bars, anchor_end, invalid_at or end, step)
     # Include a qualifying candle that closes at invalidation; exclude anything
     # formed afterward. Later failure never changes the identity already observed.
     result['model1'] = model1_evidence(bars, anchor, mapped, invalid_at or end, step)
@@ -229,8 +272,11 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
         if hits:
             b = hits[0]
             first[side] = b
-            events.append(dict(kind=side + '_side_purge', level=level, observed_price=b[key],
-                               first_in_available_data=True, **interval(b, step)))
+            event = dict(kind=side + '_side_purge', level=level, observed_price=b[key],
+                         first_in_available_data=True, **interval(b, step))
+            event['assigned_purge'] = assigned_purge_evidence(
+                bars, anchor, mapped, b, side, invalid_at or end, step)
+            events.append(event)
     if first:
         result['status'] = 'range_sweep_candidate'
         side = min(first, key=lambda s: first[s]['time'])
@@ -248,6 +294,7 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
                 if eligible:
                     b = eligible[0]
                     events.append(dict(kind=label + '_observed', level=level,
+                                       **objective_identity(label, direction, anchor),
                                        order_after_purge_known=b['time'] > purge['time'], **interval(b, step)))
         if mapped:
             # Return a compact neighborhood of the first purge. The candle tool

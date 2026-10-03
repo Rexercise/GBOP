@@ -3,7 +3,32 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from gbop_voice_web.voice_runtime import VoiceRateLimitRecovery
+from gbop_voice_web.voice_runtime import VoiceRateLimitRecovery, _retry_after_seconds
+
+
+class RetryAfterParserTests(unittest.TestCase):
+    def test_milliseconds_and_seconds_are_converted_to_seconds(self):
+        for message, expected in (
+            ('Please try again in 245ms.', .245),
+            ('Please try again in 6.102s.', 6.102),
+            ('Please try again in 6102ms.', 6.102),
+            ('TRY AGAIN IN 1250.5 MS.', 1.2505),
+            ('try again in 0ms', 0.0),
+            ('try again in 0.245 s', .245),
+        ):
+            with self.subTest(message=message):
+                self.assertAlmostEqual(_retry_after_seconds(message), expected)
+
+    def test_invalid_values_or_units_do_not_parse_partially(self):
+        for message in (
+            None, '', 'try again in ...s', 'try again in -245ms',
+            'try again in NaNs', 'try again in infms', 'try again in 1e3ms',
+            'try again in 2.4.5s', 'try again in 1000', 'try again in 1m',
+            'try again in 1seconds', 'try again in 1ms2',
+            'try again in ' + ('9' * 400) + 'ms',
+        ):
+            with self.subTest(message=message):
+                self.assertIsNone(_retry_after_seconds(message))
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -22,6 +47,32 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             {'type': 'response.create', 'response': {'tool_choice': 'none'}})
         self.session.member.send.assert_awaited_once()
         self.assertIsNone(self.recovery.task)
+
+    async def test_millisecond_cooldowns_preserve_minimum_cushion_and_jitter(self):
+        for cooldown, expected in (('245ms', 2.75), ('0ms', 2.75),
+                                   ('1250ms', 3.0), ('6102ms', 7.852),
+                                   ('59000ms', 60.0)):
+            with self.subTest(cooldown=cooldown):
+                self.setUp()
+                sleep = AsyncMock()
+                recovery = VoiceRateLimitRecovery(self.session, jitter=lambda: .75, sleep=sleep)
+                recovery.failed({'code': 'rate_limit_exceeded',
+                                 'message': f'Please try again in {cooldown}.'})
+                await recovery.task
+                sleep.assert_awaited_once_with(expected)
+                self.session.send_event.assert_awaited_once()
+
+    async def test_millisecond_cooldowns_remain_bounded_to_two_retries(self):
+        sleep = AsyncMock()
+        recovery = VoiceRateLimitRecovery(self.session, jitter=lambda: 0, sleep=sleep)
+        for _ in range(20):
+            recovery.failed({'code': 'rate_limit_exceeded', 'message': 'Please try again in 245ms.'})
+            if recovery.task is not None:
+                await recovery.task
+        self.assertEqual([call.args[0] for call in sleep.await_args_list], [2.0, 2.0])
+        self.assertEqual(recovery.attempts, 2)
+        self.assertEqual(self.session.send_event.await_count, 2)
+        self.assertEqual(self.session.member.send.await_count, 2)
 
     async def test_retries_are_bounded_and_failure_is_reported(self):
         with patch('gbop_voice_web.voice_runtime.asyncio.sleep', new_callable=AsyncMock):
@@ -87,6 +138,15 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             await self.recovery.task
         sleep.assert_awaited_once_with(15.0)
 
+    async def test_invalid_millisecond_cooldown_uses_bounded_fallback_backoff(self):
+        sleep = AsyncMock()
+        recovery = VoiceRateLimitRecovery(self.session, jitter=lambda: 0, sleep=sleep)
+        for _ in range(3):
+            recovery.failed({'code': 'rate_limit_exceeded', 'message': 'Please try again in -245ms.'})
+            await recovery.task
+        self.assertEqual([call.args[0] for call in sleep.await_args_list], [15.0, 30.0])
+        self.assertEqual(self.session.send_event.await_count, 2)
+
     async def test_fallback_backoff_and_jitter_are_bounded(self):
         sleep = AsyncMock()
         recovery = VoiceRateLimitRecovery(self.session, jitter=lambda: .75, sleep=sleep)
@@ -104,6 +164,20 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         sleep.assert_not_awaited()
         self.session.send_event.assert_not_awaited()
         self.assertIn('stopped', self.session.member.send.await_args.args[0])
+
+    async def test_millisecond_cooldown_over_bound_exhausts_without_retrying_early(self):
+        for cooldown in ('59001ms', '60000ms', '120000ms'):
+            with self.subTest(cooldown=cooldown):
+                self.setUp()
+                sleep = AsyncMock()
+                recovery = VoiceRateLimitRecovery(self.session, jitter=lambda: 0, sleep=sleep)
+                recovery.failed({'code': 'rate_limit_exceeded',
+                                 'message': f'Please try again in {cooldown}.'})
+                await recovery.task
+                sleep.assert_not_awaited()
+                self.session.send_event.assert_not_awaited()
+                self.assertTrue(recovery.exhausted_notified)
+                self.assertIn('stopped', self.session.member.send.await_args.args[0])
 
     async def test_repeated_exhaustion_events_do_not_spam_or_restart_retries(self):
         with patch('gbop_voice_web.voice_runtime.asyncio.sleep', new_callable=AsyncMock):

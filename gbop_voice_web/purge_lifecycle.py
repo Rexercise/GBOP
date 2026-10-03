@@ -5,6 +5,7 @@ reported as an observation awaiting rejection, not silently treated as a
 successful Turtle Soup. Coverage and chronology travel with every conclusion.
 """
 from __future__ import annotations
+from gbop_voice_web.candle_naming import objective_identity
 
 
 def _bar(candle):
@@ -60,6 +61,7 @@ def _after_event(bars, source, event_end, through, step, anchor, side, invalid_a
             status = 'not_observed_by_review_cutoff'
         describe = lambda b: ({'bar_open_ny': stamp(b['time']), 'bar_close_ny': stamp(b['time'] + step)} if b else None)
         outcomes[name] = {'level': level, 'status': status,
+                          **objective_identity(name, 'bearish' if side == 'buy' else 'bullish', anchor),
                           'first_verified_later_touch': describe(hit),
                           'touch_in_event_candle': same,
                           'event_source_touch': describe(earlier_in_event[0]) if earlier_in_event else None,

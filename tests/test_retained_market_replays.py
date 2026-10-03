@@ -170,6 +170,10 @@ class RetainedMarketReplayTests(unittest.TestCase):
         self.assertEqual(bearish['objective_status'], event['objective_status']['XAUUSD'])
         self.assertEqual(selected(review, '08:00')['direction_observed'], 'bullish')
         self.assertTrue(recap['local_only_spoken_summary'])
+        # A later opposite-direction transient event must not hide the earlier
+        # completed bearish boneless delivery by promoting local failure first.
+        self.assertEqual(recap['evidence_precedence'], 'paired_delivery_then_local_chronology')
+        self.assertIn('completed its sell-side of the 8:00 AM H1 range', recap['headline'])
 
     def test_nas_clean_and_unclean_local_function_do_not_restore_crt_validity(self):
         row = selected(self.tool('NAS')['review'], '09:00')

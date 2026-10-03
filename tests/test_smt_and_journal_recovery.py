@@ -75,11 +75,13 @@ class SMTTests(unittest.TestCase):
         self.assertEqual(outcomes['XAUUSD']['opposing_liquidity']['first_later_touch_ny'], '2026-10-02T10:28:00-04:00')
         self.assertEqual(outcomes['XAGUSD']['opposing_liquidity']['first_later_touch_ny'], '2026-10-02T10:54:00-04:00')
 
-    def test_peer_later_catchup_does_not_rewrite_first_event(self):
+    def test_peer_same_hour_catchup_keeps_timing_but_disqualifies_smt(self):
         _, gold, silver = metals(); gold['bars'][70]['high'] = 4228
         r = self.compare(gold, silver)
         self.assertEqual(r['events'][0]['peer_later_swept_at_ny'], '2026-10-02T09:10:00-04:00')
-        self.assertTrue(r['divergence_confirmed'])
+        self.assertFalse(r['divergence_confirmed'])
+        self.assertTrue(r['timing_asynchrony_observed'])
+        self.assertEqual(r['events'][0]['setup_interval']['status'], 'both_assets_purged_same_setup_interval')
 
     def test_same_bar_both_sweeps_have_no_verified_intrabar_divergence(self):
         _, gold, silver = metals(); gold['bars'][62]['high'] = 4228
@@ -108,7 +110,9 @@ class SMTTests(unittest.TestCase):
     def test_gap_after_event_preserves_event_but_not_later_targets(self):
         _, gold, silver = metals(); gold['bars'].pop(65)
         r = self.compare(gold, silver)
-        self.assertTrue(r['divergence_confirmed'])
+        self.assertFalse(r['divergence_confirmed'])
+        self.assertTrue(r['timing_asynchrony_observed'])
+        self.assertEqual(r['events'][0]['setup_interval']['status'], 'provisional_timing_asynchrony')
         self.assertFalse(r['paired_coverage_complete'])
         self.assertIsNone(r['events'][0]['objectives_after_divergence']['XAUUSD']['opposing_liquidity']['first_later_touch_ny'])
 

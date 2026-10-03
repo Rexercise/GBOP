@@ -96,6 +96,9 @@ class VoiceToolWork:
             self.cancel()
 
     def cancel(self):
+        context = getattr(self.session, 'market_context', None)
+        if context is not None:
+            context.invalidate()
         self.generation += 1
         self.response_finished = False
         self.stale_responses.extend(self.responses)

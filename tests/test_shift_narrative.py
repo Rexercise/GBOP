@@ -21,10 +21,10 @@ class ShiftNarrativeTests(unittest.TestCase):
         r = self.review(fixture())
         self.assertEqual([x['code'] for x in r['ranges'][1]['variant_evidence']['labels']], ['V1'])
         recap = r['recap']
-        self.assertIn('9ate8 failed, but the later 9:00 AM range delivered', recap['headline'])
+        self.assertIn('9ate8 failed, but price later reached buy-side of the 9:00 AM H1 range', recap['headline'])
         self.assertEqual(len(recap['selected_range_chapters']), 2)
         text = recap['selected_range_chapters'][1]['text']
-        for fact in ['10:00 AM', 'selected range', 'sell-side', 'opposing liquidity', 'V1 Textbook']:
+        for fact in ['10:00 AM', 'selected range', 'sell-side', 'buy-side of the 9:00 AM H1 range', 'V1 Textbook']:
             self.assertIn(fact, text)
         self.assertIn('final H1 closed', recap['closing'])
         self.assertFalse(r['ranges'][1]['variant_evidence']['entry_confirmed'])
@@ -120,8 +120,11 @@ class ShiftNarrativeTests(unittest.TestCase):
     def test_price_precision_is_preserved(self):
         data = fixture()
         for b in data[12:24]: b['high'] = 100.12345
-        text = self.review(data)['recap']['selected_range_chapters'][1]['text']
-        self.assertIn('100.12345', text)
+        result = self.review(data)
+        target = result['ranges'][1]['objectives'][1]
+        self.assertEqual(target['level'], 100.12345)
+        self.assertEqual(target['spoken_label'], 'buy-side of the 9:00 AM H1 range')
+        self.assertNotIn('100.12345', result['recap']['selected_range_chapters'][1]['text'])
 
 
 if __name__ == '__main__': unittest.main()

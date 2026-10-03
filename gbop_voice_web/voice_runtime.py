@@ -172,6 +172,15 @@ VOICE_TRUNCATION = {
 }
 
 
+def _retry_after_seconds(message):
+    """Read the provider's finite, nonnegative ms/s cooldown without guessing units."""
+    match = re.search(r'\btry\s+again\s+in\s+(\d+(?:\.\d+)?)\s*(ms|s)\b', str(message), re.I)
+    if match is None:
+        return None
+    seconds = float(match.group(1)) / (1000.0 if match.group(2).lower() == 'ms' else 1.0)
+    return seconds if math.isfinite(seconds) else None
+
+
 class VoiceRateLimitRecovery:
     """At most two response retries per turn; no writes or stale replies."""
     def __init__(self, session, *, jitter=None, sleep=None):
@@ -200,8 +209,8 @@ class VoiceRateLimitRecovery:
         session = self.session
         if session.closed or session.websocket is None or self.exhausted_notified:
             return
-        match = re.search(r'try again in (\d+(?:\.\d+)?)s', str(error.get('message', '')), re.I)
-        minimum = max(2.0, float(match.group(1)) + 1.0) if match else 15.0 * (2 ** self.attempts)
+        retry_after = _retry_after_seconds(error.get('message', ''))
+        minimum = max(2.0, retry_after + 1.0) if retry_after is not None else 15.0 * (2 ** self.attempts)
         # Do not shorten a provider cooldown to fit our bounded retry window.
         exhausted = self.attempts >= 2 or minimum > 60.0
         delay = min(60.0, minimum + max(0.0, min(1.0, (self.jitter or random.random)())))

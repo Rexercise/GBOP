@@ -45,7 +45,7 @@ class SpokenCandleNameTests(unittest.TestCase):
                                      (106, 109, 89, 100), (100, 109, 91, 100)]),
                              '2026-10-02', 'day', 300)
         summary = story['recap']['spoken_summary']
-        self.assertIn('opposing liquidity at 90 during the 10:00 AM M5 candle', summary)
+        self.assertIn('sell-side of the 8:00 AM H1 range during the 10:00 AM M5 candle', summary)
         self.assertNotIn('10:05 AM', summary)
         target = next(o for o in story['ranges'][0]['objectives'] if o['objective'] == 'opposing_liquidity')
         self.assertEqual(target['evidence']['bar_close_ny'], '2026-10-02T10:05:00-04:00')
@@ -56,9 +56,11 @@ class SpokenCandleNameTests(unittest.TestCase):
         result = {'paired_smt': paired, 'shift_story': {'recap': {}, 'ranges': []}}
         reconcile_paired_recap(result, 'XAUUSD')
         summary = result['shift_story']['recap']['spoken_summary']
-        self.assertIn('the 9:15 AM M5 candle, identified on its closure', summary)
+        self.assertIn('the 9:15 AM M5 candle, matching', summary)
+        self.assertIn('qualified setup interval', summary)
+        self.assertEqual(reference['smt_qualified_at_ny'], '2026-10-02T10:00:00-04:00')
         self.assertNotIn('close at 9:20 AM', summary)
-        self.assertIn('objective at 190 in the candle opening 9:20 AM', summary)
+        self.assertIn('sell-side of the 8:00 AM H1 range in the candle opening 9:20 AM', summary)
         compact = compact_voice_tool_result('review_market_session', {'ok': True, 'review': result})
         self.assertEqual(bearish(compact['review']['paired_smt'])['paired_model1']['boneless_reference'], reference)
         self.assertEqual(reference['bar_close_ny'], '2026-10-02T09:20:00-04:00')
