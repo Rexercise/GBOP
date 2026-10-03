@@ -115,14 +115,6 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None):
     result['status'] = 'no_sweep_observed' if coverage['complete'] else 'incomplete_observation_window'
     high, low = anchor['high'], anchor['low']
     events = result['events']
-    first = {}
-    for side, key, level in [('buy', 'high', high), ('sell', 'low', low)]:
-        hits = [b for b in following if (b[key] > level if side == 'buy' else b[key] < level)]
-        if hits:
-            b = hits[0]
-            first[side] = b
-            events.append(dict(kind=side + '_side_purge', level=level, observed_price=b[key],
-                               first_in_available_data=True, **interval(b, step)))
     # Invalidation is an anchor-timeframe CLOSE, not the intrabar excursion.
     cursor, invalid_at = anchor_end, None
     while next_boundary(cursor, tf) <= end:
@@ -134,6 +126,14 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None):
                            'confirmed_at_ny': stamp(stop), 'close': candle['close'], 'timeframe': tf})
             break
         cursor = stop
+    first = {}
+    for side, key, level in [('buy', 'high', high), ('sell', 'low', low)]:
+        hits = [b for b in following if (invalid_at is None or b['time'] + step <= invalid_at) and (b[key] > level if side == 'buy' else b[key] < level)]
+        if hits:
+            b = hits[0]
+            first[side] = b
+            events.append(dict(kind=side + '_side_purge', level=level, observed_price=b[key],
+                               first_in_available_data=True, **interval(b, step)))
     if first:
         result['status'] = 'range_sweep_candidate'
         side = min(first, key=lambda s: first[s]['time'])

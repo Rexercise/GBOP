@@ -8,6 +8,7 @@ import time
 from datetime import datetime, date, timezone, timedelta
 from zoneinfo import ZoneInfo
 from gbop_voice_web.trade_photos import schema
+from gbop_voice_web.shift_review import review_shift
 from gbop_voice_web.candle_evidence import parse_time, stamp, candle_query, crt_review, summarize
 
 NY = ZoneInfo('America/New_York')
@@ -222,13 +223,14 @@ def session_review(bars, day, shift, step=300):
             result['evidence'] = crt_review(bars, anchor_start, available_end, 'H1', step)
         results.append(result)
     return {'date_ny': day.isoformat(), 'shift': shift, 'timezone': 'America/New_York', 'observations': results,
+            'shift_story': review_shift(bars, day.isoformat(), shift, step),
             'source_resolution_seconds': step,
             'limits': 'Closed source candles aggregated to H1. Event times identify source bars, not ticks. Range observations only: no CSD, Super Soup, Blessed Thief execution, SMT, or CRT variant confirmation. Missing/unfinished hours are not evidence of no setup.'}
 
 
 MARKET_TOOLS = [
     schema('get_market_price', 'Get latest broker bid/ask ONLY when a quote is requested. Disclose stale or absent data.', {'asset': {'type': 'string'}}),
-    schema('review_market_session', 'Fetch actual candle evidence for today or a dated 9ate8/Young Lefty, including purge, high/low formation and invalidation timestamps. Use for casual references to today’s play as well as direct questions. Dates/shifts use New York.', {
+    schema('review_market_session', 'Review the entire GTOP shift: 9AM-noon or 9PM-midnight New York, beginning with the 8 oclock anchor. Returns sequential hourly range promotions after invalidation, later CRTs, objective outcomes, M5 body evidence, plus 9ate8/Young Lefty. Use for casual references to today’s play as well as direct questions. Dates/shifts use New York.', {
         'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null']},
         'shift': {'type': 'string', 'enum': ['day', 'night']}}),
     schema('inspect_market_candles', 'Read historical or current candle OHLC and when extremes formed. Explicit ISO start/end in New York (or with offset). M1-M60, H1-H24, D1, W1, MN1; custom anchors supported. Incomplete coverage is not a definitive daily/weekly extreme. Paginate next_start_ny.', {
@@ -240,6 +242,21 @@ MARKET_TOOLS = [
 MARKET_NAMES = {t['name'] for t in MARKET_TOOLS}
 MARKET_PROMPT = """
 # TRADING ACCOUNTABILITY BUDDY: GROUNDED MARKET CONVERSATION
+For "what did price do today/this shift?", use review_market_session and lead with
+shift_story, not only observations[0]. Day is 09:00-12:00 and night 21:00-00:00 NY.
+Start from 8; explain range_transitions and each later selected range through the
+cutoff. An initial 9ate8 failure does NOT mean the shift had no later setup.
+Use hourly_progression for candle science; independent_range_context is not an
+assertion that the range was selected. Report the objective, purge, return inside,
+M5 body evidence, observed target delivery and invalidation in chronological order.
+A target observed before later invalidation remains a historical fact. Never call
+it a member profit or a target after entry without actual execution evidence.
+Same-bar touches have unknown order. M5 purge-body crosses are not by themselves
+confirmed Model 1/CSD or Super Soup. Query the selected candidate candles as needed.
+Explain hindrances only as observed events (e.g. repeat purge, invalidating close,
+unreached objective); do not invent causation, news, or intent. State incomplete
+coverage and unresolved progression plainly. Do not say you watched the shift live.
+Give a concise whole-shift recap first, with deeper times and levels on request.
 '988', '9 ate 8', 'nine ate eight' mean 9ate8 in the current GTOP context.
 'Did 9ate8 happen today?', 'you saw today’s 988?', 'I took today’s NAS Super Soup',
 and follow-ups 'when was that high purged?', 'what time did it invalidate?' are
@@ -294,6 +311,10 @@ familiar GTOP terminology. Examples: 'did 988 happen today?', 'you seen today’
 'I took the Super Soup on NAS today', 'when was that high purged?', 'when did it
 invalidate?', 'last Wednesday’s low', or a timeframe-specific CRT review. These are
 not definition questions. Delegate first; never invent today’s candle behavior.
+'What did price do this shift/today?' requires the whole shift_story: start at 8,
+follow hourly range transitions after invalidation through noon/midnight NY, and
+include later selected CRT objectives and delivery. Do not stop at failed 9ate8.
+Preserve missing-data and same-bar uncertainty; body-cross evidence is not an entry.
 Resolve known asset/date/shift/anchor from conversation; ask only for missing context.
 Do not lead with a price quote or a playbook definition. Quote current price only when
 asked. Speak the verified event and timestamp naturally, preserving data precision.
