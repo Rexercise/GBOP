@@ -52,9 +52,9 @@ class BonelessTimeAlignmentTests(unittest.TestCase):
 
     def test_opening_label_and_closing_confirmation_are_distinct(self):
         self.assertIn('OPENING time and timeframe', CANONICAL_KNOWLEDGE)
-        self.assertIn('the 10 AM H1 candle closed outside the range', CANONICAL_KNOWLEDGE)
-        self.assertIn('confirming invalidation at 11 AM New York', CANONICAL_KNOWLEDGE)
-        self.assertIn('the 10:45 AM M5 candle closes at 10:50 AM', CANONICAL_KNOWLEDGE)
+        self.assertIn('the closure of the 10 o’clock candle invalidated the 8 o’clock range', CANONICAL_KNOWLEDGE)
+        self.assertIn('Do not add the closing clock time unless requested', CANONICAL_KNOWLEDGE)
+        self.assertNotIn('confirming invalidation at 11 AM', CANONICAL_KNOWLEDGE)
         self.assertIn('candle_open_ny', CANONICAL_KNOWLEDGE)
         self.assertIn('confirmed_at_ny', CANONICAL_KNOWLEDGE)
 

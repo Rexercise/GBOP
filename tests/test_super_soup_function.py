@@ -146,7 +146,7 @@ class SuperSoupFunctionTests(unittest.TestCase):
         summary = result['candle_lifecycle']['spoken_summary']
         self.assertIn('structure was not clean', summary)
         self.assertIn('Model 1 function delivered its own opposing liquidity at 98', summary)
-        self.assertIn('after its 10:10 AM invalidating close', summary)
+        self.assertIn('after the closure of the 10:05 AM M5 candle invalidated the Model 1 CRT', summary)
         self.assertIn('does not restore CRT validity', summary)
         self.assertIn('local_function_outcome', result['candle_lifecycle']['response_contract'])
         compact = compact_voice_tool_result('review_market_crt', {'ok': True, 'review': result})

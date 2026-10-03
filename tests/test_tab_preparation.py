@@ -67,7 +67,7 @@ class PreparationTests(unittest.TestCase):
         saved=watch_tool(self.db,1,42,42,'get_prepared_market_brief',{'asset':'NAS','shift':'day'},T+8*3600)
         selected=saved['review']['selected_ranges'][0]
         self.assertNotIn('candle_lifecycle',selected)
-        self.assertIn('after its 10:10 AM invalidating close',selected['candle_lifecycle_summary'])
+        self.assertIn('after the closure of the 10:05 AM M5 candle invalidated the Model 1 CRT',selected['candle_lifecycle_summary'])
         self.assertIn('does not restore CRT validity',selected['candle_lifecycle_summary'])
         self.assertIn('detail_omitted',saved['review'])
     def test_collector_accepts_explicit_spx_among_nine_assets(self):

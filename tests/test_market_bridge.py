@@ -160,6 +160,87 @@ class MarketTests(unittest.TestCase):
             for header in (None, 123, 'Bearer ' + 'é'*40, 'Bearer wrong'):
                 self.assertFalse(market.authorized(header))
 
+    def collector_mt5(self, captured, rates):
+        return SimpleNamespace(
+            TIMEFRAME_M5=300, TIMEFRAME_M1=60,
+            terminal_info=lambda: SimpleNamespace(connected=True),
+            symbol_select=lambda symbol, enable: True,
+            symbol_info_tick=lambda symbol: SimpleNamespace(bid=101, ask=102, time=captured),
+            copy_rates_from_pos=lambda symbol, timeframe, pos, count: rates[timeframe][-count:])
+
+    def test_receiver_history_boundary_stays_relative_to_receipt(self):
+        # Demonstrate the original race without relaxing receiver validation.
+        for key in ('bars', 'bars_m1'):
+            with self.subTest(timeframe=key):
+                payload = copy.deepcopy(self.payload)
+                payload['instruments'][0][key] = [dict(
+                    time=self.now - 14 * 86400, open=100, high=105, low=99, close=102)]
+                market.validate_payload(payload, self.now)
+                with self.assertRaisesRegex(ValueError, 'within 14 days'):
+                    market.validate_payload(payload, self.now + 1)
+
+    def test_collector_leaves_upload_age_headroom_for_both_timeframes(self):
+        oldest = self.now - 14 * 86400
+        # +120 places the buffered cutoff exactly on an M5 boundary; +121
+        # checks that the next whole bar is used without shifting timestamps.
+        for offset in (0, 120, 121):
+            captured = self.now + offset
+            rates = {
+                step: [dict(time=t, open=100, high=105, low=99, close=102)
+                       for t in [*range(oldest, oldest + 900, step),
+                                 captured // step * step - step,
+                                 captured // step * step]]
+                for step in (300, 60)
+            }
+            for backfill in (False, True):
+                with self.subTest(offset=offset, backfill=backfill):
+                    payload = collect(self.collector_mt5(captured, rates),
+                                      {'NAS100': 'USTECm'}, captured, backfill=backfill)
+                    self.assertEqual(payload['captured_at'], captured)
+                    item = payload['instruments'][0]
+                    self.assertEqual(item['tick_time'], captured)
+                    for key, step in (('bars', 300), ('bars_m1', 60)):
+                        cutoff = captured - 14 * 86400 + 180
+                        first = (cutoff + step - 1) // step * step
+                        self.assertEqual(item[key][0]['time'], first)
+                        expected = [dict(bar, **{k: float(bar[k]) for k in ('open', 'high', 'low', 'close')})
+                                    for bar in rates[step]
+                                    if first <= bar['time'] and bar['time'] + step <= captured]
+                        self.assertEqual(item[key], expected)
+                    for delay in (0, 1, 179, 180):
+                        market.validate_payload(payload, captured + delay)
+                    with self.assertRaisesRegex(ValueError, 'capture is stale'):
+                        market.validate_payload(payload, captured + 181)
+
+    def test_full_nine_asset_backfill_splits_with_delayed_receipt(self):
+        rates = {
+            step: [dict(time=t, open=100, high=105, low=99, close=102)
+                   for t in range(self.now - 14 * 86400, self.now, step)]
+            for step in (300, 60)
+        }
+        assets = sorted(market.ASSETS)
+        payload = collect(self.collector_mt5(self.now, rates),
+                          {asset: asset for asset in assets}, self.now)
+        received = []
+        class Opener:
+            def open(s, request, timeout):
+                self.assertLessEqual(len(request.data), market.MAX_BYTES)
+                data = json.loads(request.data)
+                self.assertEqual(data['captured_at'], self.now)
+                delay = min(1 + 60 * len(received), 180)
+                result = market.ingest(self.db, data, self.now + delay)
+                received.append((delay, result['accepted_assets']))
+                response = SimpleNamespace(read=lambda: json.dumps(result).encode())
+                return contextlib.nullcontext(response)
+        with patch('urllib.request.build_opener', return_value=Opener()):
+            result = send(dict(endpoint='https://gbop.onrender.com/api/market/ingest', token='x'*40), payload)
+        self.assertGreater(len(received), 1)
+        self.assertEqual(received[-1][0], 180)
+        self.assertEqual([asset for _, chunk in received for asset in chunk], assets)
+        self.assertEqual(result['accepted_assets'], assets)
+        self.assertEqual(result['captured_at'], self.now)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM gbop_market_feed').fetchone()[0], 9)
+
     def test_config_rejects_bad_endpoint_token_and_mapping(self):
         config = dict(endpoint='https://gbop.onrender.com/api/market/ingest', token='x'*40,
                       symbols={'NAS100': 'USTECm'})

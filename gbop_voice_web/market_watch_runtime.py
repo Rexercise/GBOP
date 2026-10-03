@@ -205,11 +205,13 @@ def prepare_next_shift(db,fingerprints,now=None):
            'paired_context':review.get('paired_context'),
            'selected_ranges':[{'anchor_start_ny':r.get('anchor_start_ny'),'variant_evidence':r.get('variant_evidence'),
               'candle_lifecycle_summary':(r.get('candle_lifecycle') or {}).get('spoken_summary'),
-              'candle_lifecycle':r.get('candle_lifecycle'),'invalidated_at_ny':r.get('invalidated_at_ny')}
+              'candle_lifecycle':r.get('candle_lifecycle'),
+              'blessed_thief_summary':(r.get('blessed_thief') or {}).get('summary'),
+              'blessed_thief':r.get('blessed_thief'),'invalidated_at_ny':r.get('invalidated_at_ny')}
               for r in story.get('ranges',[]) if r.get('role')=='selected_range']}
     payload=json.dumps(brief,separators=(',',':'))
     if len(payload.encode())>131072:
-        brief['selected_ranges']=[{k:v for k,v in r.items() if k!='candle_lifecycle'} for r in brief['selected_ranges']]
+        brief['selected_ranges']=[{k:v for k,v in r.items() if k not in ('candle_lifecycle','blessed_thief')} for r in brief['selected_ranges']]
         brief['detail_omitted']='Request review_market_session/CRT for all candle details.'
         payload=json.dumps(brief,separators=(',',':'))
     if len(payload.encode())>131072:

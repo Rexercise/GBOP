@@ -13,6 +13,7 @@ import certifi
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
+MAX_CAPTURE_AGE_SECONDS = 180  # Receiver's existing capture-age allowance.
 
 
 def load_config(path):
@@ -36,6 +37,8 @@ def load_config(path):
 
 def collect(mt5, symbols, now=None, *, backfill=True):
     now = int(time.time() if now is None else now)
+    # Keep the oldest bars valid for the full allowed upload age, including splits.
+    history_cutoff = now - 14 * 86400 + MAX_CAPTURE_AGE_SECONDS
     info = mt5.terminal_info()
     if info is None or not info.connected:
         raise RuntimeError('MT5 is disconnected. Sign in to the terminal with investor access.')
@@ -51,12 +54,12 @@ def collect(mt5, symbols, now=None, *, backfill=True):
             continue
         # Do not shift server timestamps speculatively; receiver rejects future data.
         bars = [dict(time=int(r['time']), **{k: float(r[k]) for k in ('open', 'high', 'low', 'close')})
-                for r in rates if now - 14 * 86400 <= int(r['time']) and int(r['time']) + 300 <= now]
+                for r in rates if history_cutoff <= int(r['time']) and int(r['time']) + 300 <= now]
         bars.sort(key=lambda b: b['time'])
         rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 20160 if backfill else 120)
         bars_m1 = [] if rates_m1 is None else [
             dict(time=int(r['time']), **{k: float(r[k]) for k in ('open', 'high', 'low', 'close')})
-            for r in rates_m1 if now - 14 * 86400 <= int(r['time']) and int(r['time']) + 60 <= now]
+            for r in rates_m1 if history_cutoff <= int(r['time']) and int(r['time']) + 60 <= now]
         bars_m1.sort(key=lambda b: b['time'])
         if not bars_m1:
             logging.warning('M1 history unavailable for %s; retaining M5 coverage', asset)

@@ -7,6 +7,7 @@ is reported separately. Unordered source bars cannot prove a completed variant.
 from datetime import datetime
 from gbop_voice_web.candle_evidence import parse_time, summarize
 from gbop_voice_web.smt_reference import closing_candle
+from gbop_voice_web.candle_naming import candle_label, source_timeframe
 
 
 def clock(value):
@@ -14,7 +15,14 @@ def clock(value):
 
 
 def window(event):
-    return f"{clock(event['bar_open_ny'])}–{clock(event['bar_close_ny'])}"
+    step = parse_time(event['bar_close_ny']) - parse_time(event['bar_open_ny'])
+    return candle_label(event['bar_open_ny'], source_timeframe(step))
+
+
+def invalidating_label(row):
+    event = next((e for e in row['events'] if e['kind'] == 'range_invalidated'), {})
+    return closing_candle(row['invalidated_at_ny'], event.get('timeframe', 'H1'),
+                          event.get('candle_open_ny'))['spoken_label']
 
 
 def classify_structure(row, bars, end, step):
@@ -121,7 +129,7 @@ def build_shift_recap(story):
         parts = []
         transition = next((t for t in story['range_transitions'] if t['to_anchor_ny'] == row['anchor_start_ny']), None)
         if transition:
-            parts.append(f"At {clock(transition['confirmed_at_ny'])}, {anchor_name} became the selected range.")
+            parts.append(f"The {anchor_name} candle became the selected range on its closure.")
         elif row['label'] == '9ate8':
             parts.append(f"The shift started with the {anchor_name} range for 9ate8.")
         if parse_time(row['selected_at_ny']) >= parse_time(story['end_ny']):
@@ -134,16 +142,19 @@ def build_shift_recap(story):
                 side = 'buy-side' if direction == 'bearish' else 'sell-side'
                 opposite = 'low' if direction == 'bearish' else 'high'
                 target = next(o for o in row['objectives'] if o['objective'] == 'opposing_liquidity')
-                parts.append(f"Its {side} was purged in the {window(first)} candle, with a {direction} range objective at its {opposite}, {target['level']}.")
-                returns = [x['first_source_close_back_inside_ny'] for x in row['sweep_detail']
+                parts.append(f"Its {side} was purged in {window(first)}, with a {direction} range objective at its {opposite}, {target['level']}.")
+                returns = [x for x in row['sweep_detail']
                            if x['side'] == ('buy' if direction == 'bearish' else 'sell')
                            and x['first_source_close_back_inside_ny']]
                 if returns:
-                    parts.append(f"A source candle closed back inside at {clock(min(returns))}.")
+                    returned = min(returns, key=lambda x: x['first_source_close_back_inside_ny'])
+                    label = closing_candle(returned['first_source_close_back_inside_ny'],
+                                           source_timeframe(returned['precision_seconds']))['spoken_label']
+                    parts.append(f"Price returned inside on {label}.")
                 for objective in row['objectives']:
                     name = 'midpoint' if objective['objective'] == 'midpoint' else 'opposing liquidity'
                     if objective['status'] == 'observed_after_purge':
-                        parts.append(f"Price reached {name} at {objective['level']} in the {window(objective['evidence'])} candle.")
+                        parts.append(f"Price reached {name} at {objective['level']} in {window(objective['evidence'])}.")
                     elif objective['status'] == 'same_bar_order_unknown':
                         parts.append(f"The {name} touch and purge share a source candle; their order is unknown.")
                     elif objective['status'].startswith('not_observed'):
@@ -164,7 +175,7 @@ def build_shift_recap(story):
             if repeats:
                 parts.append(f"There were {repeats[0]['excursions_in_available_bars']} separate excursions beyond the purged range boundary in the available source candles.")
         if row['invalidated_at_ny']:
-            parts.append(f"The range {anchor_name} was invalidated by {closing_candle(row['invalidated_at_ny'])['spoken_label']}; any earlier observed objective touch remains part of the record.")
+            parts.append(f"The {anchor_name} range was invalidated by {invalidating_label(row)}; any earlier observed objective touch remains part of the record.")
         passages.append({'anchor_start_ny': row['anchor_start_ny'], 'text': ' '.join(parts)})
         if parse_time(row['selected_at_ny']) >= parse_time(story['end_ny']):
             brief.append(f"{anchor_name} became selected at the cutoff, leaving no shift candles to assess it.")
@@ -173,13 +184,13 @@ def build_shift_recap(story):
         if row['invalidated_at_ny'] and not delivered:
             failed_objectives = [o for o in row['objectives'] if o['status'] == 'not_observed_before_invalidation']
             suffix = ' without either objective being reached' if len(failed_objectives) == 2 else ''
-            brief.append(f"{anchor_name} was invalidated by {closing_candle(row['invalidated_at_ny'])['spoken_label']}{suffix}.")
+            brief.append(f"The {anchor_name} range was invalidated by {invalidating_label(row)}{suffix}.")
             continue
-        select_text = f"{anchor_name} became selected at {clock(row['selected_at_ny'])}" if transition else f"{anchor_name} stayed selected"
+        select_text = f"The {anchor_name} range became selected on that candle's closure" if transition else f"{anchor_name} stayed selected"
         first = next((e for e in row['events'] if e['kind'].endswith('_side_purge')), None)
         if first and row['direction_observed']:
             side = 'buy-side' if row['direction_observed'] == 'bearish' else 'sell-side'
-            select_text += f"; its {side} was purged in the {window(first)} candle"
+            select_text += f"; its {side} was purged in {window(first)}"
         else:
             select_text += '; no directional setup is established in the available candles'
         labels = row['variant_evidence']['labels']
@@ -193,7 +204,7 @@ def build_shift_recap(story):
         elif first:
             brief.append('Opposing-liquidity delivery remains unestablished within the reviewed window.')
         if row['invalidated_at_ny']:
-            brief.append(f"Later, {closing_candle(row['invalidated_at_ny'])['spoken_label']} invalidated that range after the recorded delivery.")
+            brief.append(f"Later, {invalidating_label(row)} invalidated that range after the recorded delivery.")
     close = f"Review ends at {clock(story['end_ny'])} New York."
     final = story['hourly_progression'][-1]
     if story['progression_complete'] and final.get('close') is not None:

@@ -110,7 +110,7 @@ class CandleLifecycleTests(unittest.TestCase):
         self.assertEqual(self.review()['execution_status'],'not_assessed')
     def test_summary_keeps_identity_and_confirmation_separate(self):
         text=self.review()['spoken_summary']
-        self.assertIn('10:00 AM',text);self.assertIn('CSD confirmed at 10:15 AM',text)
+        self.assertIn('10:00 AM',text);self.assertIn('CSD confirmed on the closure of the 10:10 AM M5 candle',text)
     def test_missing_anchor_stays_unverified(self):
         self.assertEqual(self.review(fixture()[1:])['status'],'unverified_incomplete_anchor')
 

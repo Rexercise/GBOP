@@ -4,15 +4,11 @@ CSD uses the opposite edge of the ORIGINAL purge candle's real body (its open).
 Retests and later closes are named by the exact reference tested. They never
 silently become a member's stop or the parent range's invalidation rule.
 """
-from datetime import datetime
 from gbop_voice_web.candle_evidence import summarize, stamp, parse_time, next_boundary, timeframe
+from gbop_voice_web.candle_naming import candle_label, closure_label, source_timeframe
 
 VERSION = 'candle-lifecycle-local-function-2026-10-03'
 MAX_IDENTITIES = 32
-
-
-def _clock(value):
-    return datetime.fromisoformat(value).strftime('%I:%M %p').lstrip('0')
 
 
 def _fact(candle):
@@ -231,13 +227,13 @@ def lifecycle_summary(result):
     if not facts:
         return ''
     first = facts[0]
-    parts = [f"The first identified assigned-timeframe purge was a {first['timeframe']} {first['purge_type'].replace('_', ' ')} in the {_clock(first['bar_open_ny'])}–{_clock(first['bar_close_ny'])} candle."]
+    parts = [f"The first identified assigned-timeframe purge was a {first['purge_type'].replace('_', ' ')} in {candle_label(first['bar_open_ny'], first['timeframe'])}."]
     body = next((f for f in facts if f['purge_type'] == 'body_soup' and f['purged_side'] == first['purged_side']), None)
     if body:
-        parts.append(f"The Model 1 candle opened at {_clock(body['bar_open_ny'])} and its body close was identified at {_clock(body['bar_close_ny'])}.")
+        parts.append(f"Model 1 was identified on {closure_label(body['bar_open_ny'], body['timeframe'])}.")
         csd = body['csd']
         if csd['status'] == 'confirmed':
-            parts.append(f"CSD confirmed at {_clock(csd['evidence']['confirmed_at_ny'])} through its body reference, {csd['reference_level']}.")
+            parts.append(f"CSD confirmed on {closure_label(csd['evidence']['bar_open_ny'], body['timeframe'])} through its body reference, {csd['reference_level']}.")
         elif csd['status'].startswith('not_observed'):
             parts.append('CSD was not observed in the reviewed window; the Model 1 candle still exists.')
         else:
@@ -246,8 +242,8 @@ def lifecycle_summary(result):
         if structure and structure['structure_status'] == 'observed':
             quality = 'clean' if structure['structural_quality'] == 'clean' else 'not clean'
             variants = ', '.join(v['code'] for v in structure['variants'])
-            when = _clock(structure['event']['bar_close_ny'])
-            parts.append(f"The Model 1 nested CRT purge closed at {when}; its structure was {quality}" +
+            when = closure_label(structure['event']['bar_open_ny'], body['timeframe'])
+            parts.append(f"The Model 1 nested CRT purge was identified on {when}; its structure was {quality}" +
                          (f", supporting {variants}." if variants else '.'))
             outcomes = {
                 'opposing_liquidity_delivered': 'opposing liquidity delivered',
@@ -270,12 +266,16 @@ def lifecycle_summary(result):
                     target = objectives[target_name]
                     evidence = target['evidence']
                     timing = target['relative_to_model1_invalidation']
+                    source_tf = source_timeframe(body['source_resolution_seconds'])
                     sentence = (f"Independently, the Model 1 function delivered its own {target_name.replace('_', ' ')} "
-                                f"at {target['level']} in the {_clock(evidence['bar_open_ny'])}–{_clock(evidence['bar_close_ny'])} source candle")
+                                f"at {target['level']} in {candle_label(evidence['bar_open_ny'], source_tf)}")
+                    invalidating = body.get('model1_crt_invalidating_close')
+                    invalidation = (closure_label(invalidating['bar_open_ny'], body['timeframe'])
+                                    if invalidating else 'its invalidating candle’s closure')
                     if timing == 'after_model1_invalidation':
-                        sentence += f", after its {_clock(invalidated_at)} invalidating close"
+                        sentence += f", after {invalidation} invalidated the Model 1 CRT"
                     elif timing == 'before_model1_invalidation':
-                        sentence += f", before its later {_clock(invalidated_at)} invalidating close"
+                        sentence += f", before {invalidation} later invalidated the Model 1 CRT"
                     elif timing == 'same_model1_invalidating_bar_order_unresolved':
                         sentence += '; its order relative to the Model 1 invalidating close is unresolved'
                     parts.append(sentence + '. This does not restore CRT validity or change its structural quality.')
@@ -284,11 +284,12 @@ def lifecycle_summary(result):
                                    if function == 'failed_before_objectives' else outcomes.get(function, 'unverified'))
                     parts.append('Independent Model 1 function: ' + description + '.')
         if body['super_soup']['status'] == 'observed_before_csd':
-            parts.append(f"A Super Soup returned inside that candle at {_clock(body['super_soup']['evidence']['return_candle']['bar_close_ny'])}, before CSD.")
+            returned = body['super_soup']['evidence']['return_candle']
+            parts.append(f"A Super Soup returned inside the Model 1 range on {closure_label(returned['bar_open_ny'], body['timeframe'])}, before CSD.")
         if body['body_reference_retest']['evidence']:
             r = body['body_reference_retest']['evidence']
-            parts.append(f"Its body reference was retested in the {_clock(r['bar_open_ny'])}–{_clock(r['bar_close_ny'])} candle.")
+            parts.append(f"Its body reference was retested in {candle_label(r['bar_open_ny'], body['timeframe'])}.")
         if body['body_disrespect_close']['evidence']:
             r = body['body_disrespect_close']['evidence']
-            parts.append(f"A later close crossed back through the original body's far edge, {r['level']}, at {_clock(r['bar_close_ny'])}; that is separate from range invalidation.")
+            parts.append(f"On {closure_label(r['bar_open_ny'], body['timeframe'])}, price crossed back through the original body's far edge, {r['level']}; that is separate from range invalidation.")
     return ' '.join(parts)

@@ -75,7 +75,10 @@ the existing virtual environment, then restart the existing bridge process/task.
 No new VM, paid plan, credential or trading permission is required.
 
 The upgraded collector sends up to 14 calendar days of closed M1 and M5 candles
-at startup and hourly, then a two-hour overlap every 30 seconds. The server merges
+at startup and hourly, then a two-hour overlap every 30 seconds. It omits the oldest
+three minutes of that window so bars remain within the receiver's 14-day limit
+through its existing 180-second capture-age allowance, including split uploads.
+The receiver's age limits and candle timestamps are unchanged. The server merges
 history by broker symbol, timeframe and UTC day, retaining 90 calendar days as
 data accumulates. History before the initial backfill is not retroactively known.
 MT5 may return fewer bars while history downloads; the bot reports missing coverage.

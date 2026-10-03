@@ -295,7 +295,9 @@ MARKET_TOOLS = [
         'asset': {'type': 'string'}, 'start_ny': {'type': 'string'}, 'end_ny': {'type': 'string'}, 'timeframe': {'type': 'string'}}),
     schema('review_market_crt', 'Inspect ANY selected CRT anchor, subsequent purges and invalidating anchor-timeframe closes. Returns assigned wick/body candles and lifecycle facts separately from execution. Defaults: monthly->daily, weekly->H4, daily->H1, H4->M15, H1->M5. Specify exact anchor start to preserve chart/session alignment.', {
         'asset': {'type': 'string'}, 'anchor_start_ny': {'type': 'string'}, 'through_ny': {'type': 'string'},
-        'anchor_timeframe': {'type': 'string'}, 'confirmation_timeframe': {'type': ['string', 'null']}}),
+        'anchor_timeframe': {'type': 'string'}, 'confirmation_timeframe': {'type': ['string', 'null']},
+        'blessed_thief_timeframe': {'type': ['string', 'null'], 'description': 'Candle opens to review; null uses anchor timeframe, independent of Model 1 mapping.'},
+        'blessed_thief_from_ny': {'type': ['string', 'null'], 'description': 'Next Blessed Thief page cursor; preserve original anchor and through_ny. Null starts first page.'}}),
 ]
 MARKET_NAMES = {t['name'] for t in MARKET_TOOLS}
 MARKET_PROMPT = """
@@ -355,9 +357,8 @@ without evidence. Keep confirmed market facts separate from member-reported fill
 Save journal facts only through the existing trade/journal tools, with user-reported
 execution information; include relevant evidence times in the summary when useful.
 
-Times identify candle intervals, NOT exact ticks. M1 means within that one-minute
-candle. M5 cannot establish a specific minute; say 'the 9:15–9:20 candle' rather than
-pretending to know 9:17. Invalidating H1 candle 10:00 confirms invalidation at 11:00.
+Times identify candles, NOT exact ticks: say 'in the 9:15 M5 candle', not 9:17.
+Use the opening label and 'closure'; speak closing timestamps only when requested.
 Respect complete=false, missing candles, partial hours, ties and same-bar unknown
 ordering. Missing/unfinished data is not evidence that a setup did not occur.
 With partial coverage say 'highest/lowest in available candles', not a definitive
@@ -522,7 +523,8 @@ def market_tool(db, name, args):
             result['review'] = candle_query(bars, start, end, args['timeframe'], step)
         else:
             result['review'] = attach_lifecycle(crt_review(bars, start, end, args['anchor_timeframe'],
-                step, args.get('confirmation_timeframe')), bars, end, step)
+                step, args.get('confirmation_timeframe'), args.get('blessed_thief_timeframe'),
+                args.get('blessed_thief_from_ny')), bars, end, step)
             peer = PAIRINGS.get(result['asset'])
             if peer:
                 result['review']['paired_smt'] = paired_market_review(

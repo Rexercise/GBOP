@@ -11,9 +11,9 @@ Use candle_lifecycle.purge_candles and recap.candle_timeline for local candle
 identity, OHLC, wick/body type, separate CSD/Super Soup, retests and objectives.
 Follow canonical evidence statuses; legacy entry_confirmed=false or
 model1.csd_status=not_assessed cannot negate formation. Name the candle by its
-OPENING time and timeframe; give its closing/confirmation time separately.
-The 10 AM H1 candle closes at 11 AM, not the 11 AM candle. Keep identity,
-confirmation, execution and parent-range invalidation separate.
+OPENING time and timeframe; say 'the closure of the 10 o’clock candle'.
+Give the closing timestamp only when requested. Keep the selected range,
+event candle, confirmation, execution and parent invalidation distinct.
 Use paired_smt plus paired_context for gold/silver, Bitcoin/Ethereum and
 NAS100/SPX. Include boneless_asset and each own objective_status in the main
 recap BEFORE the overall verdict, not as an optional afterthought. A completed
@@ -101,5 +101,5 @@ def enrich_smt(review):
         'For SMT-aligned Model 1 identity, retrieve the partner body-purge candle on the assigned timeframe '
         'and the boneless candle at the identical opening/closing interval. This is identity_basis=smt_time_aligned, '
         'not an invented local body purge, CSD or member fill. Do not infer its time from a coarse SMT bar. '
-        'Name all candles by opening time; state closing/confirmation time separately.')
+        'Name candles by opening time; say the closure of that candle. Give closing timestamps only when requested.')
     return review
