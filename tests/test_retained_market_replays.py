@@ -63,7 +63,7 @@ class RetainedMarketReplayTests(unittest.TestCase):
                           (asset, self.symbols[asset], 60, parse_time('2026-10-02T00:00:00+00:00'),
                            json.dumps(bars)))
 
-    def feed(self, db, asset):
+    def feed(self, db, asset, now=None):
         asset = market.asset_name(asset)
         return dict(ok=True, asset=asset, symbol=self.symbols[asset],
                     status='historical_replay', is_live=False, bars=[], bars_m1=[])
@@ -197,11 +197,18 @@ class RetainedMarketReplayTests(unittest.TestCase):
                 self.assertEqual(own['relative_to_model1_invalidation'], 'after_model1_invalidation')
                 self.assert_first_low_touch('NAS100', '10:20', '12:00', level, delivered)
 
-    def test_silver_clean_super_soup_can_fail_without_any_local_objective(self):
+    def test_silver_returning_body_purge_is_not_clean_and_fails_without_local_objective(self):
         row = selected(self.tool('silver')['review'], '08:00')
         fact = model(row, '10:50')
         soup = fact['super_soup_structure']
-        self.assertEqual(soup['structural_quality'], 'clean')
+        self.assertEqual(soup['structural_quality'], 'not_clean')
+        self.assertEqual(soup['event']['purge_form'], 'body_return_or_body_outside')
+        # Retained source opens below the full low, so it cannot be wick-only.
+        source = self.source('XAGUSD', '10:55', '11:00')
+        self.assertEqual((fact['low'], source[0]['open'], source[-1]['close']),
+                         (60.771, 60.766, 60.81))
+        self.assertLess(source[0]['open'], fact['low'])
+        self.assertNotEqual(fact['super_soup']['status'], 'observed_before_csd')
         self.assertEqual(soup['event']['bar_open_ny'], ny('10:55'))
         self.assertEqual(soup['local_crt_invalidated_at_ny'], ny('11:05'))
         self.assertEqual(soup['local_crt_outcome'], 'failed_before_objectives')

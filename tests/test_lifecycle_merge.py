@@ -9,8 +9,8 @@ T=parse_time('2026-10-02T08:00:00-04:00')
 def source(same=False):
     b=[dict(time=T+i*300,open=100,high=110,low=90,close=100) for i in range(12)]
     b.extend([dict(time=T+3600,open=108,high=115,low=107,close=112),
-              dict(time=T+3900,open=112,high=116,low=106 if same else 110,close=107 if same else 111),
-              dict(time=T+4200,open=111,high=112,low=106,close=107)])
+              dict(time=T+3900,open=112,high=116,low=105 if same else 110,close=106 if same else 111),
+              dict(time=T+4200,open=111,high=112,low=105,close=106)])
     return b
 
 class MergedLifecycleTests(unittest.TestCase):

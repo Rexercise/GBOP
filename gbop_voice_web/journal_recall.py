@@ -1,5 +1,6 @@
 """Member-scoped journal recall and explicit private delivery, without AI writes."""
 import os
+import json
 from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.photo_recall import result_text
 
@@ -12,6 +13,20 @@ def history(db, guild_id, user_id, args):
         trades = conn.execute('SELECT id,status FROM theses WHERE guild_id=? AND user_id=? ORDER BY id', (guild_id, user_id)).fetchall()
         rows = conn.execute('SELECT * FROM journals WHERE guild_id=? AND user_id=? ORDER BY id DESC LIMIT ? OFFSET ?',
                             (guild_id, user_id, limit, offset)).fetchall()
+    # Existing deployments may still be initializing the optional detail table.
+    # A missing detail read never changes the member-owned base records.
+    metadata_by_id = {}
+    metadata_available = True
+    try:
+        with db() as conn:
+            selected_ids = [row['id'] for row in rows]
+            placeholders = ','.join('?' for _ in selected_ids)
+            details = conn.execute('SELECT journal_id,metadata FROM journal_details WHERE guild_id=? AND user_id=? '
+                                   + 'AND journal_id IN (' + placeholders + ')',
+                                   (guild_id, user_id, *selected_ids)).fetchall() if selected_ids else []
+        metadata_by_id = {r['journal_id']: json.loads(r['metadata'] or '{}') for r in details}
+    except Exception:
+        metadata_available = False
     numbers = {r['id']: n for n, r in enumerate(ids, 1)}
     trade_numbers = {r['id']: n for n, r in enumerate(trades, 1)}
     journals = []
@@ -20,10 +35,11 @@ def history(db, guild_id, user_id, args):
         journals.append(dict(journal_id=row['id'], journal_number=numbers[row['id']],
             trade_id=trade_numbers.get(row.get('thesis_id')), result_r=row.get('result_r'),
             rule_adherence=row.get('rule_adherence'), summary=row.get('description'),
-            study_note=row.get('study_note'), created_at=row.get('created_at')))
+            study_note=row.get('study_note'), created_at=row.get('created_at'),
+            metadata=metadata_by_id.get(row['id'], {})))
     total = len(ids)
     open_count = sum(r['status'] == 'OPEN' for r in trades)
-    return dict(ok=True, journals=journals, journal_count=total, trade_count=len(trades),
+    return dict(ok=True, journals=journals, metadata_available=metadata_available, journal_count=total, trade_count=len(trades),
                 open_trade_count=open_count, closed_trade_count=sum(r['status'] == 'CLOSED' for r in trades),
                 has_more=offset + len(rows) < total, next_offset=offset + len(rows),
                 identity_scope='Authenticated Discord account only; another login may have different records.')
@@ -42,6 +58,16 @@ def messages(result):
                  + '\nEntry: ' + str(row['summary'] or 'Not specified')
                  + '\nAdherence: ' + str(row['rule_adherence'] or 'Not specified')
                  + '\nStudy note: ' + str(row['study_note'] or 'Not specified'))
+        meta = row.get('metadata') or {}
+        if meta.get('reported_entry_at'):
+            value += '\nReported entry: ' + meta['reported_entry_at']
+        if meta.get('reported_exit_at'):
+            value += '\nReported exit: ' + meta['reported_exit_at']
+        if meta.get('reported_outcome'):
+            value += '\nReported outcome: ' + meta['reported_outcome']
+        scope = (meta.get('market_review') or {}).get('selection') or {}
+        if scope:
+            value += '\nReviewed scope: ' + ' · '.join(str(scope[k]) for k in ('asset','date_ny','shift','anchor_start_ny') if scope.get(k))
         output.extend(value[n:n+1800] for n in range(0, len(value), 1800))
     if result['has_more']:
         output.append('More entries are available. Ask for the next page of your journal.')

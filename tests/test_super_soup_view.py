@@ -39,8 +39,8 @@ class SuperSoupViewTests(unittest.TestCase):
         self.assertEqual(f['super_soup_structure']['structural_quality'],'not_clean')
         self.assertEqual(f['super_soup_structure']['parent_function_outcome'],'opposing_liquidity_delivered')
     def test_structural_facts_do_not_override_same_candle_csd_uncertainty(self):
-        f = first(review([(99,103,98,102),(102,104,98,98.5)]))
-        self.assertEqual(f['super_soup_structure']['structural_quality'],'clean')
+        f = first(review([(99,103,98,102),(102,104,97,97.5)]))
+        self.assertEqual(f['super_soup_structure']['structural_quality'],'not_clean')
         self.assertEqual(f['super_soup']['status'],'same_candle_as_csd_order_unresolved')
         self.assertNotIn('pre_csd',f['super_soup_structure'])
 

@@ -98,10 +98,10 @@ class SpokenObjectiveTests(unittest.TestCase):
         self.assertNotIn('M1', assigned['spoken_summary'])
         self.assertFalse(assigned['source_purge']['exact_tick_time_known'])
 
-    def test_super_soup_answers_own_delivery_then_invalidation_then_parent(self):
+    def test_body_purge_answers_own_delivery_then_invalidation_then_parent(self):
         result = review([MODEL, INVALID, LOCAL_TARGET], authoritative=True)
         text = result['candle_lifecycle']['performance_summary']
-        self.assertTrue(text.startswith('The Super Soup reached sell-side of the 10:00 AM M5 Model 1 candle'))
+        self.assertTrue(text.startswith('The Model 1 range purge reached sell-side of the 10:00 AM M5 Model 1 candle'))
         self.assertLess(text.index('sell-side of the 10:00 AM M5 Model 1 candle'), text.index('invalidated'))
         self.assertLess(text.index('invalidated'), text.index('sell-side of the 9:00 AM H1 range'))
         self.assertIn('does not restore CRT validity', text)

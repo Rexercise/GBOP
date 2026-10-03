@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from gbop_voice_web.journal_numbers import journal_number, journal_record_id
 from gbop_voice_web.trade_photos import init_photos, schema, STR, NUM
+from gbop_voice_web.journal_context import (REPORTED_KEYS, validate_reported, binding,
+    merge_metadata, journal_transaction, JournalTarget)
 
 COACH_PROMPT = """
 You are GTOP's GBOP — Greatest Bot on the Planet.
@@ -47,6 +49,19 @@ repeatedly, reports chasing/recovery/boredom, or asks whether to keep trading.
 Offer a brief check-in based on measured facts and their own plan. Never block saving.
 Only the owner may use get_community_review for community-wide aggregates.
 Weekly reviews are available on request; do not claim scheduled delivery exists.
+When a member says 'that was my trade' after a market review, use
+market_reference=selected_review (selected_candle for 'entered this candle').
+The server supplies its exact verified scope and rejects unresolved candle identity.
+Use save_journal_entry for a completed reported trade even when no risk, fills or R
+were given; do not open an invented execution just to journal it. Set kind=trade
+only for a real member-reported trade. Preserve stated entry/exit times as
+reported_entry_at/reported_exit_at (date plus timezone), separate from logging time.
+'Entered this candle' identifies a candle interval, not an exact fill timestamp.
+Ask only for missing essentials or an ambiguous candle/trade. Do not ask again for
+verified asset/date/shift/range. A stopout does NOT imply -1R; unknown R stays null.
+Market objective delivery does NOT establish a winning personal trade or any fill.
+For corrections use save_journal_entry with the displayed journal_number; preserve
+unchanged source facts and pass the member's correction with provenance.
 """
 
 SCHEMA_SQL = [
@@ -91,7 +106,7 @@ def allowed(db, guild, user):
 
 META_KEYS = {'transcription','uncertainties','asset','direction','play','entry_model','tier',
              'session','trade_date','entry_price','exit_price','stop_price','target_price',
-             'pnl','risk','exit_reason','emotion','labels','kind','adherence'}
+             'pnl','risk','exit_reason','emotion','labels','kind','adherence'} | REPORTED_KEYS
 
 
 def clean_metadata(value):
@@ -100,6 +115,7 @@ def clean_metadata(value):
         raise ValueError('Metadata must be an object using the documented keys.')
     if len(json.dumps(meta)) > 24000:
         raise ValueError('Please split long journal pages into smaller entries.')
+    validate_reported(meta)
     if meta.get('kind') not in (None,'trade','study','reflection'):
         raise ValueError('kind must be trade, study, or reflection.')
     if meta.get('tier') not in (None,1,2,3):
@@ -127,13 +143,17 @@ def save_entry(db,guild,user,args):
         return {'ok':False,'error':'entry_index must start at 1.'}
     photo_id = args.get('photo_id')
     requested_number = args.get('journal_number')
-    record_id = journal_record_id(db,guild,user,requested_number) if requested_number is not None else None
+    target = args.get('_journal_target')
+    if target is not None:
+        if not isinstance(target, JournalTarget) or (target.guild, target.user) != (guild, user):
+            return {'ok':False,'error':'Journal target must come from the authenticated account lookup.'}
+        record_id = target.record_id
+    else:
+        record_id = journal_record_id(db,guild,user,requested_number) if requested_number is not None else None
     if requested_number is not None and record_id is None:
         return {'ok':False,'error':'Journal number not found in your account.'}
     init_coach(db)
-    with db() as conn:
-        # Serialize import retries across text and voice; never duplicate a page entry.
-        conn.execute('SELECT pg_advisory_xact_lock(?)', (user,))
+    with journal_transaction(db, args, guild, user, serialize=True) as conn:
         if photo_id:
             photo = conn.execute('SELECT id FROM trade_photos WHERE id=? AND guild_id=? AND user_id=?',
                                  (photo_id,guild,user)).fetchone()
@@ -151,8 +171,15 @@ def save_entry(db,guild,user,args):
             return {'ok':False,'error':'Journal no longer exists. Refresh history.'}
         details = conn.execute('SELECT * FROM journal_details WHERE journal_id=? AND guild_id=? AND user_id=?',
                                (record_id,guild,user)).fetchone() if old else None
-        merged = json.loads(details['metadata']) if details else {}
-        merged.update(meta)
+        previous = json.loads(details['metadata']) if details else {}
+        context = binding(args)
+        merged = merge_metadata(previous, meta, context.snapshot() if context and not old else None,
+            result_changed=bool(old and (args.get('clear_result') or result is not None and result != old['result_r'])),
+            result_before=old['result_r'] if old else None,
+            result_after=None if args.get('clear_result') else result,
+            text_changes={key: {'before': (old[key] or '')[:500], 'after': args[key][:500]}
+                for key in ('description', 'rule_adherence', 'study_note') if old and args.get(key) is not None
+                and (old[key] or '') != args[key]})
         description = args.get('description') if args.get('description') is not None else (old['description'] if old else '')
         if not description or not description.strip():
             return {'ok':False,'error':'No readable journal details. Ask for a clearer picture or description.'}
@@ -166,6 +193,9 @@ def save_entry(db,guild,user,args):
         if old:
             conn.execute('UPDATE journals SET description=?,rule_adherence=?,result_r=?,study_note=? WHERE id=? AND guild_id=? AND user_id=?',
                          values+(record_id,guild,user))
+            if old['thesis_id']:
+                conn.execute('UPDATE theses SET final_result_r=?,close_note=? WHERE id=? AND guild_id=? AND user_id=?',
+                             (result,description,old['thesis_id'],guild,user))
         else:
             cur = conn.execute('INSERT INTO journals (description,rule_adherence,result_r,study_note,guild_id,user_id,created_at) VALUES (?,?,?,?,?,?,?)',
                                values+(guild,user,stamp()))
@@ -201,7 +231,7 @@ def journal_rows(db,guild,user):
         for key in ('asset','play','session'):
             m.setdefault(key,r.get(key))
         # Imported pages with no date must not look like today's trading.
-        m.setdefault('trade_date',None if r.get('photo_id') else r['created_at'][:10])
+        m.setdefault('trade_date', None)  # Logging day never proves the actual trading day.
         r.update(journal_number=number,metadata=m)
         output.append(r)
     return output
@@ -218,7 +248,8 @@ def find_setups(db,guild,user,args):
             continue
         if args.get('query') and args['query'].casefold() not in (r['description']+' '+json.dumps(m)).casefold():
             continue
-        found.append({k:r.get(k) for k in ('journal_number','description','result_r','rule_adherence','study_note','metadata','photo_id')})
+        found.append({**{k:r.get(k) for k in ('journal_number','description','result_r','rule_adherence','study_note','photo_id')},
+                      'metadata':m})
     offset=max(0,int(args.get('offset') or 0))
     return {'ok':True,'entries':found[offset:offset+10],'has_more':len(found)>offset+10,'next_offset':offset+10}
 
@@ -336,7 +367,7 @@ def community_review(db,guild,user,args):
 COACH_TOOLS=[
     schema('get_activity_check','Check recent execution counts and larger recorded risk after a loss against the member’s plan; no diagnosis.',{}),
     schema('get_community_review','Owner-only aggregate performance review; never available to regular members.',{'days':NUM,'group_by':STR}),
-    schema('save_journal_entry','Create or correct a journal without inventing a trade. Null fields preserve existing values. metadata_json is a JSON object with keys: '+', '.join(sorted(META_KEYS))+'. Prices, pnl, risk must be text with units; labels an array; tier integer; kind trade/study/reflection; adherence yes/no/partial/unknown; trade_date YYYY-MM-DD.',
+    schema('save_journal_entry','Create or correct a journal without inventing a trade. Null fields preserve existing values. metadata_json is a JSON object with keys: '+', '.join(sorted(META_KEYS))+'. Prices, pnl, risk must be text with units; labels an array; tier integer; kind trade/study/reflection; adherence yes/no/partial/unknown; trade_date YYYY-MM-DD; reported_entry_at/reported_exit_at ISO timestamps with timezone; reported_outcome stopped_out/win/loss/breakeven/open/unknown.',
            {'journal_number':NUM,'photo_id':STR,'entry_index':NUM,'description':STR,'rule_adherence':STR,
             'result_r':{'type':['number','null']},'clear_result':{'type':['boolean','null']},'study_note':STR,'metadata_json':STR}),
     schema('find_journal_setups','Search private journal examples, handwritten transcripts and labels; returns up to ten.',

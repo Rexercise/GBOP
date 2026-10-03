@@ -16,11 +16,13 @@ import time
 from collections import OrderedDict
 from uuid import uuid4
 from zoneinfo import ZoneInfo
+from gbop_voice_web.journal_context import WRITE_TOOLS, JournalBinding, reference_intent, review_snapshot
+from gbop_voice_web.current_market import is_current_request, current_request_args
 
 NY = ZoneInfo('America/New_York')
 SHIFT_TOOLS = {'review_market_session', 'get_prepared_market_brief'}
 SCOPED_TOOLS = SHIFT_TOOLS | {'list_market_shifts', 'review_market_crt',
-                              'review_market_smt', 'inspect_market_candles'}
+                              'review_market_smt', 'inspect_market_candles', 'review_current_market'}
 DETAIL_SCOPE_KEYS = ('asset', 'anchor_start_ny', 'anchor_timeframe', 'through_ny')
 DETAIL_NULL_ARGS = ('confirmation_timeframe', 'blessed_thief_timeframe',
                     'blessed_thief_from_ny', 'detail_candle_start_ny', 'detail_from_ny')
@@ -30,7 +32,28 @@ def contextual_tools(tools):
     """Copy schemas so global market/watch tools and nonconversation users stay intact."""
     result = deepcopy(tools)
     for tool in result:
+        if tool.get('name') in WRITE_TOOLS:
+            params = tool['parameters']
+            params['properties']['market_reference'] = {'type': ['string', 'null'], 'enum': ['selected_review', 'selected_candle', 'none', None]}
+            params['required'].append('market_reference')
+            tool['description'] += (' Use market_reference=selected_review only when the member identifies their trade '
+                'with the market review just discussed; selected_candle for an entry on this/that candle; none for an unrelated journal. The server binds '
+                'verified scope and candle facts. Never copy market delivery into a member result. '
+                'A candle interval is not an exact execution timestamp. Unknown R stays null.')
+            if tool['name'] in {'open_trade', 'close_trade'}:
+                for key in ('reported_entry_at', 'reported_exit_at', 'reported_outcome'):
+                    params['properties'][key] = {'type': ['string', 'null']}
+                    params['required'].append(key)
+                tool['description'] += (' Reported entry/exit timestamps require a date and explicit timezone; '
+                    'leave unknown timestamps null. reported_outcome: stopped_out, win, loss, breakeven, open, unknown.')
         if tool.get('name') not in SCOPED_TOOLS:
+            continue
+        if tool['name'] == 'review_current_market':
+            tool['parameters']['properties']['context_action'] = {
+                'type': 'string', 'enum': ['continue', 'switch', 'latest', 'last_night']}
+            tool['parameters']['required'].append('context_action')
+            # This explicit current read owns refresh; it never resolves a
+            # latest completed shift or borrows an old cutoff from arguments.
             continue
         tool['description'] += (' Keep the verified asset/date/shift on follow-ups: '
             'context_action=continue. An explicit H1 anchor or returned detail_request '
@@ -173,7 +196,7 @@ def _text_intent(text, selected, now):
     # Explicit range changes, not arbitrary prices/numbers in a question.
     anchor = re.search(r'\b(1[0-2]|0?[1-9])(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\s*(?:candle|range|anchor)\b', text)
     if anchor and (anchor[2] in (None, '00')) and not (
-            re.search(r'\b(?:model\s*(?:1|one)|super\s*soup|csd|m(?:1|5|15|30))\b', text)
+            re.search(r'\b(?:model\s*(?:1|one)|super\s*soup|ci?sd|m(?:1|5|15|30))\b', text)
             and not re.search(r'\b(?:range|anchor|h1)\b', text)):
         day_value = fields.get('date_ny') or (selected or {}).get('date_ny')
         if day_value:
@@ -205,7 +228,7 @@ def _text_intent(text, selected, now):
 def _detail_intent(text, previous=None):
     """Only actual current user text; audio callers must not synthesize a transcript."""
     text = text.lower().strip()
-    terms = r'(?:model\s*(?:1|one)|super\s*soup|csd|wick(?:[ -]soup)?|body[ -](?:soup|purge))'
+    terms = r'(?:model\s*(?:1|one)|super\s*soup|ci?sd|wick(?:[ -]soup)?|body[ -](?:soup|purge))'
     if (re.search(r'\b(?:define|definition|meaning of|explain the concept)\b', text)
             or re.search(r'\bwhat (?:is|are) (?:a |an |the )?' + terms + r'\s*[?.!]*$', text)
             or re.search(r'\bwhat does ' + terms + r' mean\b', text)
@@ -215,7 +238,7 @@ def _detail_intent(text, previous=None):
         return None
     purpose = next((purpose for pattern, purpose in (
         (r'\bsuper\s*soup\b', 'super_soup'),
-        (r'\bcsd\b|change (?:in|of) state of delivery', 'csd'),
+        (r'\bci?sd\b|change (?:in|of) state of delivery', 'csd'),
         (r'\bmodel\s*(?:1|one)\b', 'model1'),
         (r'\b(?:wick|body)[ -](?:soup|purge)\b|\bwick or body\b', 'purge_identity'),
         (r'(?:how (?:far|close)|distance|points away|distance-to).*(?:midpoint|50%|target|objective|opposing liquidity|buy[ -]side|sell[ -]side)', 'objective_distance'),
@@ -299,7 +322,8 @@ def _detail_index(result):
 
 
 class MarketConversation:
-    def __init__(self, owner=None):
+    def __init__(self, owner=None, auth_provider=None):
+        self.auth_provider = auth_provider
         self.owner = owner  # Set only by authenticated entry points; never tool arguments.
         self.session_id = uuid4().hex
         self.generation = 0
@@ -312,23 +336,60 @@ class MarketConversation:
         self.intent = None
         self.detail_focus = None
         self._required_detail = None
+        self._required_current = False
+        self._current_result = None
+        self._current_result_generation = -1
+        self._turn_now = None
         self._detail_retrieved_generation = -1
         self._detail_index = []
         self._lock = threading.RLock()
+        self._journal_write_lock = threading.Lock()
+        self._journal_review = None
+        self._journal_reference = False
+        self._journal_candle_reference = False
+        self._journal_results = {}
+        self._auth_revision = None
+
+    def bind_auth(self, db, guild, user):
+        from gbop_voice_web.journal_context import member_revision
+        with db() as conn:
+            revision = member_revision(conn, guild, user)
+        with self._lock:
+            if self.closed or not self.owner or tuple(self.owner[:2]) != (guild, user):
+                raise ValueError('The market conversation does not belong to this authenticated member.')
+            if self._auth_revision is not None and self._auth_revision != revision:
+                self.invalidate()
+                self.selected = self.requested = self.evidence = self._journal_review = None
+                self._detail_index = []
+                self.session_id = uuid4().hex
+            self._auth_revision = revision
 
     def begin_turn(self, text=None, *, now=None, client_turn=None):
+        from gbop_voice_web.journal_context import journal_correction_intent
         with self._lock:
             if self.closed:
                 return None
             if client_turn is not None and client_turn < self.client_turn:
                 return None
+            if client_turn is not None and client_turn == self.client_turn and self.generation and getattr(self, '_client_text', None) == text:
+                return self.generation
             if client_turn is not None:
                 self.client_turn = client_turn
+            self._client_text = text
+            self._turn_now = time.time() if now is None else now
             self.generation += 1
+            self._current_result = None
+            self._journal_results = {}
             self.pending = None
             previous_scope = self.requested or self.selected or {}
-            self.intent = (_text_intent(text, self.requested or self.selected, time.time() if now is None else now)
+            correction = journal_correction_intent(text)
+            self.intent = ({'action': 'continue', 'fields': {}} if correction else
+                           _text_intent(text, self.requested or self.selected, self._turn_now)
                            if text is not None else None)
+            self._required_current = not correction and is_current_request(text)
+            if (not correction and text is not None and (self.selected or {}).get('review_mode') == 'current_market'
+                    and re.search(r'\b(?:recap|(?:whole|entire|completed) shift)\b', text.lower())):
+                self.intent['action'] = 'switch'
             if self.intent is not None and self.intent['fields']:
                 previous = self.requested or self.selected or {}
                 self.requested = {**previous, **self.intent['fields']}
@@ -340,9 +401,17 @@ class MarketConversation:
             scope_changed = any((self.requested or {}).get(k) != previous_scope.get(k)
                                 for k in ('asset', 'date_ny', 'shift', 'anchor_start_ny'))
             previous_focus = None if scope_changed else self.detail_focus
-            self._required_detail = (_detail_intent(text, previous_focus) if text is not None else None)
+            self._journal_reference = False if correction else reference_intent(text)
+            self._journal_candle_reference = bool(text and re.search(r'\b(?:this|that|the|same) candle\b', text.lower()))
+            self._required_detail = (_detail_intent(text, previous_focus)
+                if text is not None and not correction and not self._journal_reference and not self._required_current else None)
+            if self._required_current:
+                # A fresh current request must not bind a still-selected old
+                # snapshot if its new read fails or has not returned yet.
+                self.requested = {'asset': self.intent['fields'].get('asset') or previous_scope.get('asset'),
+                                  'review_mode': 'current_pending'}
             # A new topic or explicit switch must not inherit an old candle identity.
-            if text is not None:
+            if text is not None and not correction:
                 self.detail_focus = deepcopy(self._required_detail)
             return self.generation
 
@@ -351,6 +420,15 @@ class MarketConversation:
         # Audio begin_turn(None) has no transcript; its routing remains model-dependent.
         from gbop_voice_web.candle_evidence import parse_time
         with self._lock:
+            if not self.closed and self._required_current and self._current_result_generation != self.generation:
+                base = {'tool': 'review_current_market', 'query_purpose': 'current_market'}
+                try:
+                    args = current_request_args(self._client_text, (self.intent or {}).get('fields', {}),
+                                                self.selected, self._turn_now)
+                    return {**base, 'args': {**args, 'context_action': 'switch'}, 'status': 'ready'}
+                except (ValueError, TypeError, KeyError):
+                    return {**base, 'args': None, 'status': 'current_market_scope_required',
+                            'error': 'Specify one market and, for a custom/higher-timeframe range, its chart opening and timeframe.'}
             if self.closed or self._required_detail is None:
                 return None
             focus = deepcopy(self._required_detail)
@@ -369,10 +447,16 @@ class MarketConversation:
             return unresolved('Clarify the requested range before retrieving focused candle evidence.')
         if target.get('asset') and target.get('date_ny') and target.get('shift'):
             target = {**_selection(target['asset'], target['date_ny'], target['shift']), **target}
+        if target.get('review_mode') == 'current_market' and not target.get('through_ny'):
+            return unresolved('No usable current snapshot cutoff was established. Request a fresh current read before detail or linked journaling.')
         if not all(target.get(k) for k in DETAIL_SCOPE_KEYS):
             return unresolved('Which asset, New York date and range should I inspect? No exact prior scope is established.')
         try:
             lo, hi = parse_time(target['anchor_start_ny']), parse_time(target['through_ny'])
+            if target.get('review_mode') == 'current_market':
+                from gbop_voice_web.candle_evidence import next_boundary
+                if next_boundary(lo, target['anchor_timeframe']) > hi:
+                    return unresolved('The selected range was still forming at the frozen snapshot. Its reference and confirmation are unverified; request a new current read to refresh.')
             if 'candle_clock' in focus:
                 hour, minute, suffix = focus.pop('candle_clock')
                 if suffix:
@@ -408,7 +492,7 @@ class MarketConversation:
                 candidates = [row for row in candidates if row['anchor_start_ny'] == target['anchor_start_ny']]
             anchors = {row['anchor_start_ny'] for row in candidates}
             if len(anchors) > 1:
-                return unresolved('That candle or direction belongs to multiple parent ranges. Which range do you mean?')
+                return unresolved('That candle or direction belongs to multiple selected ranges. Which range do you mean?')
             if not exact and len({row['bar_open_ny'] for row in candidates}) > 1:
                 return unresolved('Several candles match that direction in the selected range. Which candle opening do you mean?')
             if focus.get('require_other_identity') and not exact and not candidates:
@@ -419,6 +503,8 @@ class MarketConversation:
                     focus['detail_candle_start_ny'] = candidates[0]['bar_open_ny']
             args = {key: target[key] for key in DETAIL_SCOPE_KEYS}
             args.update({key: focus.get(key) for key in DETAIL_NULL_ARGS})
+            if target.get('assigned_timeframe') and not args.get('confirmation_timeframe'):
+                args['confirmation_timeframe'] = target['assigned_timeframe']
             args['context_action'] = 'continue'
             return {**base, 'status': 'ready', 'args': args}
         except (ValueError, TypeError, KeyError, OverflowError):
@@ -434,6 +520,8 @@ class MarketConversation:
             self.pending = None
             self.intent = None
             self._required_detail = None
+            self._required_current = False
+            self._current_result = None
             self.detail_focus = None
 
     def advance_client_turn(self, client_turn):
@@ -460,7 +548,7 @@ class MarketConversation:
                 return ''
             snapshot = {'requested_context': self.requested, 'selection': self.selected,
                         'verified_evidence': self.evidence}
-            if self._required_detail is not None:
+            if self._required_detail is not None or self._required_current:
                 snapshot['required_evidence_request'] = self.required_evidence_request()
             if self.requested and self.requested != self.selected:
                 snapshot['warning'] = ('Requested context has no matching verified evidence yet. '
@@ -488,20 +576,126 @@ class MarketConversation:
         return {'ok': False, 'status': 'stale_market_context',
                 'error': 'This market request was cancelled or superseded; do not reuse its result.'}
 
+    def _run_journal(self, name, arguments, runner, ticket):
+        args = {key: value for key, value in dict(arguments).items() if not key.startswith('_')}
+        reference = args.pop('market_reference', None)
+        if reference not in (None, 'none', 'selected_review', 'selected_candle'):
+            return {'ok': False, 'error': 'Use market_reference selected_review, selected_candle, none, or null.'}
+        with self._journal_write_lock:
+            with self._lock:
+                if not self.current(ticket):
+                    return self._stale()
+                wants_review = self._journal_reference is True or (reference in {'selected_review', 'selected_candle'} and self._journal_reference is None)
+                existing_journal = name == 'edit_journal' or (name == 'save_journal_entry' and args.get('journal_number') is not None)
+                if existing_journal:
+                    wants_review = False  # Correct the existing record; never attach a different reviewed market.
+                if not existing_journal and reference in {'selected_review', 'selected_candle'} and self._journal_reference is False:
+                    return {'ok': False, 'status': 'journal_reference_required',
+                            'error': 'The current member turn does not identify this journal with the selected review. Use none for an unrelated record.'}
+                review = deepcopy(self._journal_review) if wants_review else None
+                if wants_review:
+                    if (not review or self.requested != self.selected or self.pending and self.pending != self.selected
+                            or review.get('scope_id') != (self.evidence or {}).get('scope_id')):
+                        return {'ok': False, 'status': 'journal_review_required',
+                                'error': 'Retrieve the exact requested market scope before linking this journal; the old review is not applicable.'}
+                    if (self._journal_candle_reference or reference == 'selected_candle') and review.get('candle_selection_required'):
+                        return {'ok': False, 'status': 'journal_candle_required',
+                                'error': 'Which candle opening and timeframe was your entry? Several or unverified candle identities remain in this review.'}
+                key = _digest({'tool': name, 'args': args, 'review': review})
+                if key in self._journal_results:
+                    return deepcopy(self._journal_results[key])
+                args['_journal_binding'] = JournalBinding(self, ticket, review)
+                self._journal_results[key] = {'ok': False, 'status': 'journal_outcome_uncertain',
+                    'error': 'This write was already started. Check saved journal/trade state before retrying; do not create a duplicate.'}
+            result = runner(name, args)
+            with self._lock:
+                if result.get('ok') and ticket == self.generation:
+                    self._journal_results[key] = deepcopy(result)
+                    self._journal_results = dict(list(self._journal_results.items())[-32:])
+            return result
+
+    def _run_current(self, arguments, runner, ticket):
+        """One explicit refresh; subsequent evidence/journals retain its cutoff."""
+        with self._lock:
+            if not self.current(ticket):
+                return self._stale()
+            if self._current_result_generation == ticket and self._current_result is not None:
+                return deepcopy(self._current_result)
+            if self._client_text is not None and not self._required_current:
+                return {'ok': False, 'status': 'current_refresh_requires_request',
+                        'error': 'Keep the selected review cutoff. A new current-market read requires an explicit current request.'}
+            request = self.required_evidence_request()
+            if request and request['tool'] == 'review_current_market':
+                if request['args'] is None:
+                    return {'ok': False, **request}
+                args = dict(request['args'])
+            else:  # Audio routing comes from the explicit tool, never fake ASR.
+                args = {k: arguments.get(k) for k in
+                        ('asset', 'anchor_start_ny', 'anchor_timeframe', 'confirmation_timeframe')}
+                args['asset'] = args.get('asset') or (self.selected or {}).get('asset')
+            args.pop('context_action', None)
+            try:
+                args['asset'] = _asset(args.get('asset'))
+            except ValueError as exc:
+                return {'ok': False, 'status': 'current_market_scope_required', 'error': str(exc)}
+            self.pending = {'asset': args['asset'], 'review_mode': 'current_pending'}
+        result = runner('review_current_market', args)
+        with self._lock:
+            if not self.current(ticket):
+                return self._stale()
+            if not result.get('ok'):
+                return result
+            review = result.get('review') or {}
+            scope = deepcopy(review.get('current_scope') or {})
+            from gbop_voice_web.candle_evidence import parse_time, timeframe
+            try:
+                explicit_mismatch = (args.get('anchor_start_ny') and
+                    parse_time(args['anchor_start_ny']) != parse_time(scope.get('anchor_start_ny'))) or (
+                    args.get('anchor_timeframe') and timeframe(args['anchor_timeframe']) != timeframe(scope.get('anchor_timeframe')))
+            except (ValueError, TypeError):
+                explicit_mismatch = True
+            if (review.get('mode') != 'current_market' or scope.get('asset') != args['asset']
+                    or result.get('asset') != args['asset']
+                    or not scope.get('anchor_start_ny') or not scope.get('anchor_timeframe')
+                    or scope.get('anchor_start_ny') != (review.get('anchor') or {}).get('start_ny')
+                    or scope.get('review_mode') != 'current_market' or explicit_mismatch):
+                return {'ok': False, 'status': 'market_context_mismatch',
+                        'error': 'Current evidence does not match the requested market or verified range.'}
+            self.selected = self.requested = deepcopy(scope)
+            self.pending = deepcopy(scope)
+            self.detail_focus = None
+            self._detail_index = _detail_index(result)
+            self.evidence = self._evidence('review_current_market', result, scope)
+            self._journal_review = (review_snapshot(result, scope, self.evidence, None, self.session_id, ticket)
+                if scope.get('through_ny') and scope.get('evidence_status') != 'no_current_range_evidence' else None)
+            output = {**result, 'market_context': {'selection': deepcopy(scope), **self.evidence}}
+            self._current_result = deepcopy(output)
+            self._current_result_generation = ticket
+            return output
+
     def run(self, name, arguments, runner, *, generation=None):
         """Runner is the existing authenticated dispatcher, including catalogue reads.
 
         Only finished matching evidence can update selection. DB/model work is
         outside the lock; cancellation invalidates its ticket before it returns.
         """
+        if self.auth_provider:
+            try:
+                self.bind_auth(*self.auth_provider)
+            except ValueError as exc:
+                return {'ok': False, 'status': 'journal_auth_changed', 'error': str(exc)}
         with self._lock:
             ticket = self.generation if generation is None else generation
             if self.closed or ticket != self.generation:
                 return self._stale()
             active = deepcopy(self.pending or self.requested or self.selected)
             intent = deepcopy(self.intent)
+        if name in WRITE_TOOLS:
+            return self._run_journal(name, arguments, runner, ticket)
+        if name == 'review_current_market':
+            return self._run_current(arguments, runner, ticket)
         if name not in SCOPED_TOOLS:
-            return runner(name, arguments)
+            return runner(name, {key: value for key, value in arguments.items() if not key.startswith('_')})
         args = dict(arguments)
         required = self.required_evidence_request()
         with self._lock:
@@ -564,6 +758,14 @@ class MarketConversation:
             if not target.get('asset'):
                 raise ValueError('Which market should I review?')
             asset = _asset(target['asset'])
+            if target.get('review_mode') == 'current_market':
+                if name in SHIFT_TOOLS and action == 'continue':
+                    return {'ok': False, 'status': 'selected_range_requires_detail',
+                            'expected_context': target,
+                            'error': 'Use the selected current snapshot or its exact detail request. A completed-shift recap requires an explicit historical/recap request.'}
+                if name in {'review_market_crt', 'review_market_smt', 'inspect_market_candles'} and not target.get('through_ny'):
+                    return {'ok': False, 'status': 'current_market_evidence_unavailable',
+                            'error': 'No usable current snapshot cutoff was established. Request a fresh current read before detail or linked journaling.'}
             if name == 'list_market_shifts' and action != 'latest':
                 result = runner(name, {'asset': asset, 'date_ny': target.get('date_ny')})
                 with self._lock:
@@ -596,6 +798,9 @@ class MarketConversation:
                 if (active and not (name in SHIFT_TOOLS and action == 'switch')
                         and all(target.get(k) == active.get(k) for k in ('asset', 'date_ny', 'shift'))):
                     canonical.update({k: active[k] for k in ('anchor_start_ny', 'anchor_timeframe', 'through_ny') if active.get(k)})
+                    if active.get('review_mode') == 'current_market':
+                        canonical.update({k: active[k] for k in ('through_ny', 'review_mode', 'as_of_ny',
+                            'assigned_timeframe', 'evidence_status') if k in active})
                 if action == 'switch':
                     for key in ('anchor_start_ny', 'anchor_timeframe', 'through_ny'):
                         if key in fields or (intent is None and name not in SHIFT_TOOLS and args.get(key)):
@@ -604,6 +809,9 @@ class MarketConversation:
             elif name not in SHIFT_TOOLS:
                 for key in ('anchor_start_ny', 'anchor_timeframe', 'through_ny'):
                     target[key] = target.get(key) or args.get(key)
+            if target.get('review_mode') == 'current_market' and not target.get('through_ny'):
+                return {'ok': False, 'status': 'current_market_evidence_unavailable',
+                        'error': 'No usable current snapshot cutoff was established. Request a fresh current read before detail or linked journaling.'}
             if (action == 'continue' and active and intent is None
                     and name in {'review_market_crt', 'review_market_smt'}):
                 try:
@@ -627,6 +835,13 @@ class MarketConversation:
                 for key in ('anchor_start_ny', 'anchor_timeframe', 'through_ny'):
                     if target.get(key):
                         args[key] = target[key]
+                if name == 'review_market_crt' and target.get('review_mode') == 'current_market' and target.get('assigned_timeframe'):
+                    from gbop_voice_web.candle_evidence import timeframe
+                    if (args.get('confirmation_timeframe') and
+                            timeframe(args['confirmation_timeframe']) != timeframe(target['assigned_timeframe'])):
+                        return {'ok': False, 'status': 'market_context_mismatch', 'expected_context': target,
+                                'error': 'Current review detail retains its assigned timeframe. Request an explicit new current range to change that mapping.'}
+                    args['confirmation_timeframe'] = target['assigned_timeframe']
             elif name == 'inspect_market_candles':
                 from gbop_voice_web.candle_evidence import parse_time
                 if (not (target.get('date_ny') and target.get('shift'))
@@ -699,6 +914,8 @@ class MarketConversation:
                     if previous_evidence and not self.evidence['range_outcomes']:
                         self.evidence['recap'] = deepcopy(previous_evidence['recap'])
                         self.evidence['range_outcomes'] = deepcopy(previous_evidence['range_outcomes'])
+                    self._journal_review = review_snapshot(result, target, self.evidence,
+                        self.detail_focus, self.session_id, ticket)
                     return {**result, 'market_context': {'selection': deepcopy(target), **self.evidence}}
                 return {**result, 'market_context': {'selection': deepcopy(target)}}
         except (ValueError, KeyError, TypeError) as exc:
@@ -710,7 +927,7 @@ class MarketConversation:
         if isinstance(review.get('review'), dict):
             review = review['review']  # Prepared brief payload wraps the full market result.
         story = review.get('shift_story') or {}
-        recap = story.get('recap') or review.get('shift_recap') or {}
+        recap = review.get('shift_synopsis') or story.get('recap') or review.get('shift_recap') or {}
         ranges = []
         for row in story.get('ranges', [])[:4]:
             ranges.append({key: deepcopy(row[key]) for key in
@@ -730,6 +947,14 @@ class MarketConversation:
             detail['events'] = list(events.values())
             detail['coverage_complete'] = (review.get('observation_coverage') or {}).get('complete')
             ranges = [detail]
+        if name == 'review_current_market':
+            ranges = [{k: deepcopy(row[k]) for k in ('anchor_start_ny', 'anchor_timeframe',
+                'assigned_timeframe', 'role', 'play', 'setup_status', 'direction', 'outcome',
+                'variant', 'midpoint', 'opposing_liquidity', 'invalidated_at_ny', 'coverage_complete') if k in row}
+                for row in review.get('ranges', [])[:5]]
+            recap = {'headline': 'Current market snapshot as of ' + str(review.get('as_of_ny')),
+                     'spoken_summary': 'Observed closed source bars through ' + str(review.get('observed_through_ny')) +
+                         '; forming ranges remain provisional.'}
         return {'scope_id': 'scope_' + _digest(target),
                 'evidence_id': 'evidence_' + _digest({'scope': target, 'review': review}),
                 'source_tool': name,

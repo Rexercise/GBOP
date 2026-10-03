@@ -59,6 +59,22 @@ trades are excluded from date-window reports. Dates use UTC for existing records
 handwritten dates are preserved as recorded. Weekly reviews are on request, not
 scheduled broadcasts. The model asks only for missing or ambiguous details.
 
+Conversational journals can retain the exact authenticated market review and
+selected candle when the member identifies it as their trade. Reported entry and
+exit timestamps stay separate from logging time; a candle interval is not an
+exact fill time. Unknown R remains unknown, including for a reported stop-out.
+Existing-journal corrections preserve their original association and record
+provenance. Current-market snapshots retain their original as-of/cutoff when
+carried into a journal. Normal recall returns a bounded factual summary; detailed
+source evidence stays saved, and full journal prose can be privately delivered.
+
+`review_current_market` handles on-demand current/pre-shift/in-shift/off-shift
+analysis separately from completed shift recaps. It exposes source precision,
+snapshot freshness and forming references; it never substitutes a completed
+historical shift or infers instantaneous tick action. Explicit chart anchors can
+use the existing supported timeframe mappings. Default shift recaps are short,
+with independent relevant Young Lefty context and named-range details on request.
+
 `journal_coach.init_coach` installs additive, idempotent tables. New tables have
 RLS enabled and no anon/authenticated grants: only the trusted backend accesses
 them, enforcing the guild/user identity supplied by the authenticated session.

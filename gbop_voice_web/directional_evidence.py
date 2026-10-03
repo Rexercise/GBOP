@@ -137,8 +137,10 @@ def candidate_lifecycle_card(fact):
         card['csd'] = {'status': 'not_a_model1_body_candle'}
         return card
     csd = fact.get('csd', {})
-    card['csd'] = _pick(csd, ('status', 'reference_level'))
+    card['csd'] = _pick(csd, ('status', 'reference_level', 'reference_boundary'))
     card['csd'].setdefault('status', 'not_assessed')
+    if csd.get('rule'):
+        card['csd']['rule'] = 'strict_full_extreme_close'
     if csd.get('evidence'):
         card['csd']['candle'] = _interval(csd['evidence'])
         card['csd']['confirmed_at_ny'] = csd['evidence'].get('confirmed_at_ny',

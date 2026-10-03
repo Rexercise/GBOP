@@ -91,14 +91,14 @@ class NamedHourlyRecapTests(unittest.TestCase):
 
     def test_prompt_contracts_answer_first_recheck_and_qualify_smt(self):
         for prompt in (MARKET_PROMPT, LIVE_MARKET_PROMPT):
-            self.assertIn('hourly_crt_summary', prompt)
-            self.assertIn('range_summaries', prompt)
+            self.assertIn('shift_synopsis.spoken_summary', prompt)
+            self.assertIn('SHORT', prompt)
             self.assertIn('recheck', prompt)
             self.assertIn('disputed', prompt)
             self.assertIn('setup_interval.qualified_smt', prompt)
             self.assertIn('both bones', prompt)
-        self.assertIn('supported variants in the initial answer', MARKET_PROMPT)
-        self.assertIn('Incomplete/cutoff is not', MARKET_PROMPT)
+        self.assertIn('variant established/pending', MARKET_PROMPT)
+        self.assertIn('Forming/missing is unverified', MARKET_PROMPT)
         self.assertIn('minute asynchrony', LIFECYCLE_PROMPT)
 
     def test_same_hour_or_forming_smt_is_not_alerted(self):

@@ -12,7 +12,8 @@ LIFECYCLE_PROMPT = """
 Name every objective by buy-side, sell-side or 50% of the selected range, with
 its opening/timeframe FIRST; optional price follows as this provider's quote.
 Broker prices differ. Never use a naked number as the objective's identity.
-Nested objectives name the specific Model 1 candle/timeframe, distinct from its parent.
+Own objectives name the Model 1 candle/timeframe; other objectives name the selected range.
+Parent/child CRT is only for requested fractal lineage, not a containment requirement.
 Use candle_lifecycle/recap.candle_timeline; legacy entry_confirmed=false and
 model1.csd_status=not_assessed never negate a verified candle identity.
 Give the specific assigned Model 1 OPENING time and timeframe FIRST, then the
@@ -23,9 +24,10 @@ Mappings: Monthly->Daily, Weekly->H4, Daily->H1, H4->M15, H1->M5; honor verified
 overrides/CBDR6h->M30. Preserve fine source detail; timestamps identify bars, not ticks.
 Say 'the closure of the 10 o’clock candle'. Give the closing timestamp only when requested.
 For 'did Super Soup perform?', lead with its performance_summary: own Model 1
-buy/sell-side or 50% delivery and timing versus local invalidation, THEN parent
+buy/sell-side or 50% delivery and timing versus local invalidation, THEN selected-range
 objectives. Clean structure is not a win; later delivery cannot restore CRT validity.
-Keep formation, CSD, retests, execution and parent invalidation distinct.
+Keep formation, CSD, retests, execution and selected-range invalidation distinct.
+CISD: assigned close strictly below full LOW bearish, above full HIGH bullish; never body open.
 Use paired_smt/paired_context for gold/silver, BTC/ETH and NAS100/SPX. Include
 qualified boneless_asset and each own objective_status BEFORE the overall verdict.
 Same setup-hour purges mean both bones: no boneless/SMT label or minute asynchrony

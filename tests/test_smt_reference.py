@@ -99,7 +99,7 @@ class ReferenceTests(unittest.TestCase):
     def test_direct_crt_path_includes_paired_identity(self):
         from gbop_voice_web.market_data import market_tool
         p = fixture(); by_asset = {item['asset']:item for item in p}
-        def feed(db, asset):
+        def feed(db, asset, now=None):
             return dict(ok=True,asset=asset,symbol=asset)
         def history(db, item, start, end):
             return by_asset[item['asset']]['bars'],300

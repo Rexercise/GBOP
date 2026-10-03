@@ -10,7 +10,7 @@ import unittest
 from gbop_voice_web import market_data as market
 from gbop_voice_web.market_conversation import MarketConversation
 from gbop_voice_web.market_status import broker_session_status, feed_health
-from gbop_voice_web.voice_payload import voice_tool_payload
+from gbop_voice_web.voice_payload import voice_tool_payload, shift_voice_overview
 from gbop_voice_web.voice_runtime import compact_voice_tool_result
 import test_retained_market_replays as retained
 from test_voice_payload_budget import expanded, identities
@@ -26,7 +26,7 @@ class VoiceContextPayloadTests(unittest.TestCase):
         market.read_feed.side_effect = self.feed
         self.context = MarketConversation()
 
-    def feed(self, db, asset):
+    def feed(self, db, asset, now=None):
         # Realistic live envelope matters: the old budget tests only attached
         # opaque padding, not the repeated verified evidence returned in use.
         bid, ask = {'NAS100': (30826.84, 30827.96), 'SPX': (7726.73, 7727.13),
@@ -49,7 +49,8 @@ class VoiceContextPayloadTests(unittest.TestCase):
     def voice(self, name, raw, *, success=True):
         saved = deepcopy(raw)
         retained = deepcopy(self.context.evidence)
-        page = voice_tool_payload(name, raw)
+        page = (shift_voice_overview(raw) if name == 'review_market_session'
+                else voice_tool_payload(name, raw))
         self.assertEqual(raw, saved)
         self.assertEqual(self.context.evidence, retained)
         self.assertLessEqual(len(json.dumps(page, separators=(',', ':'))), 32000)
@@ -84,7 +85,9 @@ class VoiceContextPayloadTests(unittest.TestCase):
             with self.subTest(asset=asset):
                 self.context = MarketConversation()
                 raw, wire, page = self.full(asset)
-                self.assertGreater(len(json.dumps(raw['market_context'])), 5000)
+                self.assertEqual(raw['market_context']['recap']['spoken_summary'],
+                                 raw['review']['shift_synopsis']['spoken_summary'])
+                self.assertTrue(raw['market_context']['range_outcomes'])
                 for actual, source in zip(page['review']['shift_story']['ranges'],
                                           raw['review']['shift_story']['ranges']):
                     for key in ('anchor_start_ny', 'role', 'status', 'direction_observed', 'invalidated_at_ny'):
@@ -113,8 +116,8 @@ class VoiceContextPayloadTests(unittest.TestCase):
         full_card = compact_voice_tool_result('review_market_crt', raw)['review']['candle_lifecycle']['purge_candles'][0]
         self.assertEqual(card, full_card)
         self.assertEqual(card['bar_open_ny'], ny('10:00'))
-        self.assertEqual(card['csd']['evidence']['bar_open_ny'], ny('10:50'))
-        self.assertEqual(card['csd']['evidence']['bar_close_ny'], ny('10:55'))
+        self.assertEqual(card['csd']['evidence']['bar_open_ny'], ny('11:00'))
+        self.assertEqual(card['csd']['evidence']['bar_close_ny'], ny('11:05'))
         local = card['super_soup_structure']
         self.assertEqual(local['local_crt_invalidated_at_ny'], ny('10:20'))
         self.assertEqual(local['local_function_objectives']['midpoint']['evidence']['bar_open_ny'], ny('10:10'))

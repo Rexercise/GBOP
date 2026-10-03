@@ -21,7 +21,7 @@ class DirectionalCandidateEvidenceTests(unittest.TestCase):
         fixture = json.loads((Path(__file__).parent / 'fixtures/market_replays/friday_2026_10_02_m1.json').read_text())
         bars = {item['asset']: [dict(zip(('time', 'open', 'high', 'low', 'close'), row))
                                for row in item['candles']] for item in fixture['instruments']}
-        with patch.object(market, 'read_feed', side_effect=lambda db, asset: dict(
+        with patch.object(market, 'read_feed', side_effect=lambda db, asset, now=None: dict(
                 ok=True, asset=market.asset_name(asset), symbol=market.asset_name(asset), is_live=False)), \
              patch.object(market, 'history_bars', side_effect=lambda db, feed, *args: (bars[feed['asset']], 60)):
             cls.review = market.market_tool(None, 'review_market_crt', dict(
@@ -80,7 +80,7 @@ class DirectionalCandidateEvidenceTests(unittest.TestCase):
         card = self.evidence()['candidate_cards'][0]
         self.assertEqual(card['bar_open_ny'], ny('10:00'))
         csd, soup = card['csd'], card['super_soup']
-        self.assertEqual((csd['candle']['bar_open_ny'], csd['confirmed_at_ny']), (ny('10:50'), ny('10:55')))
+        self.assertEqual((csd['candle']['bar_open_ny'], csd['confirmed_at_ny']), (ny('11:00'), ny('11:05')))
         self.assertEqual((soup['candle']['bar_open_ny'], soup['structure_known_at_ny']), (ny('10:05'), ny('10:10')))
         self.assertEqual(soup['pre_csd_status'], 'observed_before_csd')
         self.assertEqual(soup['structural_quality'], 'clean')
@@ -117,7 +117,9 @@ class DirectionalCandidateEvidenceTests(unittest.TestCase):
         card = evidence['candidate_cards'][0]
         self.assertEqual(card['bar_open_ny'], ny('11:15'))
         self.assertEqual(card['super_soup']['parent_function_outcome'], 'pending_at_cutoff')
-        self.assertEqual(card['super_soup']['return_candle']['bar_open_ny'], ny('11:25'))
+        self.assertEqual(card['super_soup']['return_candle']['bar_open_ny'], ny('11:30'))
+        self.assertEqual(card['super_soup']['structural_quality'], 'not_clean')
+        self.assertEqual(card['csd']['confirmed_at_ny'], ny('12:00'))
         self.assertEqual(card['super_soup']['candle']['bar_open_ny'], ny('11:20'))
 
     def test_unavailable_focus_never_selects_a_different_identity(self):

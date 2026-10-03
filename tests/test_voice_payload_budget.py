@@ -3,7 +3,7 @@ from copy import deepcopy
 import json
 import unittest
 
-from gbop_voice_web.voice_payload import voice_tool_payload, SHIFT_OVERVIEW_TARGET_CHARS
+from gbop_voice_web.voice_payload import voice_tool_payload, shift_voice_overview, SHIFT_OVERVIEW_TARGET_CHARS
 from gbop_voice_web.voice_runtime import compact_voice_tool_result
 from gbop_voice_web.market_conversation import MarketConversation
 import test_retained_market_replays as retained
@@ -57,7 +57,7 @@ class VoicePayloadBudgetTests(unittest.TestCase):
                 'asset': source['asset'], 'date_ny': source['review']['date_ny'],
                 'shift': source['review']['shift']}, lambda name, args: source)
         saved = deepcopy(source)
-        overview = voice_tool_payload('review_market_session', source)
+        overview = shift_voice_overview(source)
         self.assertEqual(source, saved)
         self.assertTrue(overview['ok'], overview)
         self.assertLessEqual(encoded_size(overview), SHIFT_OVERVIEW_TARGET_CHARS)
@@ -172,7 +172,7 @@ class VoicePayloadBudgetTests(unittest.TestCase):
         self.assertEqual(soup['pre_csd_status'], 'observed_before_csd')
         self.assertEqual(soup['candle']['bar_open_ny'], '2026-10-02T10:05:00-04:00')
         self.assertEqual(soup['structure_known_at_ny'], '2026-10-02T10:10:00-04:00')
-        self.assertEqual(card['csd']['candle']['bar_open_ny'], '2026-10-02T10:50:00-04:00')
+        self.assertEqual(card['csd']['candle']['bar_open_ny'], '2026-10-02T11:00:00-04:00')
         self.assertEqual(soup['local_crt_invalidated_at_ny'], '2026-10-02T10:20:00-04:00')
         self.assertEqual(soup['local_function_outcome'], 'opposing_liquidity_delivered')
         self.assertEqual(soup['parent_function_outcome'], 'opposing_liquidity_delivered')
@@ -188,7 +188,7 @@ class VoicePayloadBudgetTests(unittest.TestCase):
         source = replay.tool('NAS100')
         source['review']['shift_story']['recap']['spoken_summary'] += ' additional detail' * 5000
         source['market_context'] = {'selection': {'asset': 'NAS100', 'shift': 'day'}}
-        result = voice_tool_payload('review_market_session', source)
+        result = shift_voice_overview(source)
         self.assertFalse(result['ok'])
         self.assertEqual(result['status'], 'voice_overview_budget_exceeded')
         self.assertEqual(result['market_context'], source['market_context'])
@@ -202,7 +202,7 @@ class VoicePayloadBudgetTests(unittest.TestCase):
         for name, source in [
             ('inspect_market_candles', {'review': {'candles': [{'start_ny': str(i)} for i in range(8)]}}),
             ('review_market_session', {'ok': False, 'status': 'shift_unavailable'}),
-            ('get_journal_history', {'ok': True, 'entries': []})]:
+            ('get_trade_state', {'ok': True, 'entries': []})]:
             self.assertEqual(voice_tool_payload(name, source), compact_voice_tool_result(name, source))
 
 

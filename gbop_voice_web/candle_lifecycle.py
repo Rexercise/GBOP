@@ -1,13 +1,15 @@
 """Ordered GTOP candle facts, independent of a trader's orders or P/L.
 
-CSD uses the opposite edge of the ORIGINAL purge candle's real body (its open).
+CSD requires an assigned-timeframe close strictly beyond the ORIGINAL Model 1
+candle's full opposing extreme: below its low bearish, above its high bullish.
 Retests and later closes are named by the exact reference tested. They never
 silently become a member's stop or the parent range's invalidation rule.
 """
 from gbop_voice_web.candle_evidence import summarize, stamp, parse_time, next_boundary, timeframe, interval
 from gbop_voice_web.candle_naming import candle_label, closure_label, source_timeframe, objective_identity
+from gbop_voice_web import cisd_rule
 
-VERSION = 'candle-lifecycle-local-function-2026-10-03'
+VERSION = 'candle-lifecycle-full-extreme-2026-10-03'
 MAX_IDENTITIES = 32
 
 
@@ -72,37 +74,34 @@ def _objectives(bars, start, end, anchor, bearish, step, invalid_at, origin=None
 
 def _follow(candle, side, later, bars, anchor, end, step, invalid_at, tf):
     bearish = side == 'buy'
-    reference = candle['open']
+    confirmation = cisd_rule.reference(candle, bearish)
+    body_open = candle['open']
     extreme = candle['high'] if bearish else candle['low']
     body_far_edge = candle['close']
     origin_end = parse_time(candle['end_ny'])
     csd, soup, retest, disrespect, breach = None, None, None, None, None
-    first_soup_purge, gap_at = None, None
+    gap_at = None
     ambiguous_soup = None
     for row in later:
         if not row['complete']:
             gap_at = row['start_ny']
             break
-        confirms = row['close'] < reference if bearish else row['close'] > reference
+        confirms = cisd_rule.confirms(row, candle, bearish)
         swept = row['high'] > extreme if bearish else row['low'] < extreme
         if csd is None:
-            if swept and first_soup_purge is None:
-                first_soup_purge = _fact(row)
-            returned = candle['low'] <= row['close'] <= candle['high']
-            if first_soup_purge and returned and soup is None and ambiguous_soup is None:
-                event = {'purge': first_soup_purge, 'return_candle': _fact(row),
-                         'level': extreme, 'timeframe': tf}
-                if confirms:
-                    ambiguous_soup = event
-                else:
-                    soup = event
+            if cisd_rule.wick_soup(row, candle, bearish) and soup is None:
+                soup = {'purge': _fact(row), 'return_candle': _fact(row),
+                        'level': extreme, 'timeframe': tf}
             if confirms:
-                csd = {**_fact(row), 'reference_level': reference, 'timeframe': tf,
-                       'confirmed_at_ny': row['end_ny'], 'rule': 'close_through_original_body_open'}
+                if swept and soup is None:
+                    ambiguous_soup = {'purge': _fact(row), 'return_candle': None,
+                                      'level': extreme, 'timeframe': tf}
+                csd = {**_fact(row), **confirmation, 'timeframe': tf,
+                       'confirmed_at_ny': row['end_ny']}
         else:
             # A touch on the confirmation candle itself is not a later retest.
-            if retest is None and row['low'] <= reference <= row['high']:
-                retest = {**_fact(row), 'level': reference, 'timeframe': tf}
+            if retest is None and row['low'] <= body_open <= row['high']:
+                retest = {**_fact(row), 'level': body_open, 'reference': 'Model 1 body open', 'timeframe': tf}
             if disrespect is None and (row['close'] > body_far_edge if bearish else row['close'] < body_far_edge):
                 disrespect = {**_fact(row), 'level': body_far_edge, 'timeframe': tf,
                               'rule': 'assigned_close_back_through_original_body_far_edge',
@@ -116,7 +115,7 @@ def _follow(candle, side, later, bars, anchor, end, step, invalid_at, tf):
         csd_status = 'not_observed_before_range_invalidation'
     if csd and invalid_at and parse_time(csd['confirmed_at_ny']) == invalid_at:
         csd_status = 'body_close_observed_at_range_invalidation'
-    return {'csd': {'status': csd_status, 'reference_level': reference, 'evidence': csd},
+    return {'csd': {'status': csd_status, **confirmation, 'evidence': csd},
             'super_soup': {'status': ('observed_before_csd' if soup else
                                       'same_candle_as_csd_order_unresolved' if ambiguous_soup else
                                       'not_observed_before_csd' if csd else unavailable),
@@ -139,10 +138,9 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
               'status': 'unverified_incomplete_anchor', 'execution_status': 'not_assessed',
               'range_invalidated_at_ny': stamp(invalid_at) if invalid_at else None,
               'next_identity_open_ny': None,
-              'response_contract': 'Name the candle and its wick/body type first. Then give CSD, Super Soup, '
-                  'reference retests, body closes, own objectives and parent-range invalidation separately. '
-                  'Unconfirmed is not nonexistent. Body-disrespect evidence uses its stated level, '
-                  'not an assumed stop. Missing data means unverified. Times are candle intervals, not ticks.'}
+              'response_contract': 'Name the wick/body candle first; keep CSD, Soup, retests, '
+                  'own objectives and selected-range invalidation distinct. Unconfirmed is not absent. '
+                  'Body-disrespect is not a stopout. Gaps are unverified; times identify bars, not ticks.'}
     if not anchor.get('complete'):
         return result
     if not mapped:
@@ -212,14 +210,11 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
         f['model1_crt_invalidating_close'] = r['model1_crt_invalidating_close']
         if structure['structure_status'] == 'observed':
             structure['performance_summary'] = super_soup_performance_summary(f)
-    result['response_contract'] += (' Use super_soup_structure for nested CRT cleanliness, '
-        'supported variants, local_crt_outcome, local_function_outcome and parent_function_outcome independently. '
-        'Clean formation can fail; an invalidated or unclean Model 1 can still deliver its own '
-        'opposing liquidity. local_function_objectives records that delivery and its timing '
-        'relative to Model 1 invalidation, without restoring CRT validity or clean structure. '
-        'The existing parent-range observation boundary still applies. '
-        'super_soup.status separately preserves pre-CSD ordering uncertainty. '
-        'The next candle may be an inside bar rather than an immediate soup.')
+    result['response_contract'] += (' super_soup_structure separates own-range cleanliness/variants, '
+        'local_crt_outcome, local_function_outcome and selected-range parent_function_outcome. '
+        'local_function_objectives preserves later delivery and timing versus Model 1 invalidation; '
+        'it never restores CRT validity or cleanliness. Stop at the selected-range cutoff. '
+        'super_soup.status governs pre-CSD ordering. Inside bars may precede Soup.')
     complete = all(row['complete'] for row in rows)
     result.update(identified_count=total, observation_complete=complete,
                   window_start_ny=stamp(start), window_end_ny=stamp(end))
@@ -249,13 +244,14 @@ def super_soup_performance_summary(body):
         if 'unresolved' in status or 'unverified' in status:
             return 'unverified because coverage or event order is unresolved'
         if 'invalidation' in status:
-            return 'not reached before parent-range invalidation'
+            return 'not reached before selected-range invalidation'
         return 'not reached by the review cutoff'
     def touch(target):
         event = target['evidence']
         return candle_label(event['bar_open_ny'], source_timeframe(event.get('precision_seconds')))
     if delivered:
-        text = f"The Super Soup reached {delivered['spoken_label']} in {touch(delivered)}"
+        event_name = 'Super Soup' if structure.get('occurrence_type') == 'pre_csd_wick_super_soup' else 'Model 1 range purge'
+        text = f"The {event_name} reached {delivered['spoken_label']} in {touch(delivered)}"
         timing = delivered['relative_to_model1_invalidation']
         if timing == 'after_model1_invalidation' and invalidation:
             text += f", after {invalidation} invalidated the Model 1 CRT"
@@ -267,7 +263,8 @@ def super_soup_performance_summary(body):
         if delivered is midpoint:
             text += f" Its full objective, {full['spoken_label']}, is {state(full)}."
     else:
-        text = f"The Super Soup's objective, {full['spoken_label']}, is {state(full)}."
+        event_name = 'Super Soup' if structure.get('occurrence_type') == 'pre_csd_wick_super_soup' else 'Model 1 range purge'
+        text = f"The {event_name}'s objective, {full['spoken_label']}, is {state(full)}."
         if invalidation:
             text += f" The Model 1 CRT invalidated on {invalidation}."
     if invalidation:
@@ -281,7 +278,7 @@ def super_soup_performance_summary(body):
     phit = pfull if pfull['status'] == 'observed_after_purge' else (
         pmid if pmid['status'] == 'observed_after_purge' else None)
     if structure['parent_function_outcome'] == 'unverified_parent_validity':
-        text += ' Parent-range validity and performance remain unverified.'
+        text += ' Selected-range validity and performance remain unverified.'
     elif phit:
         text += f" Separately, price reached {phit['spoken_label']} in {touch(phit)}."
         if phit is pmid:
@@ -305,7 +302,7 @@ def lifecycle_summary(result):
             parts.append(f"Its precise source purge is in {candle_label(source['bar_open_ny'], source_timeframe(body['source_resolution_seconds']))}.")
         csd = body['csd']
         if csd['status'] == 'confirmed':
-            parts.append(f"CSD confirmed on {closure_label(csd['evidence']['bar_open_ny'], body['timeframe'])} through its body reference, {csd['reference_level']}.")
+            parts.append(f"CSD confirmed on {closure_label(csd['evidence']['bar_open_ny'], body['timeframe'])} strictly {'below' if body['direction'] == 'bearish' else 'above'} the Model 1 full {csd['reference_boundary']}, {csd['reference_level']}.")
         elif csd['status'].startswith('not_observed'):
             parts.append('CSD was not observed in the reviewed window; the Model 1 candle still exists.')
         else:
@@ -315,7 +312,7 @@ def lifecycle_summary(result):
             quality = 'clean' if structure['structural_quality'] == 'clean' else 'not clean'
             variants = ', '.join(v['code'] for v in structure['variants'])
             when = closure_label(structure['event']['bar_open_ny'], body['timeframe'])
-            parts.append(f"The Model 1 nested CRT purge was identified on {when}; its structure was {quality}" +
+            parts.append(f"The purge of the Model 1 candle’s own range was identified on {when}; its structure was {quality}" +
                          (f", supporting {variants}." if variants else '.'))
             parts.append(structure['performance_summary'])
         if body['super_soup']['status'] == 'observed_before_csd':

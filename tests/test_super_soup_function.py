@@ -145,7 +145,7 @@ class SuperSoupFunctionTests(unittest.TestCase):
         body = first(result)
         summary = result['candle_lifecycle']['spoken_summary']
         self.assertIn('structure was not clean', summary)
-        self.assertIn('Super Soup reached sell-side of the 10:00 AM M5 Model 1 candle', summary)
+        self.assertIn('Model 1 range purge reached sell-side of the 10:00 AM M5 Model 1 candle', summary)
         self.assertIn('after the closure of the 10:05 AM M5 candle invalidated the Model 1 CRT', summary)
         self.assertIn('does not restore CRT validity', summary)
         self.assertIn('local_function_outcome', result['candle_lifecycle']['response_contract'])

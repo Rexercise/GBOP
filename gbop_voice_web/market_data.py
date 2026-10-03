@@ -9,6 +9,7 @@ from datetime import datetime, date, timezone, timedelta
 from zoneinfo import ZoneInfo
 from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.shift_review import review_shift
+from gbop_voice_web.shift_synopsis import build_shift_synopsis
 from gbop_voice_web.shift_availability import shift_bounds, assess_shift, choice, alternative_message
 from gbop_voice_web.candle_evidence import parse_time, stamp, candle_query, crt_review, summarize, next_boundary
 from gbop_voice_web.smt_evidence import compare_ranges
@@ -170,7 +171,9 @@ def read_feed(db, asset, now=None):
             'broker_session': broker_session_status(),
             'bid': payload['bid'], 'ask': payload['ask'], 'tick_time_utc': datetime.fromtimestamp(payload['tick_time'], timezone.utc).isoformat(),
             'tick_age_seconds': tick_age, 'capture_age_seconds': capture_age,
+            'captured_at_utc': datetime.fromtimestamp(row['captured_at'], timezone.utc).isoformat(),
             'received_at_utc': datetime.fromtimestamp(row['received_at'], timezone.utc).isoformat(),
+            'received_age_seconds': now - row['received_at'],
             'bars': payload['bars'], 'bars_m1': payload.get('bars_m1', [])}
 
 
@@ -233,14 +236,11 @@ def session_review(bars, day, shift, step=300):
         anchor = hour(anchor_h)
         result = {'play': play, 'anchor_hour_ny': anchor_h, 'execution_hour_ny': base + 9,
                   'status': 'insufficient_closed_candles', 'entry_confirmed': False}
-        if anchor and nine:
+        if anchor and nine and (play != 'Young Lefty' or hour(base + 8) is not None):
             high, low = anchor['high'], anchor['low']
             above, below = nine['high'] > high, nine['low'] < low
             outside = nine['close'] > high or nine['close'] < low
             intervening = hour(base + 8) if play == 'Young Lefty' else anchor
-            if intervening is None:
-                results.append(result)
-                continue
             invalid_before = intervening['close'] > high or intervening['close'] < low
             if outside or invalid_before:
                 status = 'invalidated_by_hourly_close'
@@ -280,13 +280,15 @@ def session_review(bars, day, shift, step=300):
         {'anchor_start_ny': row['anchor_start_ny'], 'summary': row['candle_lifecycle'].get('spoken_summary', ''),
          'evidence_ref': 'shift_story.ranges[].candle_lifecycle'}
         for row in story['ranges'] if row['role'] == 'selected_range']
-    return {'date_ny': day.isoformat(), 'shift': shift, 'timezone': 'America/New_York',
+    review = {'date_ny': day.isoformat(), 'shift': shift, 'timezone': 'America/New_York',
             'shift_story': story, 'observations': results,
             'source_resolution_seconds': step,
             'limits': 'Closed source candles aggregated to H1. Event times identify source bars, not ticks. '
                       'Use variant_evidence for H1 structure and candle_lifecycle for wick/body, CSD, Super Soup and reference retests. '
                       'Neither proves a member execution. paired_smt and paired_context evaluate relative behavior separately. '
                       'Missing/unfinished hours are not evidence of no setup.'}
+    review['shift_synopsis'] = build_shift_synopsis(review)
+    return review
 
 
 FRACTAL_NAMES = {'review_market_fractal', 'inspect_market_fractal_node'}
@@ -303,6 +305,9 @@ FRACTAL_ARGS = {
 }
 
 MARKET_TOOLS = [
+    schema('review_current_market', 'On demand for what do you see/now/current market questions. Uses actual NY time and latest received evidence, including pre-shift/forming/off-shift ranges; never substitutes a completed shift. Null anchor/timeframe uses current session references. For custom/higher timeframes provide both verified chart anchor and timeframe. No automatic fractal scan. Follow-up detail/journals retain returned cutoff; refresh only for a new current request.', {
+        'asset': {'type': 'string'}, 'anchor_start_ny': {'type': ['string', 'null']},
+        'anchor_timeframe': {'type': ['string', 'null']}, 'confirmation_timeframe': {'type': ['string', 'null']}}),
     schema('review_market_fractal', 'ON REQUEST ONLY for fractal thesis formation/deeper price analysis. Link assigned Model 1 candles as independent child CRTs, bounded Monthly->Daily->H1->M5 or Weekly->H4->M15. Never call automatically for ordinary shift recaps. Null depth uses one level; pages and node detail retain exact root scope.', {**FRACTAL_ARGS, 'max_depth': {'type': ['integer', 'null'], 'minimum': 0, 'maximum': 3}}),
     schema('inspect_market_fractal_node', 'Expand one evidenced CRT node on request, retaining root asset/anchor/timeframe/cutoff plus returned node_path, expected_node_id and expected_scope_id. Returns own CSD/Super Soup/objectives independently of parent failure. No mapping is invented below M5/M15. Use page_from_ny for siblings or following_from_ny for same-node sequel OHLC; never switch to a shift-scoped candle query.', FRACTAL_ARGS),
     schema('list_market_shifts', 'Check actual retained candles before offering day/night reviews. Explicit NY date returns only usable choices for that date, with checked alternatives if none. Null date lists latest completed usable shifts and separates ongoing ones. Missing data never proves market closure.', {
@@ -312,7 +317,7 @@ MARKET_TOOLS = [
         'anchor_start_ny': {'type': 'string'}, 'anchor_timeframe': {'type': 'string'},
         'through_ny': {'type': 'string'}}),
     schema('get_market_price', 'Get latest broker bid/ask ONLY when a quote is requested. Disclose stale or absent data.', {'asset': {'type': 'string'}}),
-    schema('review_market_session', 'Review the entire GTOP shift: 9AM-noon or 9PM-midnight New York, beginning with the 8 oclock anchor. Returns hourly range promotions, later CRTs, own objectives, assigned wick/body candle lifecycle, CSD/Super Soup/retests and automatic configured paired-market context. Use for broad shift recaps. For Model 1 identity, Super Soup, CSD, wick/body, or objective-distance followups use review_market_crt for the specific range and exact named candle instead; overview omissions never establish absence.', {
+    schema('review_market_session', 'Review the GTOP shift: 9AM-noon or 9PM-midnight New York. Default shift_synopsis leads with 9ate8, supported variant and own objective outcomes; includes relevant independent Young Lefty and later named ranges only. Full underlying range and paired evidence remains available for explicit walkthroughs. For Model 1 identity, Super Soup, CSD, wick/body, or objective-distance followups use review_market_crt for the specific range and exact named candle instead; overview omissions never establish absence.', {
         'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null'], 'description': 'Explicit NY date; null selects the latest completed usable shift. Unavailable dates are never silently changed.'},
         'shift': {'type': 'string', 'enum': ['day', 'night']}}),
     schema('inspect_market_candles', 'Read historical or current candle OHLC and when extremes formed. Explicit ISO start/end in New York (or with offset). M1-M60, H1-H24, D1, W1, MN1; custom anchors supported. Incomplete coverage is not a definitive daily/weekly extreme. Paginate next_start_ny.', {
@@ -329,41 +334,41 @@ MARKET_NAMES = {t['name'] for t in MARKET_TOOLS}
 MARKET_PROMPT = """
 # GROUNDED MARKET CONVERSATION
 Use review_market_session/review_market_crt for actual setups, not definitions/quotes. '988', '9 ate 8', 'nine ate eight' mean 9ate8.
-For a whole shift use shift_story.recap.spoken_summary (voice: shift_recap), including
-paired_smt/paired_context, not observations[0]. Give 4-7 concise sentences. Start at
-8, follow selected range_transitions through noon/midnight NY; later setups survive
-failed 9ate8. Day is 09:00-12:00, night 21:00-00:00 NY. Use hourly_crt_summary and
-range_summaries, naming 8/9/10/11 instead of 'one/another'. Independent hourly context
-is not selected. Use hourly_progression for candle science. Include supported variants in the initial answer:
-V1/V2/V3 require opposing delivery, not midpoint; V4/V5 may have unresolved delivery.
-Incomplete/cutoff is not failure; repeated original-boundary touches alone are not V6.
+Current/what-do-you-see requests use review_current_market directly, not completed-shift choices. Keep current_scope cutoff until explicit refresh. State as-of/observed-through and freshness: forming is not closed; periodic snapshots are not instant ticks.
+For a whole shift use shift_synopsis.spoken_summary: a SHORT, token-efficient default
+(usually 2-4 sentences; only add a sentence when relevant evidence requires it).
+Lead with 9ate8 direction/verdict (clean, failed, boneless potential/delivered as supported),
+variant established/pending, and own 50%/opposing delivery/invalidation/pending.
+Then mention only relevant next named ranges in chronology; later setups survive failed 9ate8.
+Day is 09:00-12:00, night 21:00-00:00 NY. Silently evaluate the independent 7 anchor:
+include Young Lefty briefly only when an actual 7-boundary purge by 8 or 9 makes it relevant.
+Omit absent/uninitiated Young Lefty chatter and candidate/early-failure lists. Never suppress
+real Young Lefty because 8/9 fails, or assume it agrees with 9ate8: use its own direction/range/objectives.
+No Model 1/Soup candle dump by default; fetch exact detail_request for those followups.
+The full shift_story.recap is for a requested complete walkthrough, not the default reply.
 Honor range-specific coverage, uncertainty and chronological invalidation. Earlier
 delivery survives later invalidation; source-bar ties leave order unknown. Structure
 and delivery do not prove fills/profit. Use candle_lifecycle for Model 1/CSD/Super Soup,
-not legacy execution flags. Explain observed hindrances, never invented causation.
+not legacy execution flags. CISD requires a strict assigned close below Model 1 full low bearish,
+above full high bullish. Ordinary speech names the selected range and Model 1 own candle range;
+parent/child CRT lineage is only for requested fractal analysis. Explain observed hindrances, never invented causation.
 Resolve asset/date/shift/anchor from conversation or an unambiguous open trade.
 NAS/NASDAQ=NAS100; oil/USOIL=WTI. Use known aliases directly; never default to NAS.
 Ask only for genuinely missing/ambiguous context. Retain the selected range on follow-ups.
-Before offering shifts or asking day/night, call list_market_shifts. Offer only checked
+For historical/completed review choices, call list_market_shifts before offering shifts or asking day/night. Offer only checked
 available_shifts; use a sole option if unspecified. For an unavailable explicit shift,
 relay its message and ask about the checked same-day alternative; never silently switch date/shift.
 Use NY dates. Last week Wednesday means the preceding Monday-Sunday week. Night belongs
 to its 9PM start date; after midnight, tonight may mean yesterday. Clarify ambiguity.
-Quotes only on request; inspect_market_candles provides historical levels/times.
 Missing data does not prove closure. Unknown broker_session is not a calendar;
 feed_health ages do not diagnose closure/gaps. Stale quotes do not negate history.
 Partial coverage bounds extremes to available bars; ongoing means unfinished. Never reconstruct fine candles from coarse OHLC. Daily/week/
 month/custom anchors use chart boundaries, not assumed NY midnight; clarify if needed.
 Name candles by opening and 'closure'; speak closing timestamps only when requested.
 Respect source precision: a 9:15 M5 candle is not a verified 9:17 tick.
-Model 1/CSD/Super Soup/distance follow-ups require review_market_crt using exact
-range/candle detail_request. Omitted facts are not absent. Keep each direction and
-attempt separate; pure definitions need no retrieval.
 On challenges, recheck disputed facts in the same asset/date/shift/range/candle; correct verified
 errors. Answer in 1-3 sentences; omit routine execution disclaimers unless execution is at issue.
 Relate evidence to member-reported fills only; save actual journals through tools.
-MOB is discretionary: preserve member-supplied levels, do not auto-detect PD arrays.
-Tools never place/manage broker orders or change member progress.
 """.strip() + '\n\n' + LIFECYCLE_PROMPT + '\n\n' + WATCH_PROMPT
 
 LIVE_MARKET_PROMPT = """
@@ -372,12 +377,15 @@ familiar GTOP terminology. Examples: 'did 988 happen today?', 'you seen today’
 'I took the Super Soup on NAS today', 'when was that high purged?', 'when did it
 invalidate?', 'last Wednesday’s low', or a timeframe-specific CRT review. These are
 not definition questions. Delegate first; never invent today’s candle behavior.
-'What did price do this shift/today?' requires shift_story.recap: start at 8,
-follow hourly range transitions after invalidation through noon/midnight NY, and
-include later selected CRT objectives, supported variants and delivery. Do not stop
-at failed 9ate8. Give the complete recap in 4-7 concise sentences; this overrides
-the short-answer default. For H1 CRTs use recap.hourly_crt_summary; named-hour questions
-use range_summaries in order, explicitly naming 8/9/10/11. Never substitute 'one/another'.
+Current/what-do-you-see requests use review_current_market directly, not completed-shift choices. Keep current_scope cutoff until explicit refresh. State as-of/observed-through and freshness: forming is not closed; periodic snapshots are not instant ticks.
+'What did price do this shift/today?' uses the SHORT shift_synopsis.spoken_summary.
+Lead with 9ate8 direction/verdict, supported variant or pending, and 50%/opposing
+outcome/invalidation. Then relevant next named ranges in chronology; keep later delivery
+after failed 9ate8. Silently evaluate seven's independent Young Lefty: briefly include
+only actual early 7-boundary purge by 8/9 when relevant, even if 8/9 fails. Its direction
+can oppose 9ate8; never borrow that play's objectives. Omit absent/uninitiated Young Lefty
+and candidate lists. Model 1/Soup detail is for exact-range followups. Usually 2-4 sentences;
+add only what relevant evidence needs. Full shift_story.recap is for requested walkthroughs.
 Preserve missing-data and same-bar uncertainty; body-cross evidence is not an entry.
 Use setup_interval.qualified_smt: same-setup-hour corresponding purges mean both
 bones, no boneless/SMT label or minute-asynchrony recap. Forming hours are provisional.
@@ -385,8 +393,7 @@ On a challenge, delegate a recheck of that same date/shift/range and answer the 
 fact first. Omit routine execution disclaimers unless actual execution is at issue.
 Resolve known asset/date/shift/anchor from conversation. NAS/NASDAQ=NAS100; oil/USOIL=WTI.
 Use recognized aliases directly; ask only for genuinely missing/ambiguous context.
-Before offering reviews or asking day/night,
-delegate list_market_shifts. Offer only checked available_shifts; use a sole option
+For historical/completed review choices, delegate list_market_shifts before offering reviews or asking day/night. Offer only checked available_shifts; use a sole option
 when shift is unspecified. For an unavailable explicit shift, relay its message and
 ask about the checked same-day alternative first; never silently switch date/shift.
 Partial means limited candles; ongoing is not completed. Missing data does not prove
@@ -611,9 +618,12 @@ def market_tool(db, name, args, now=None):
             for key in ('detail_candle_start_ny', 'detail_from_ny'):
                 if args.get(key):
                     parse_time(args[key])
-        result = read_feed(db, args.get('asset'))
+        result = read_feed(db, args.get('asset'), now=now)
         if not result['ok']:
             return result
+        if name == 'review_current_market':
+            from gbop_voice_web.current_market import review_current_market
+            return review_current_market(db, result, args, now)
         if name == 'list_market_shifts':
             return shift_choices(db, result, args.get('date_ny'), now)
         if name == 'get_market_price':
@@ -697,6 +707,8 @@ def market_tool(db, name, args, now=None):
                     db, result['asset'], peer, start, end, args['anchor_timeframe'])
         if name in ('review_market_session', 'review_market_crt'):
             reconcile_paired_recap(result['review'], result['asset'])
+            if name == 'review_market_session':
+                result['review']['shift_synopsis'] = build_shift_synopsis(result['review'], result['asset'])
         if name == 'review_market_crt':
             from gbop_voice_web.objective_approach import objective_approach
             result['review']['objective_approach'] = objective_approach(result['review'], bars, end, step)

@@ -1,7 +1,7 @@
 # TAB market release — October 3, 2026
 
 ## Member flow
-Ask for a shift recap naturally. GBOP can read a prepared briefing and refresh detailed market evidence. Ask which Model 1 candle formed, then separately ask about CSD, Super Soup cleanliness, the nested CRT variant and parent objectives.
+Ask for a shift recap naturally. GBOP can read a prepared briefing and refresh detailed market evidence. Ask which Model 1 candle formed, then separately ask about CSD, Super Soup cleanliness, the Model 1 own-range variant and selected-range objectives.
 
 For future alerts, explicitly request: "Watch NAS during the day shift and DM me when a body soup forms." `manage_market_watch` returns the actual watch ID, range scope, shift and expiry. Null anchor follows selected H1 ranges starting at 8 and their later promotions. An explicit anchor watches that CRT instead. Ask "Show my watches" or "Stop my watches" to list or cancel.
 
