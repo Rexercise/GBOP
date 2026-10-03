@@ -12,6 +12,7 @@ READ_ONLY_RECOVERY_NAMES = frozenset({
     'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_trade_assist',
     'list_trade_photos', 'get_market_price', 'list_market_shifts', 'review_market_session',
     'review_market_crt', 'inspect_market_candles', 'review_market_smt', 'get_prepared_market_brief',
+    'review_market_fractal', 'inspect_market_fractal_node',
 })
 PRIVATE_DELIVERY_NAMES = frozenset({'send_journal_history', 'send_trade_photos'})
 RECOVERY_NAMES = READ_ONLY_RECOVERY_NAMES | PRIVATE_DELIVERY_NAMES | frozenset({'manage_market_watch'})

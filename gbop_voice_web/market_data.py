@@ -288,7 +288,22 @@ def session_review(bars, day, shift, step=300):
                       'Missing/unfinished hours are not evidence of no setup.'}
 
 
+FRACTAL_NAMES = {'review_market_fractal', 'inspect_market_fractal_node'}
+FRACTAL_ARGS = {
+    'asset': {'type': 'string'}, 'anchor_start_ny': {'type': 'string'},
+    'anchor_timeframe': {'type': 'string'}, 'through_ny': {'type': 'string'},
+    'node_path': {'type': ['array', 'null'], 'items': {'type': 'string'},
+                  'description': 'Verified child opening timestamps from the root; null selects root.'},
+    'expected_node_id': {'type': ['string', 'null']},
+    'expected_scope_id': {'type': ['string', 'null'], 'description': 'Preserve returned scope on expansion/pages; null for a new analysis.'},
+    'page_from_ny': {'type': ['string', 'null']},
+    'following_from_ny': {'type': ['string', 'null'], 'description': 'Node detail only: returned sequel-candle cursor. Null starts after the node anchor.'},
+    'page_size': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 4},
+}
+
 MARKET_TOOLS = [
+    schema('review_market_fractal', 'ON REQUEST ONLY for fractal thesis formation/deeper price analysis. Link assigned Model 1 candles as independent child CRTs, bounded Monthly->Daily->H1->M5 or Weekly->H4->M15. Never call automatically for ordinary shift recaps. Null depth uses one level; pages and node detail retain exact root scope.', {**FRACTAL_ARGS, 'max_depth': {'type': ['integer', 'null'], 'minimum': 0, 'maximum': 3}}),
+    schema('inspect_market_fractal_node', 'Expand one evidenced CRT node on request, retaining root asset/anchor/timeframe/cutoff plus returned node_path, expected_node_id and expected_scope_id. Returns own CSD/Super Soup/objectives independently of parent failure. No mapping is invented below M5/M15. Use page_from_ny for siblings or following_from_ny for same-node sequel OHLC; never switch to a shift-scoped candle query.', FRACTAL_ARGS),
     schema('list_market_shifts', 'Check actual retained candles before offering day/night reviews. Explicit NY date returns only usable choices for that date, with checked alternatives if none. Null date lists latest completed usable shifts and separates ongoing ones. Missing data never proves market closure.', {
         'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null']}}),
     schema('review_market_smt', 'Compare two positively correlated markets at the SAME anchor and moment. Verifies relative boundary sweeps, boneless asset and each own objective, not trade entries. For 9ate8 use each market\'s 8 oclock H1 range; later invalidation never erases an earlier divergence.', {
@@ -305,7 +320,9 @@ MARKET_TOOLS = [
         'asset': {'type': 'string'}, 'anchor_start_ny': {'type': 'string'}, 'through_ny': {'type': 'string'},
         'anchor_timeframe': {'type': 'string'}, 'confirmation_timeframe': {'type': ['string', 'null']},
         'blessed_thief_timeframe': {'type': ['string', 'null'], 'description': 'Candle opens to review; null uses anchor timeframe, independent of Model 1 mapping.'},
-        'blessed_thief_from_ny': {'type': ['string', 'null'], 'description': 'Next Blessed Thief page cursor; preserve original anchor and through_ny. Null starts first page.'}}),
+        'blessed_thief_from_ny': {'type': ['string', 'null'], 'description': 'Next Blessed Thief page cursor; preserve original anchor and through_ny. Null starts first page.'},
+        'detail_candle_start_ny': {'type': ['string', 'null'], 'description': 'Exact assigned-candle opening to inspect. Never substitute another identity. Null chooses the first lifecycle page.'},
+        'detail_from_ny': {'type': ['string', 'null'], 'description': 'Next voice lifecycle page cursor. Keep original asset, anchor, confirmation timeframe and through_ny; do not combine with exact detail_candle_start_ny.'}}),
 ]
 MARKET_NAMES = {t['name'] for t in MARKET_TOOLS}
 MARKET_PROMPT = """
@@ -588,6 +605,12 @@ def market_tool(db, name, args, now=None):
         if name == 'review_market_smt':
             return paired_market_review(db, args['asset'], args['comparison_asset'],
                 parse_time(args['anchor_start_ny']), parse_time(args['through_ny']), args['anchor_timeframe'])
+        if name == 'review_market_crt':
+            if args.get('detail_candle_start_ny') and args.get('detail_from_ny'):
+                raise ValueError('Choose detail_candle_start_ny or detail_from_ny, not both.')
+            for key in ('detail_candle_start_ny', 'detail_from_ny'):
+                if args.get(key):
+                    parse_time(args[key])
         result = read_feed(db, args.get('asset'))
         if not result['ok']:
             return result
@@ -653,6 +676,15 @@ def market_tool(db, name, args, now=None):
                 result['review']['paired_context'] = context
             else:
                 result['review']['paired_context'] = {'status': 'no_configured_comparison_pair', 'asset': result['asset']}
+        elif name in FRACTAL_NAMES:
+            from gbop_voice_web.fractal_lineage import review_fractal
+            result['review'] = review_fractal(bars, start, end, args['anchor_timeframe'], step,
+                result['asset'], result['symbol'], as_of=now, node_path=args.get('node_path'),
+                expected_node_id=args.get('expected_node_id'), expected_scope_id=args.get('expected_scope_id'),
+                max_depth=(0 if name == 'inspect_market_fractal_node' else args.get('max_depth')),
+                page_size=args.get('page_size'), page_from_ny=args.get('page_from_ny'),
+                following_from_ny=args.get('following_from_ny'),
+                detail=name == 'inspect_market_fractal_node')
         elif name == 'inspect_market_candles':
             result['review'] = candle_query(bars, start, end, args['timeframe'], step)
         else:
@@ -665,6 +697,10 @@ def market_tool(db, name, args, now=None):
                     db, result['asset'], peer, start, end, args['anchor_timeframe'])
         if name in ('review_market_session', 'review_market_crt'):
             reconcile_paired_recap(result['review'], result['asset'])
+        if name == 'review_market_crt':
+            result['voice_detail_selection'] = {key: args.get(key) for key in (
+                'detail_candle_start_ny', 'detail_from_ny', 'through_ny',
+                'confirmation_timeframe', 'blessed_thief_timeframe', 'blessed_thief_from_ny')}
         return result
     except (TypeError, ValueError, KeyError, OverflowError) as exc:
         return {'ok': False, 'error': str(exc)}
