@@ -54,7 +54,7 @@ def review_shift(bars, day, shift, step=300):
         anchor_start = start + (i - 1) * 3600
         # No price action after the shift cutoff is used, including for 11's range.
         evidence = crt_review(bars, anchor_start, end, 'H1', step)
-        evidence.pop('assigned_candles', None)  # M5 facts below; full table remains queryable.
+        evidence.pop('assigned_candles', None)  # Identified Model 1 facts stay below; full table remains queryable.
         events = evidence['events']
         invalid = evidence.get('invalidated_at_ny')
         purges = [e for e in events if e['kind'].endswith('_side_purge')]
@@ -95,8 +95,8 @@ def review_shift(bars, day, shift, step=300):
                                          'precision_seconds': step,
                                          'note': 'Excursions separated by source closes inside; not CRT variant classification.'})
         body_facts = []
-        # A mechanical cross of a purge candle's body is evidence, not automatic
-        # selection of a discretionary Model 1 candle or a confirmed member entry.
+        # Legacy later body-cross observation, NOT the initial Model 1 formation.
+        # The qualifying body-purging candles are reported independently in model1.
         if direction and purges:
             first = min(purges, key=lambda e: e['bar_open_ny'])
             purge_time = parse_time(first['bar_open_ny'])
@@ -123,7 +123,9 @@ def review_shift(bars, day, shift, step=300):
                        'role': 'selected_range' if anchor['start_ny'] in selected else 'independent_range_context',
                        'anchor': anchor, 'status': evidence['status'],
                        'direction_observed': direction, 'invalidated_at_ny': invalid,
-                       'entry_confirmed': False, 'objectives': objectives,
+                       'entry_confirmed': False, 'execution_status': 'not_assessed',
+                       'entry_confirmed_scope': evidence['entry_confirmed_scope'],
+                       'model1': evidence['model1'], 'objectives': objectives,
                        'events': events, 'sweep_detail': sweep_detail, 'm5_body_evidence': body_facts,
                        'observation_coverage': evidence.get('observation_coverage')})
     for row in ranges:
@@ -135,8 +137,11 @@ def review_shift(bars, day, shift, step=300):
             'progression_complete': not blocked,
             'limits': 'Reconstructed from closed broker candles, not continuous observation. '
                       'Target touches are market facts after a purge, not trade profits or targets after an entry. '
-                      'Same-bar order is unknown. M5 body crosses are mechanical evidence, not automatic CSD, '
-                      'Super Soup, SMT, Blessed Thief or member execution confirmation. '
+                      'Same-bar order is unknown. model1.candles identifies qualifying assigned-timeframe '
+                      'body-purging Model 1 candles independently of later CSD, Super Soup or execution. '
+                      'm5_body_evidence is a separate later body-cross observation. '
+                      'entry_confirmed=false never negates an identified Model 1 candle. '
+                      'Unassessed CSD/Super Soup means unverified, not absent. '
                       'Independent ranges are not automatically promoted. Missing hours block verified progression.'}
     story['recap'] = build_shift_recap(story)
     return story
