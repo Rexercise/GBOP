@@ -242,7 +242,7 @@ MARKET_TOOLS = [
         'shift': {'type': 'string', 'enum': ['day', 'night']}}),
     schema('inspect_market_candles', 'Read historical or current candle OHLC and when extremes formed. Explicit ISO start/end in New York (or with offset). M1-M60, H1-H24, D1, W1, MN1; custom anchors supported. Incomplete coverage is not a definitive daily/weekly extreme. Paginate next_start_ny.', {
         'asset': {'type': 'string'}, 'start_ny': {'type': 'string'}, 'end_ny': {'type': 'string'}, 'timeframe': {'type': 'string'}}),
-    schema('review_market_crt', 'Inspect ANY selected CRT anchor, subsequent purges and invalidating anchor-timeframe closes. Returns assigned timeframe candles and bar timestamps; not an automatic entry signal. Defaults: monthly->daily, weekly->H4, daily->H1, H4->M15, H1->M5. Specify exact anchor start to preserve chart/session alignment.', {
+    schema('review_market_crt', 'Inspect ANY selected CRT anchor, subsequent purges and invalidating anchor-timeframe closes. Returns identified Model 1 body-purging candles and assigned timeframe bars; formation is independent of CSD/execution. Defaults: monthly->daily, weekly->H4, daily->H1, H4->M15, H1->M5. Specify exact anchor start to preserve chart/session alignment.', {
         'asset': {'type': 'string'}, 'anchor_start_ny': {'type': 'string'}, 'through_ny': {'type': 'string'},
         'anchor_timeframe': {'type': 'string'}, 'confirmation_timeframe': {'type': ['string', 'null']}}),
 ]
@@ -272,8 +272,10 @@ assertion that the range was selected. Report the objective, purge, return insid
 M5 body evidence, observed target delivery and invalidation in chronological order.
 A target observed before later invalidation remains a historical fact. Never call
 it a member profit or a target after entry without actual execution evidence.
-Same-bar touches have unknown order. M5 purge-body crosses are not by themselves
-confirmed Model 1/CSD or Super Soup. Query the selected candidate candles as needed.
+Same-bar touches have unknown order. model1.candles identifies the qualifying
+assigned-timeframe body-purging Model 1 candle, not a candidate.
+entry_confirmed=false never negates an identified Model 1 candle.
+CSD, Super Soup occurrence and actual execution are separate; unassessed is not absent.
 Explain hindrances only as observed events (e.g. repeat purge, invalidating close,
 unreached objective); do not invent causation, news, or intent. State incomplete
 coverage and unresolved progression plainly. Do not say you watched the shift live.
@@ -326,10 +328,10 @@ nor remain valid later. Respect anchors_valid_at_event and missing coverage; do 
 use later invalidations or opposite-direction outcomes to deny earlier divergence.
 When challenged, inspect matched evidence and correct the answer if warranted;
 do not repeat a previous classification instead of checking its factual basis.
-Range candidates alone are not confirmed CSD, Super Soup, Blessed Thief entries, signals,
-or evidence of an actual member execution. Examine assigned-timeframe candles and the
-member's selected Model 1 candidate before discussing a possible Super Soup/CSD; if the
-body or sequence is unclear, ask for its candle instead of asserting confirmation.
+Answer Model 1 candle questions with its time, OHLC and purged level first.
+Use review_market_crt/inspect_market_candles for its later CSD/Super Soup sequence.
+Missing data does not establish absence. Later failure does not erase candle identity.
+No price pattern proves a member execution.
 MOB is discretionary knowledge. Do not spend calls trying to detect PD arrays or claim
 an automatically verified MOB. Preserve a member-supplied MOB as their chosen level.
 These tools never place/manage/close broker orders or change member trade progress.
@@ -346,7 +348,9 @@ follow hourly range transitions after invalidation through noon/midnight NY, and
 include later selected CRT objectives, supported variants and delivery. Do not stop
 at failed 9ate8. Give the complete recap in 4-7 concise sentences; this overrides
 the short-answer default for definitions. Preserve the backend's later-range outcome.
-Preserve missing-data and same-bar uncertainty; body-cross evidence is not an entry.
+Preserve missing-data and same-bar uncertainty. Preserve backend model1.candles identification:
+the body-purging candle IS Model 1, not a candidate, independently of later CSD,
+Super Soup or execution. Unassessed does not mean absent.
 For SMT use matched paired_smt/review_market_smt evidence. A peer's later independent
 CRT failure does not erase an earlier boundary divergence; do not confuse SMT with
 entry confirmation or require identical later delivery in both markets.

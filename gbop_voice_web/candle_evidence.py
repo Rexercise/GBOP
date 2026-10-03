@@ -149,6 +149,7 @@ def model1_evidence(bars, anchor, mapped, end, step):
         if side:
             level = anchor['high'] if side == 'buy' else anchor['low']
             fact = {'identity': 'Model 1 candle', 'timeframe': mapped,
+                    'start_ny': candle['start_ny'], 'end_ny': candle['end_ny'],
                     'bar_open_ny': candle['start_ny'], 'bar_close_ny': candle['end_ny'],
                     'identified_at_ny': candle['end_ny'], 'complete': True,
                     'open': candle['open'], 'high': candle['high'],
