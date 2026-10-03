@@ -25,6 +25,8 @@ candle at the identical opening/closing interval. That is its SMT-aligned Model 
 Do not substitute a later unrelated local Model 1 or gate identity on CSD.
 A source SMT bar or wick alone does not establish an assigned body-purge time.
 Missing SPX is not no SMT or US30. Never invent context unavailable at entry.
+Use paired_model1.boneless_reference when identified; it contains the verified same-time candle.
+Lead with recap.paired_interpretation while preserving the local-only chronology.
 Preserve the working chronology, Super Soup cleanliness and separate nested
 versus parent outcomes. Follow canonical candle naming even when a legacy raw
 summary mentions only the closing time. Answer the requested fact first.
@@ -83,6 +85,12 @@ def enrich_smt(review):
                 text += f" {asset} reached its own midpoint; its full objective is {full.get('status', 'unverified').replace('_', ' ')}."
             else:
                 text += f" {asset}'s full objective is {full.get('status', 'unverified').replace('_', ' ')}."
+        identity = event.get('paired_model1', {})
+        if identity.get('status') == 'identified':
+            ref = identity['boneless_reference']
+            text += (f" {ref['asset']}'s SMT-inherited Model 1 is its {ref['timeframe']} candle opening "
+                     f"{ref['bar_open_ny']}, matching {event['swept_asset']}'s body-purge candle. "
+                     'This is a same-time reference, not a visible local purge or inherited CSD confirmation.')
         text += ' These are paired market facts, not proof of a member execution.'
         passages.append(text)
     review['spoken_summary'] = ' '.join(passages)

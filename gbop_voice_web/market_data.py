@@ -14,6 +14,7 @@ from gbop_voice_web.smt_evidence import compare_ranges
 from gbop_voice_web.candle_lifecycle import lifecycle_review
 from gbop_voice_web.market_context import PAIRINGS, enrich_smt, LIFECYCLE_PROMPT
 from gbop_voice_web.market_watch import WATCH_PROMPT
+from gbop_voice_web.smt_reference import reconcile_paired_recap
 
 NY = ZoneInfo('America/New_York')
 ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
@@ -522,6 +523,12 @@ def market_tool(db, name, args):
         else:
             result['review'] = attach_lifecycle(crt_review(bars, start, end, args['anchor_timeframe'],
                 step, args.get('confirmation_timeframe')), bars, end, step)
+            peer = PAIRINGS.get(result['asset'])
+            if peer:
+                result['review']['paired_smt'] = paired_market_review(
+                    db, result['asset'], peer, start, end, args['anchor_timeframe'])
+        if name in ('review_market_session', 'review_market_crt'):
+            reconcile_paired_recap(result['review'], result['asset'])
         return result
     except (TypeError, ValueError, KeyError, OverflowError) as exc:
         return {'ok': False, 'error': str(exc)}

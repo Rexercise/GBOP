@@ -6,6 +6,7 @@ is reported separately. Unordered source bars cannot prove a completed variant.
 """
 from datetime import datetime
 from gbop_voice_web.candle_evidence import parse_time, summarize
+from gbop_voice_web.smt_reference import closing_candle
 
 
 def clock(value):
@@ -163,7 +164,7 @@ def build_shift_recap(story):
             if repeats:
                 parts.append(f"There were {repeats[0]['excursions_in_available_bars']} separate excursions beyond the purged range boundary in the available source candles.")
         if row['invalidated_at_ny']:
-            parts.append(f"An hourly close outside invalidated {anchor_name} at {clock(row['invalidated_at_ny'])}; any earlier observed objective touch remains part of the record.")
+            parts.append(f"The range {anchor_name} was invalidated by {closing_candle(row['invalidated_at_ny'])['spoken_label']}; any earlier observed objective touch remains part of the record.")
         passages.append({'anchor_start_ny': row['anchor_start_ny'], 'text': ' '.join(parts)})
         if parse_time(row['selected_at_ny']) >= parse_time(story['end_ny']):
             brief.append(f"{anchor_name} became selected at the cutoff, leaving no shift candles to assess it.")
@@ -172,7 +173,7 @@ def build_shift_recap(story):
         if row['invalidated_at_ny'] and not delivered:
             failed_objectives = [o for o in row['objectives'] if o['status'] == 'not_observed_before_invalidation']
             suffix = ' without either objective being reached' if len(failed_objectives) == 2 else ''
-            brief.append(f"{anchor_name} was invalidated by the hourly close at {clock(row['invalidated_at_ny'])}{suffix}.")
+            brief.append(f"{anchor_name} was invalidated by {closing_candle(row['invalidated_at_ny'])['spoken_label']}{suffix}.")
             continue
         select_text = f"{anchor_name} became selected at {clock(row['selected_at_ny'])}" if transition else f"{anchor_name} stayed selected"
         first = next((e for e in row['events'] if e['kind'].endswith('_side_purge')), None)
@@ -192,7 +193,7 @@ def build_shift_recap(story):
         elif first:
             brief.append('Opposing-liquidity delivery remains unestablished within the reviewed window.')
         if row['invalidated_at_ny']:
-            brief.append(f"The later hourly close at {clock(row['invalidated_at_ny'])} invalidated that range after the recorded delivery.")
+            brief.append(f"Later, {closing_candle(row['invalidated_at_ny'])['spoken_label']} invalidated that range after the recorded delivery.")
     close = f"Review ends at {clock(story['end_ny'])} New York."
     final = story['hourly_progression'][-1]
     if story['progression_complete'] and final.get('close') is not None:
