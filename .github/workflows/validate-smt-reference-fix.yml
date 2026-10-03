@@ -1,0 +1,35 @@
+name: Validate SMT reference correction
+on:
+  push:
+    branches: [fix/candle-labels-smt-reference-20261003]
+    paths: [.github/workflows/validate-smt-reference-fix.yml]
+permissions:
+  contents: write
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/candle-labels-smt-reference-20261003
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install httpx==0.28.1 fastapi==0.116.1
+      - name: Apply source changes and preserve regression cases
+        run: python scripts/apply_reference_fix.py
+      - name: Compile and run all regression tests
+        shell: bash
+        run: |
+          python -m compileall -q gbop_voice_web tests
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/gbop-reference-test.log
+      - name: Commit validated changes and remove temporary tooling
+        shell: bash
+        run: |
+          rm .github/workflows/apply-smt-reference-fix.yml .github/workflows/validate-smt-reference-fix.yml scripts/apply_reference_fix.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add gbop_voice_web/smt_evidence.py gbop_voice_web/smt_reference.py gbop_voice_web/market_context.py gbop_voice_web/market_data.py gbop_voice_web/shift_narrative.py gbop_voice_web/gtop_boneless.txt tests/test_smt_reference.py .github/workflows/apply-smt-reference-fix.yml .github/workflows/validate-smt-reference-fix.yml scripts/apply_reference_fix.py
+          git diff --cached --stat
+          git commit -m 'Fix candle-open naming and boneless SMT Model 1 attribution'
+          git push origin HEAD:fix/candle-labels-smt-reference-20261003
