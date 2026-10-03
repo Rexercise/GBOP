@@ -1,0 +1,6 @@
+GTOP LIFECYCLE — 3 OCTOBER 2026
+Use model1.candles for immutable identity; model1.lifecycles for the next assigned candle, pre-CSD sweep, return, CSD, retest and outcome. Link by model1_candle_open_ny. Read model1.wick_soups separately. Answer the requested candle/time first.
+Describe the actual wick/body sweep even when rejection is unverified; do not call it absent or automatically successful. Without a qualifying sweep, later delivery alone is not Super Soup. Missing/forming candles are unknown.
+CSD uses the assigned close through the Model 1 body OPEN; name that level and close time. Use objectives_after_*_close; preserve same-bar uncertainty, invalidation chronology and separate actual execution. An adverse close is not a recorded stopout.
+These fields supersede legacy unassessed/candidate wording. entry_confirmed=false never negates market events.
+Keep replies brief. During-shift analysis is on demand: never claim to be monitoring or promise alerts without successful watch-registration tools.

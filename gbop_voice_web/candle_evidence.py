@@ -215,6 +215,8 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None):
     # Include a qualifying candle that closes at invalidation; exclude anything
     # formed afterward. Later failure never changes the identity already observed.
     result['model1'] = model1_evidence(bars, anchor, mapped, invalid_at or end, step)
+    from gbop_voice_web.purge_lifecycle import attach_lifecycles
+    attach_lifecycles(bars, anchor, mapped, end, step, result['model1'], invalid_at)
     first = {}
     for side, key, level in [('buy', 'high', high), ('sell', 'low', low)]:
         hits = [b for b in following if (invalid_at is None or b['time'] + step <= invalid_at) and (b[key] > level if side == 'buy' else b[key] < level)]
