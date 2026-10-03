@@ -94,6 +94,88 @@ def candle_query(bars, start, end, tf, step):
             'next_start_ny': stamp(cursor) if cursor < end else None}
 
 
+def model1_evidence(bars, anchor, mapped, end, step):
+    """Identify body-purging candles, not future CSD or a member's execution.
+
+    Only complete assigned-timeframe bodies crossing and closing through the
+    anchor boundary qualify. Gaps do not erase other fully observed candles;
+    they do prevent a claim that no Model 1 occurred in the entire window.
+    """
+    result = {'definition_version': 'model1-candle-identity-2026-10-03',
+              'assigned_timeframe': mapped, 'status': 'unverified_incomplete_anchor',
+              'candles': [], 'identified_count': 0, 'next_candle_start_ny': None,
+              'csd_status': 'not_assessed', 'super_soup_status': 'not_assessed',
+              'execution_status': 'not_assessed',
+              'response_contract': 'These are Model 1 candles, not candidates. '
+                  'Identify their time, OHLC and purged range before discussing later confirmation. '
+                  'Unassessed CSD/Super Soup/execution does not negate candle formation. '
+                  'Later range failure does not erase an identified candle.'}
+    if not anchor['complete']:
+        return result
+    if not mapped:
+        result['status'] = 'assigned_timeframe_required'
+        return result
+    mapped = timeframe(mapped)
+    result['assigned_timeframe'] = mapped
+    start = parse_time(anchor['end_ny'])
+    result.update(window_start_ny=stamp(start), window_end_ny=stamp(end))
+    if end <= start:
+        result['status'] = 'no_observation_window'
+        return result
+    duration = next_boundary(start, mapped) - start
+    if duration < step or duration % step:
+        result['status'] = 'resolution_unavailable'
+        return result
+    following = sorted((b for b in bars if start <= b['time'] and b['time'] + step <= end),
+                       key=lambda b: b['time'])
+    cursor, index, complete_count, incomplete_count = start, 0, 0, 0
+    forming = False
+    while cursor < end:
+        stop = next_boundary(cursor, mapped)
+        if stop > end:
+            forming = True
+            break
+        left = index
+        while index < len(following) and following[index]['time'] < stop:
+            index += 1
+        candle = summarize(following[left:index], cursor, stop, step)
+        if not candle['complete']:
+            incomplete_count += 1
+            cursor = stop
+            continue
+        complete_count += 1
+        side = ('buy' if candle['open'] <= anchor['high'] < candle['close'] else
+                'sell' if candle['close'] < anchor['low'] <= candle['open'] else None)
+        if side:
+            level = anchor['high'] if side == 'buy' else anchor['low']
+            fact = {'identity': 'Model 1 candle', 'timeframe': mapped,
+                    'bar_open_ny': candle['start_ny'], 'bar_close_ny': candle['end_ny'],
+                    'identified_at_ny': candle['end_ny'], 'complete': True,
+                    'open': candle['open'], 'high': candle['high'],
+                    'low': candle['low'], 'close': candle['close'],
+                    'purged_range_start_ny': anchor['start_ny'],
+                    'purged_range_end_ny': anchor['end_ny'],
+                    'purged_side': side, 'purged_level': level,
+                    'direction': 'bearish' if side == 'buy' else 'bullish',
+                    'body_cross_and_close_through_level': True,
+                    'source_resolution_seconds': step, 'exact_tick_time_known': False}
+            result['identified_count'] += 1
+            # Bound tool payloads without silently losing the remaining matches.
+            if len(result['candles']) < 32:
+                result['candles'].append(fact)
+            elif result['next_candle_start_ny'] is None:
+                result['next_candle_start_ny'] = fact['bar_open_ny']
+        cursor = stop
+    result.update(complete_assigned_candles=complete_count,
+                  incomplete_assigned_candles=incomplete_count,
+                  forming_assigned_candle=forming,
+                  observation_complete=not incomplete_count and not forming)
+    result['status'] = ('identified' if result['identified_count'] else
+                        'unverified_incomplete_observation' if incomplete_count or forming else
+                        'not_observed_in_complete_window')
+    return result
+
+
 def crt_review(bars, start, end, tf, step, confirmation_tf=None):
     tf = timeframe(tf)
     anchor_end = next_boundary(start, tf)
@@ -105,9 +187,13 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None):
     mapped = timeframe(confirmation_tf) if confirmation_tf else ASSIGNED.get(tf)
     result = {'anchor_timeframe': tf, 'assigned_timeframe': mapped, 'anchor': anchor,
               'timezone': 'America/New_York', 'entry_confirmed': False,
+              'execution_status': 'not_assessed',
+              'entry_confirmed_scope': 'Legacy execution flag; not Model 1 candle formation or CSD/Super Soup assessment.',
               'status': 'insufficient_closed_candles', 'events': [],
-              'limits': 'Candle observations only. No automatic PD-array, MOB, SMT, execution or member exit inference.'}
+              'limits': 'Candle observations only. No automatic PD-array, MOB, SMT, execution or member exit inference. '
+                        'Model 1 candle identity is independent of later CSD, Super Soup and execution.'}
     if not anchor['complete']:
+        result['model1'] = model1_evidence(bars, anchor, mapped, end, step)
         return result
     following = [b for b in bars if anchor_end <= b['time'] and b['time'] + step <= end]
     coverage = summarize(bars, anchor_end, end, step)
@@ -126,6 +212,9 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None):
                            'confirmed_at_ny': stamp(stop), 'close': candle['close'], 'timeframe': tf})
             break
         cursor = stop
+    # Include a qualifying candle that closes at invalidation; exclude anything
+    # formed afterward. Later failure never changes the identity already observed.
+    result['model1'] = model1_evidence(bars, anchor, mapped, invalid_at or end, step)
     first = {}
     for side, key, level in [('buy', 'high', high), ('sell', 'low', low)]:
         hits = [b for b in following if (invalid_at is None or b['time'] + step <= invalid_at) and (b[key] > level if side == 'buy' else b[key] < level)]
