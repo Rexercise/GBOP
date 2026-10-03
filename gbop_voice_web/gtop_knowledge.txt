@@ -59,11 +59,11 @@ ENTRY / EXECUTION MODELS
 Model 1, Super Soup, Turtle Soup, Breaker/OTE, KOD and Blessed Thief are execution models, not standalone plays. Plays include 9ate8, Young Lefty, Monday's Range, GCT and CBDR.
 Turtle Soup = extreme purge.
 Turtle Wick Soup = purge without a body through the level on the assigned timeframe.
-Turtle Body Soup / Model 1 is the Tier 2 entry classification. A body close through liquidity first identifies the Model 1 candidate; it is not itself CSD confirmation.
-Model 1 / CSD = after purge, confirmation is a close back through the body / change in state of delivery.
+Turtle Body Soup / Model 1 is the Tier 2 entry classification. The qualifying candle on the assigned timeframe whose real body crosses and closes through the selected range's liquidity IS the Model 1 candle. It is not a candidate.
+Model 1 candle identification is separate from subsequent CSD/CISD confirmation. A Model 1 candle remains the Model 1 candle whether CSD later confirms, remains unconfirmed, or the setup fails. After the purge, assess the later close back through the body / change in state of delivery separately.
 Blessed Thief = entry at the OPENING PRICE of the selected candle. It is NOT anchored to the opening TIME of that candle and does not need to be executed when the candle first opens. The setup remains price- and phase-dependent: once the Blessed Thief level is identified, execution can occur later when price revisits that candle's opening price during the manipulation phase, while the underlying CRT thesis remains valid. Actual execution follows expressed manipulation, as detailed below. It may apply to subsequent candles until the objective is achieved.
 Super Soup = after Model 1 purge on correlated timeframe, seek Turtle Soup of that Model 1 candle on the same timeframe as a pre-confirmation entry.
-Super Soup of a Turtle Body Soup candidate is Tier 1, taken before CSD; anticipatory timing does not make it Tier 3.
+Super Soup of a Turtle Body Soup / Model 1 candle is Tier 1, taken before CSD; anticipatory timing does not make it Tier 3.
 Turtle Wick Soup can perform the same functional role as CSD even without a body, but it carries different probability.
 Typical Turtle Wick Soup objective = 50% of the range.
 Turtle Body Soup is preferred for higher probability.
@@ -163,7 +163,7 @@ SS will be expanded as GTOP defines additional rules. Until then, follow only th
 GTOP RISK PROTOCOL — COMMUNITY EDITION, 27 SEPTEMBER 2026
 One directional thesis receives one total 1R budget across all executions.
 Community default tier allocations: Tier 1 = 0.60R; Tier 2 = 0.30R; Tier 3 = 0.10R. These are defaults, not mandatory member settings. A member's saved risk profile overrides the allocation sizes while GTOP entry-model tier classifications stay fixed.
-Tier 1: Super Soup of a Turtle Body Soup / Model 1 candidate BEFORE CSD confirmation. Predominantly preferred.
+Tier 1: Super Soup of a Turtle Body Soup / Model 1 candle BEFORE CSD confirmation. Predominantly preferred.
 Tier 2: Turtle Body Soup / Model 1 (same entry classification), Turtle Wick Soup, KOD Turtle Soup.
 KOD is capped at Tier 2 because it occurs late, even if it is a body soup.
 Tier 3: Breaker / OTE and Blessed Thief. Valid active executions, never study-only.
@@ -235,30 +235,40 @@ TURTLE WICK SOUP
 A Turtle Wick Soup is a purge where liquidity is taken by the wick without the assigned-timeframe body establishing a close through that liquidity level.
 GTOP commonly gives this lower probability and often manages it toward 50% of the range.
 
-MODEL 1 CANDIDATE / BODY-CLOSE LOGIC
+MODEL 1 CANDLE / BODY-CLOSE LOGIC — CORRECTED 3 OCTOBER 2026
 [GTOP REFINEMENT]
-When a candle purges liquidity and its real body CLOSES THROUGH that liquidity, that candle becomes the MODEL 1 CANDIDATE candle.
-That body close identifies the candidate. It does not itself confirm Model 1.
+The Model 1 IS the qualifying body-purging candle on the selected range's assigned/correlated timeframe. Once that candle's real body crosses and CLOSES THROUGH the selected range's liquidity, it is the Model 1 candle, not a candidate.
+For an H1 range, use M5: a bearish Model 1 body crosses and closes above the range high; a bullish Model 1 body crosses and closes below the range low. A wick-only purge does not meet this body-purge definition. A forming candle or incomplete source data cannot establish a qualifying body close.
+The candle's identity does NOT depend on later CSD/CISD confirmation, successful distribution, or a member entering a trade. An unconfirmed Model 1 and a failed Model 1 are still Model 1 candles. Later failure does not erase a previously observed candle.
 
-Two paths follow:
+Two subsequent events must be assessed separately:
 
-A) SUPER SOUP — PRE-CONFIRMATION
+A) SUPER SOUP — BEFORE CSD
 [GTOP EXCLUSIVE / GTOP REFINEMENT]
-Before CSD confirmation, GTOP may Turtle Soup the Model 1 candidate candle itself on the correlated/assigned timeframe.
-That is Super Soup.
+Before CSD confirmation, GTOP may Turtle Soup the Model 1 candle itself on the same correlated/assigned timeframe.
+That is Super Soup. Assess the price sequence against that specific candle.
+A Super Soup market occurrence and a member's Super Soup execution are separate facts. Absence of a saved/confirmed execution does not establish that no Super Soup occurred.
 Super Soup is an anticipatory / risk-entry framework.
 
-B) MODEL 1 / CSD — CONFIRMED
+B) CSD / CISD — SUBSEQUENT CONFIRMATION
 [GTOP REFINEMENT]
-Model 1 confirms only when price CLOSES THROUGH THE OTHER SIDE of that specific candidate candle's liquidity.
-Once that happens, the change in state of delivery is confirmed and the Model 1 candle can be used in its intended function.
+CSD confirms when price CLOSES THROUGH THE OTHER SIDE of that specific Model 1 candle's liquidity. This is subsequent confirmation/change in state of delivery, not what gives the candle its Model 1 identity.
+Once that happens, the change in state of delivery is confirmed and the Model 1 candle can be used in its intended confirmed function.
 
 Sequence:
-1. Purge external liquidity.
-2. Body closes through that liquidity -> Model 1 candidate identified.
-3. Before CSD -> Super Soup may be used as a risk entry.
-4. CSD confirms when price closes through the opposite side of the candidate candle.
-5. After CSD -> Model 1 function is active.
+1. Purge the selected range's external liquidity on its assigned timeframe.
+2. Body crosses and closes through that liquidity -> Model 1 candle identified.
+3. Before CSD -> Super Soup of that candle may occur and may be used as a risk entry.
+4. CSD confirms when price closes through the opposite side of the Model 1 candle.
+5. Record confirmation, failure, and actual execution separately; the Model 1 candle keeps its identity throughout.
+
+MODEL 1 RESPONSE CONTRACT
+When a member asks "the Model 1", "what time was the Model 1", or "the unconfirmed Model 1", identify and discuss the candle first. Do not demand CSD confirmation before answering and do not correct the member by calling it a candidate.
+Use get_crt_review or get_candle_data for the requested asset, selected range and assigned timeframe when necessary. Report the candle's open time, close time, OHLC, purged range/side/level, and body-close evidence when available. Candle-open time and body-close formation time are distinct; do not invent an exact tick time.
+In shift/CRT results, model1.candles contains identified body-purging candles. The older m5_body_evidence describes a later body-cross observation, not the initial Model 1 formation. Report these separately.
+Keep four independent questions separate: Model 1 candle formation; subsequent CSD confirmation; Super Soup occurrence before CSD; and actual trader execution. An entry_confirmed=false field does not negate a Model 1 candle, Super Soup occurrence, or any other observed price structure. It must not be used as a blanket refusal.
+If confirmation or Super Soup has not been assessed, say it is not yet verified, not that it did not occur. Inspect the later assigned-timeframe candles when that is the member's question. Missing data means unverified, not absent. If more than one body-purging candle qualifies, identify them with timestamps rather than inventing a single discretionary winner.
+Answer the requested candle fact directly before any short qualification about subsequent confirmation. Correct an earlier mislabel plainly; do not argue with the member using the superseded candidate definition.
 
 BREAKER BLOCK
 [ICT FOUNDATION]
