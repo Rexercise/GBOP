@@ -139,7 +139,18 @@ class ShiftTests(unittest.TestCase):
         r=session_review(fixture(),'2026-10-02','day')
         self.assertEqual(len(r['observations']),2)
         compact=compact_voice_tool_result('review_market_session', {'review':r})
-        self.assertEqual(compact['review']['shift_story'],r['shift_story'])
+        story=compact['review']['shift_story']
+        for key in ('hourly_progression','range_transitions','active_anchor_ny','coverage','limits'):
+            self.assertEqual(story[key],r['shift_story'][key])
+        for actual, original in zip(story['ranges'], r['shift_story']['ranges']):
+            for key in ('events','objectives','m5_body_evidence','sweep_detail','status','role','entry_confirmed'):
+                self.assertEqual(actual[key], original[key])
+            self.assertEqual(actual['observation_coverage']['complete'],original['observation_coverage']['complete'])
+        self.assertIn('evidence',r['observations'][0])  # original payload unchanged
+        self.assertNotIn('evidence',compact['review']['observations'][0])
+        self.assertIn('evidence_ref',compact['review']['observations'][0])
+        import json
+        self.assertLess(len(json.dumps(compact)),len(json.dumps({'review':r})) * .65)
 
 
 if __name__=='__main__': unittest.main()
