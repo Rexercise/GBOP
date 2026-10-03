@@ -7,7 +7,7 @@ from gbop_voice_web.candle_evidence import (
     interval, next_boundary, parse_time, stamp, summarize,
 )
 
-VERSION = 'super-soup-structure-outcome-2026-10-03'
+VERSION = 'super-soup-local-function-2026-10-03'
 
 
 def relation(row, reference, bearish):
@@ -96,6 +96,31 @@ def outcome(targets, invalid_at):
     return 'failed_before_objectives' if invalid_at else 'pending_at_cutoff'
 
 
+def functional_objectives(bars, after, model, bearish, step, local_invalid_at,
+                          parent_invalid_at, complete):
+    """Observe the nested function even after its CRT invalidates.
+
+    Local invalidation still governs local_crt_objectives and variant evidence.
+    These independent physical touches never restore that validity. Keep the
+    existing parent-range observation boundary and source-bar uncertainty.
+    """
+    targets = objectives(bars, after, model, bearish, step, parent_invalid_at, complete)
+    for target in targets.values():
+        evidence = target['evidence']
+        if evidence is None:
+            timing = 'not_observed'
+        elif local_invalid_at is None:
+            timing = 'no_model1_invalidation_observed'
+        elif parse_time(evidence['bar_open_ny']) >= local_invalid_at:
+            timing = 'after_model1_invalidation'
+        elif parse_time(evidence['bar_close_ny']) < local_invalid_at:
+            timing = 'before_model1_invalidation'
+        else:
+            timing = 'same_model1_invalidating_bar_order_unresolved'
+        target['relative_to_model1_invalidation'] = timing
+    return targets
+
+
 def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
     start = parse_time(model['bar_close_ny'])
     bearish = model['direction'] == 'bearish'
@@ -162,7 +187,8 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
                 'unverified_missing_candles' if missing else
                 'pending_assigned_close' if forming else 'not_observed_by_cutoff',
                 structural_quality='not_established', variants=[], event=None,
-                local_crt_outcome='not_applicable', parent_function_outcome='not_applicable')
+                local_crt_outcome='not_applicable', local_function_outcome='not_applicable',
+                parent_function_outcome='not_applicable')
     result['super_soup'] = soup
     prior, event = [], None
     for row in prefix:
@@ -190,9 +216,15 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
     cutoff_values = [t for t in (local_invalid_at, parent_invalid_at) if t is not None]
     local_cutoff = min(cutoff_values) if cutoff_values else None
     local_targets = objectives(sources, purge_at, model, bearish, step, local_cutoff, not missing)
+    local_function_targets = functional_objectives(
+        sources, purge_at, model, bearish, step, local_invalid_at, parent_invalid_at, not missing)
     parent_targets = objectives(sources, purge_at, anchor, bearish, step, parent_invalid_at, not missing)
     soup.update(local_crt_objectives=local_targets, parent_range_objectives=parent_targets,
                 local_crt_outcome=outcome(local_targets, local_cutoff),
+                local_function_objectives=local_function_targets,
+                local_function_outcome=outcome(local_function_targets, parent_invalid_at),
+                local_crt_invalidated_at_ny=stamp(local_invalid_at) if local_invalid_at else None,
+                local_function_window_end_ny=stamp(end),
                 parent_function_outcome=(outcome(parent_targets, parent_invalid_at) if parent_validity
                                          else 'unverified_parent_validity'))
     # Classify the Model 1 as the nested CRT anchor, never substitute the outer H1.
@@ -259,6 +291,9 @@ def enrich_model1(bars, anchor, model1, end, step, parent_invalid_at=None):
                   lifecycle_contract='Use lifecycle keyed by model1_bar_open_ny for CSD, following candles, '
                   'Super Soup structure and outcomes. Identity stays in candles. assigned_range_purges '
                   'distinguishes wick-only purges from body-purging Model 1 candles. '
-                  'Cleanliness is independent of success. Local Model 1 CRT and parent objectives '
-                  'are separate. No trade execution or live alert is inferred. '
+                  'Cleanliness is independent of success. Local Model 1 CRT validity, local_function '
+                  'delivery and parent objectives are separate. Local function observations continue '
+                  'after Model 1 invalidation within the parent-range review window; they never '
+                  'restore CRT validity or clean structure. Preserve same-bar ordering uncertainty. '
+                  'No trade execution or live alert is inferred. '
                   'Legacy top-level not_assessed flags do not override the detailed lifecycle.')

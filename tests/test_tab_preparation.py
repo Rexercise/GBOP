@@ -47,6 +47,29 @@ class PreparationTests(unittest.TestCase):
             prepare_next_shift(self.db,cache,T+8*3600)
             prepare_next_shift(self.db,cache,T+8*3600+30)
         self.assertEqual(tool.call_count,1)
+    def test_prepared_brief_preserves_post_invalidation_local_function(self):
+        from test_super_soup_function import review, first, MODEL, INVALID, LOCAL_TARGET
+        actual=review([MODEL,INVALID,LOCAL_TARGET],authoritative=True)
+        self.result['review']['shift_story']['ranges']=[dict(actual,role='selected_range')]
+        with patch('gbop_voice_web.market_data.read_feed',return_value=self.feed),patch('gbop_voice_web.market_data.market_tool',return_value=self.result):
+            prepare_next_shift(self.db,{},T+8*3600)
+        saved=watch_tool(self.db,1,42,42,'get_prepared_market_brief',{'asset':'NAS','shift':'day'},T+8*3600)
+        selected=saved['review']['selected_ranges'][0]
+        self.assertEqual(first(selected)['super_soup_structure'],first(actual)['super_soup_structure'])
+        self.assertEqual(selected['candle_lifecycle_summary'],actual['candle_lifecycle']['spoken_summary'])
+    def test_oversized_prepared_brief_keeps_function_summary_when_details_are_paged_out(self):
+        from test_super_soup_function import review, MODEL, INVALID, LOCAL_TARGET
+        actual=review([MODEL,INVALID,LOCAL_TARGET],authoritative=True)
+        actual['candle_lifecycle']['extra_test_details']='x'*140000
+        self.result['review']['shift_story']['ranges']=[dict(actual,role='selected_range')]
+        with patch('gbop_voice_web.market_data.read_feed',return_value=self.feed),patch('gbop_voice_web.market_data.market_tool',return_value=self.result):
+            self.assertIsNotNone(prepare_next_shift(self.db,{},T+8*3600))
+        saved=watch_tool(self.db,1,42,42,'get_prepared_market_brief',{'asset':'NAS','shift':'day'},T+8*3600)
+        selected=saved['review']['selected_ranges'][0]
+        self.assertNotIn('candle_lifecycle',selected)
+        self.assertIn('after its 10:10 AM invalidating close',selected['candle_lifecycle_summary'])
+        self.assertIn('does not restore CRT validity',selected['candle_lifecycle_summary'])
+        self.assertIn('detail_omitted',saved['review'])
     def test_collector_accepts_explicit_spx_among_nine_assets(self):
         from market_bridge.bridge import load_config, ASSETS
         config={'endpoint':'https://gbop.onrender.com/api/market/ingest','token':'fixture-only-token-0000000000000000',

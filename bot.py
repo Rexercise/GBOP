@@ -5668,6 +5668,7 @@ GBOP_RT_OUTPUT_MANAGERS = {}
 GBOP_RT_SINKS = {}
 GBOP_RT_LOCKS = {}
 GBOP_VOICE_CONTROL_LOCKS = {}
+GBOP_MEETING_LOCKS = {}
 
 
 def gbop_voice_control_lock(guild_id):
@@ -6761,6 +6762,11 @@ async def gbop_connect_member_voice(member, channel):
 async def gbop_autojoin_private_room(member, channel):
     if member.guild.id != GTOP_GUILD_ID or not private_room_autojoin_allowed(member, channel):
         return
+    # /meet handles its own move and readiness reply. The gateway still performs
+    # old-room cleanup, but must not start a second join or send a duplicate DM.
+    meeting_lock = GBOP_MEETING_LOCKS.get((member.guild.id, member.id))
+    if meeting_lock is not None and meeting_lock.locked():
+        return
     allowed, _ = await asyncio.to_thread(gbop_voice_member_allowed, member)
     if not allowed:
         return
@@ -6975,7 +6981,7 @@ def gbop_private_voice_view(room=None):
     return view
 
 
-async def gbop_private_room(interaction):
+async def gbop_private_room(interaction, *, announce=True):
     guild, member = interaction.guild, interaction.user
     async with gbop_voice_control_lock(guild.id):
         room = next((channel for channel in guild.voice_channels
@@ -7040,6 +7046,8 @@ async def gbop_private_room(interaction):
                 "**Manage Permissions** on that room. Then run `/gbop action:room` again.",
                 view=gbop_private_voice_view(room), ephemeral=True)
             return
+    if not announce:
+        return room
     await interaction.followup.send(
         f"Your room is {room.mention}. **Open it below and join voice—GBOP joins you automatically.** "
         "The room stays available for your next session. Server administrators can still access it.\n"
@@ -7048,6 +7056,105 @@ async def gbop_private_room(interaction):
         "Discord and browser voice use your same member profile, saved trades and journals. "
         "Use one voice connection at a time for yourself; another member can use theirs independently.",
         view=gbop_private_voice_view(room), ephemeral=True)
+    return room
+
+
+async def gbop_start_private_meeting(interaction):
+    member = interaction.user
+    room = await gbop_private_room(interaction, announce=False)
+    if room is None:
+        return
+    view = gbop_private_voice_view(room)
+    notice = (
+        "Server administrators can still access the room. Your speech is sent to OpenAI "
+        "while GBOP is listening; normal API usage charges apply. "
+        "Use `/gbop action:pause` to pause or leave voice to end your session."
+    )
+    if not private_room_autojoin_allowed(member, room):
+        await interaction.followup.send(
+            "Your room's private permissions changed. Ask the server owner to restore them, "
+            "then run `/meet` again.", ephemeral=True)
+        return
+    current = getattr(getattr(member, "voice", None), "channel", None)
+    if current is None:
+        # Discord cannot connect a member's microphone from a text command.
+        await interaction.followup.send(
+            f"Your private meeting is ready in {room.mention}. **Open it below and join voice; "
+            "GBOP joins automatically.** No second command is needed.\n" + notice,
+            view=view, ephemeral=True)
+        return
+    if current.id != room.id:
+        try:
+            await member.move_to(room, reason="Member requested /meet with GBOP")
+        except discord.HTTPException:
+            await interaction.followup.send(
+                f"Your private room is {room.mention}, but Discord could not move you. "
+                "**Open it below and join voice; GBOP joins automatically.** "
+                "Automatic moves need GBOP's **Move Members** permission.\n" + notice,
+                view=view, ephemeral=True)
+            return
+        # REST success can arrive before the gateway updates Member.voice. Wait
+        # without holding the guild lock so old-room cleanup can release its slot.
+        async def moved():
+            while True:
+                channel = getattr(getattr(member, "voice", None), "channel", None)
+                if channel is None or channel.id != current.id:
+                    return channel
+                await asyncio.sleep(0.1)
+        try:
+            destination = await asyncio.wait_for(moved(), timeout=5)
+        except asyncio.TimeoutError:
+            destination = None
+        if destination is None or destination.id != room.id:
+            await interaction.followup.send(
+                f"I couldn't confirm your move to {room.mention}. Open the room and join voice "
+                "to start GBOP, or run `/meet` again once you're connected.\n" + notice,
+                view=view, ephemeral=True)
+            return
+    # Check again after the move, before listening. Never silently start in a
+    # room whose access changed while Discord was processing the request.
+    if not private_room_autojoin_allowed(member, room):
+        await interaction.followup.send(
+            "Your room's private permissions changed. GBOP has not started listening. "
+            "Ask the server owner to restore them, then run `/meet` again.", ephemeral=True)
+        return
+    try:
+        room, session = await gbop_connect_member_voice(member, room)
+        if session is None:
+            await interaction.followup.send(
+                "Your meeting did not start because you left voice or the session is paused. "
+                "Run `/meet` when you're ready.", view=view, ephemeral=True)
+            return
+        try:
+            await asyncio.wait_for(session.ready.wait(), timeout=12)
+        except asyncio.TimeoutError:
+            await interaction.followup.send(
+                f"GBOP is in {room.mention}, but the AI connection is still starting. "
+                "Use `/gbop action:status` to check.\n" + notice, view=view, ephemeral=True)
+            return
+    except Exception as exc:
+        await interaction.followup.send(
+            f"Your room is ready, but GBOP could not start the meeting: {exc}\n"
+            "Try `/meet` again or use the browser session below.", view=view, ephemeral=True)
+        return
+    if not in_voice_channel(member, session.voice_client):
+        await interaction.followup.send(
+            "You left the private meeting before GBOP was ready. Run `/meet` when you're ready.",
+            view=view, ephemeral=True)
+        return
+    await interaction.followup.send(
+        f"🎙️ **You and GBOP are ready in {room.mention}.** Speak naturally.\n" + notice,
+        view=view, ephemeral=True)
+
+
+@tree.command(name="meet", description="Start a private voice meeting with GBOP.", guild=GUILD)
+async def meet(interaction: discord.Interaction):
+    if not await require_member(interaction):
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    key = (interaction.guild.id, interaction.user.id)
+    async with GBOP_MEETING_LOCKS.setdefault(key, asyncio.Lock()):
+        await gbop_start_private_meeting(interaction)
 
 
 @tree.command(name="gbop", description="Open private browser voice, call GBOP into a channel, or get help.", guild=GUILD)

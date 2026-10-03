@@ -7,7 +7,7 @@ silently become a member's stop or the parent range's invalidation rule.
 from datetime import datetime
 from gbop_voice_web.candle_evidence import summarize, stamp, parse_time, next_boundary, timeframe
 
-VERSION = 'candle-lifecycle-2026-10-03'
+VERSION = 'candle-lifecycle-local-function-2026-10-03'
 MAX_IDENTITIES = 32
 
 
@@ -211,8 +211,11 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
         f['next_relation_detail_start_ny'] = r['next_detail_start_ny']
         f['model1_crt_invalidating_close'] = r['model1_crt_invalidating_close']
     result['response_contract'] += (' Use super_soup_structure for nested CRT cleanliness, '
-        'supported variants, local_crt_outcome and parent_function_outcome independently. '
-        'Clean formation can fail; unclean formation can still deliver parent function. '
+        'supported variants, local_crt_outcome, local_function_outcome and parent_function_outcome independently. '
+        'Clean formation can fail; an invalidated or unclean Model 1 can still deliver its own '
+        'opposing liquidity. local_function_objectives records that delivery and its timing '
+        'relative to Model 1 invalidation, without restoring CRT validity or clean structure. '
+        'The existing parent-range observation boundary still applies. '
         'super_soup.status separately preserves pre-CSD ordering uncertainty. '
         'The next candle may be an inside bar rather than an immediate soup.')
     complete = all(row['complete'] for row in rows)
@@ -257,6 +260,29 @@ def lifecycle_summary(result):
             }
             parts.append('For the nested CRT: ' + outcomes.get(structure['local_crt_outcome'], 'unverified') +
                          '; for the parent range: ' + outcomes.get(structure['parent_function_outcome'], 'unverified') + '.')
+            function = structure.get('local_function_outcome')
+            invalidated_at = structure.get('local_crt_invalidated_at_ny')
+            if function and (invalidated_at or function != structure['local_crt_outcome']):
+                objectives = structure['local_function_objectives']
+                target_name = ('opposing_liquidity' if function == 'opposing_liquidity_delivered' else
+                               'midpoint' if function.startswith('midpoint_') else None)
+                if target_name:
+                    target = objectives[target_name]
+                    evidence = target['evidence']
+                    timing = target['relative_to_model1_invalidation']
+                    sentence = (f"Independently, the Model 1 function delivered its own {target_name.replace('_', ' ')} "
+                                f"at {target['level']} in the {_clock(evidence['bar_open_ny'])}–{_clock(evidence['bar_close_ny'])} source candle")
+                    if timing == 'after_model1_invalidation':
+                        sentence += f", after its {_clock(invalidated_at)} invalidating close"
+                    elif timing == 'before_model1_invalidation':
+                        sentence += f", before its later {_clock(invalidated_at)} invalidating close"
+                    elif timing == 'same_model1_invalidating_bar_order_unresolved':
+                        sentence += '; its order relative to the Model 1 invalidating close is unresolved'
+                    parts.append(sentence + '. This does not restore CRT validity or change its structural quality.')
+                else:
+                    description = ('neither objective verified before the parent-range observation window ended'
+                                   if function == 'failed_before_objectives' else outcomes.get(function, 'unverified'))
+                    parts.append('Independent Model 1 function: ' + description + '.')
         if body['super_soup']['status'] == 'observed_before_csd':
             parts.append(f"A Super Soup returned inside that candle at {_clock(body['super_soup']['evidence']['return_candle']['bar_close_ny'])}, before CSD.")
         if body['body_reference_retest']['evidence']:

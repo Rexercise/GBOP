@@ -36,6 +36,7 @@ class AutoJoinTests(unittest.IsolatedAsyncioTestCase):
             async def authorize(fn, arg):
                 return allowed, None
             ns = dict(GTOP_GUILD_ID=123, private_room_autojoin_allowed=private_room_autojoin_allowed,
+                      GBOP_MEETING_LOCKS={},
                       asyncio=NS(to_thread=authorize, wait_for=asyncio.wait_for, TimeoutError=asyncio.TimeoutError),
                       gbop_voice_member_allowed=Mock(), gbop_connect_member_voice=connect)
             await code('gbop_autojoin_private_room', ns)(member, room)
@@ -47,6 +48,7 @@ class AutoJoinTests(unittest.IsolatedAsyncioTestCase):
             return True, None
         connect = AsyncMock(side_effect=RuntimeError('All voice slots are in use'))
         ns = dict(GTOP_GUILD_ID=123, private_room_autojoin_allowed=private_room_autojoin_allowed,
+                  GBOP_MEETING_LOCKS={},
                   asyncio=NS(to_thread=authorize, TimeoutError=asyncio.TimeoutError),
                   gbop_voice_member_allowed=Mock(), gbop_connect_member_voice=connect,
                   gbop_private_voice_view=lambda room: None)

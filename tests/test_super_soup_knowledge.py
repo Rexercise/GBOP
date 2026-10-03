@@ -12,6 +12,9 @@ class SuperSoupKnowledgeTests(unittest.TestCase):
                      'clean-but-failed', 'not-clean-but-function-delivered',
                      'model1.lifecycle', 'NOT continuous monitoring'):
             self.assertIn(term, CANONICAL_KNOWLEDGE)
+        for term in ('local_crt_outcome', 'local_function_outcome', 'local_function_objectives',
+                     'relative_to_model1_invalidation', 'never restores CRT validity'):
+            self.assertIn(term, CANONICAL_KNOWLEDGE)
 
     def test_shift_reuses_enriched_model1_evidence(self):
         root = Path(__file__).resolve().parents[1] / 'gbop_voice_web'

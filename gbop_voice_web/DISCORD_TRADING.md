@@ -1,7 +1,12 @@
 # Using GBOP during a trading session
 
 Members need their GTOP member role and `/activate agree:true`. Revoked members
-cannot use the member tools. Join a regular Discord voice channel and run `/gbop`.
+cannot use the member tools. Use **`/meet`** for a private meeting with GBOP. It has
+no options: it creates or reuses your private room and, if you're already in voice,
+moves you there and starts GBOP. If you're only in text chat, open the room from the
+private reply and join voice; GBOP joins automatically without a second command.
+
+For a shared conversation, join a regular Discord voice channel and run `/gbop`.
 `/voice` remains supported. GBOP needs View Channel, Connect and Speak there.
 She waits for the AI session to be ready before reporting success. A connection
 delay is reported separately from a working Discord connection.
@@ -30,6 +35,7 @@ requesting member's DMs, subject to their Discord privacy settings.
 
 | Command | Effect |
 | --- | --- |
+| `/meet` | Create/reuse your private room, move you if already in voice, and start GBOP |
 | `/gbop` | Join your channel, or reuse the current connection |
 | `/gbop action:room` | Create/reuse your private Discord room; GBOP joins automatically when you join voice |
 | `/gbop action:private` | Open your individual browser voice session; other members can open theirs simultaneously |
@@ -40,7 +46,18 @@ requesting member's DMs, subject to their Discord privacy settings.
 | `/gbop action:leave` | End the channel session; requires being there or owner access |
 | `/voicehealth` | Existing detailed voice diagnostics |
 
-Private-room members only need to open their room and join voice. No second slash
+Discord's [Modify Guild Member API](https://docs.discord.com/developers/resources/guild#modify-guild-member)
+only moves a member who is already connected to voice. GBOP needs **Move Members**
+for the automatic move; if Discord rejects it, the private reply still provides
+the room link so the member can join directly. Opening a link does not enable the
+microphone automatically; the exact Join Voice control depends on the Discord
+client. GBOP does not reserve a bot slot or open an AI session for a text-only
+member until they join. Repeating `/meet` reuses the room and current connection.
+Simultaneous requests from different members use the existing independent bot
+slots; a busy slot is never taken from another room. The room setup, move result,
+readiness and any error are shown only to the requesting member.
+
+Private-room members can also open their room and join voice directly. No second slash
 command is required, including on later visits through the channel list. Entering
 the room starts listening and streams the owner's speech to OpenAI, as disclosed
 in the room response. Auto-join is restricted to the authorized room owner and
@@ -72,8 +89,8 @@ Rooms are never deleted automatically; a restart does not lose their owner ACL.
 
 ## Two simultaneous Discord rooms: one-time owner setup
 
-1. Give the primary GBOP role **Manage Channels**, **View Channels**, **Connect**
-   and **Speak**. If an existing category overrides these, create rooms at the
+1. Give the primary GBOP role **Manage Channels**, **View Channels**, **Connect**,
+   **Speak** and **Move Members** (for `/meet`'s automatic member move). If an existing category overrides these, create rooms at the
    server root (the default here) or fix the category permissions.
 2. In the Discord Developer Portal, create a second application/bot such as
    **GBOP Voice 2**. Enable **Server Members Intent**, matching the client's
@@ -89,7 +106,8 @@ Rooms are never deleted automatically; a restart does not lose their owner ACL.
    bot access. Discord uses the `manage_roles` permission for this channel setting.
    Creating a room requires Manage Channels; changing its access requires the
    separate permission. Administrator is not needed.
-5. Both members create their rooms and join them. GBOP joins automatically using an
+5. Both members use `/meet`. If not already in voice, each joins the linked private
+   room. GBOP joins automatically using an
    available bot. The helper runs only voice transport; the main bot continues
    commands, DMs and scheduled alerts so those are not duplicated.
 
@@ -124,3 +142,11 @@ room A while room B continues. Confirm the owner/admin can join room B but is no
 treated as its member by the AI. Then switch one member from Discord to browser
 and retrieve the same identified test trade. No test should silently create real
 executions in a member's journal.
+
+For `/meet`, verify both an already-connected member (automatic move) and a
+text-only member (room link, then Join Voice). Repeat the command in the same room,
+try it while slots are busy, deny Move Members temporarily in a test server, and
+leave during startup. Check that inactive/revoked members cannot create a room or
+move themselves through the command, and that a room with shared permissions is
+refused. These acceptance checks require an authorized Discord test; local tests
+mock Discord transport and cannot confirm microphone access or client-specific taps.
