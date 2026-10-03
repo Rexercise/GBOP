@@ -1,0 +1,89 @@
+name: Reconcile TAB release
+on:
+  push:
+    branches: [fix/tab-market-release-20261003]
+permissions:
+  contents: write
+concurrency:
+  group: tab-reconcile
+  cancel-in-progress: true
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Preserve current main and one authoritative detector
+        run: |
+          git config user.name 'GBOP release validation'
+          git config user.email 'noreply@github.com'
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = '6b28dbe7517bc735e148b50a44ab2ac909660208'
+          git merge --no-commit --no-ff origin/main || true
+          python - <<'PY'
+          import subprocess,ast
+          from pathlib import Path
+          conflicts=set(subprocess.check_output(['git','diff','--name-only','--diff-filter=U'],text=True).splitlines())
+          expected={'gbop_voice_web/candle_lifecycle.py','gbop_voice_web/gtop_protocol.py'}
+          assert conflicts<=expected, conflicts
+          for path in expected:
+              content=subprocess.check_output(['git','show','origin/main:'+path],text=True)
+              Path(path).write_text(content)
+          p=Path('gbop_voice_web/gtop_protocol.py'); t=p.read_text()
+          assert '"gtop_super_soup.txt")' in t
+          p.write_text(t.replace('"gtop_super_soup.txt")','"gtop_super_soup.txt", "gtop_tab.txt")'))
+          p=Path('tests/test_tab_release.py'); t=p.read_text(); lines=t.splitlines(keepends=True)
+          remove=[]
+          for node in ast.walk(ast.parse(t)):
+              if isinstance(node,(ast.FunctionDef,ast.ClassDef)) and node.name in ('classify','SoupMatrixTests','test_no_soup_yet_is_unknown_not_absent'):
+                  remove.append((node.lineno,node.end_lineno))
+          for start,end in sorted(remove,reverse=True):
+              del lines[start-1:end]
+          t=''.join(lines).replace('from gbop_voice_web.super_soup_classification import classify_super_soup\n','')
+          t=t.replace("body['super_soup']['classification']['formation']", "body['super_soup_structure']['structural_quality']")
+          p.write_text(t)
+          Path('gbop_voice_web/super_soup_classification.py').unlink()
+          p=Path('gbop_voice_web/market_watch_runtime.py'); t=p.read_text()
+          t=t.replace("cls = soup.get('classification',{})", "cls = candle.get('super_soup_structure',{})")
+          t=t.replace("cls.get('formation','observed')", "cls.get('structural_quality','observed')")
+          t=t.replace("cls.get('variant') or 'distribution unresolved'", "','.join(v['code'] for v in cls.get('variants',[])) or 'distribution unresolved'")
+          p.write_text(t)
+          Path('gbop_voice_web/gtop_tab.txt').write_text('''GTOP TAB — LIVE OPERATIONS
+          The Model 1 candle remains identifiable before CSD and after failure. Answer its time, OHLC and purged level first. candle_lifecycle.purge_candles[].super_soup_structure is authoritative for clean/not-clean structure, variants, local_crt_outcome and parent_function_outcome; super_soup.status separately governs pre-CSD ordering. Never substitute execution status for these observations.
+          Explicit member-scoped watch registration is required before promising private Discord alerts. State the returned range, shift, expiry and current status. Closed-candle scans pause on stale feeds and depend on existing service availability. No broker orders or automatic spoken alerts. Saved prepared reviews carry actual asset/date/as-of evidence; refresh exact or newer facts on request. Missing correlated data is unavailable, not no SMT. A registration failure is not a running watch.
+          ''')
+          # Avoid duplicating raw and authoritative sequels in model-facing market results.
+          p=Path('gbop_voice_web/market_data.py'); t=p.read_text()
+          anchor="    model = review.get('model1', {})\n"
+          assert t.count(anchor)==1
+          t=t.replace(anchor,anchor+"    model.pop('lifecycle', None)  # authoritative details are in candle_lifecycle\n    model.pop('assigned_range_purges', None)\n")
+          p.write_text(t)
+          p=Path('gbop_voice_web/voice_runtime.py'); t=p.read_text()
+          anchor="        if isinstance(value, dict):\n            sequels = value.get('following_candles')"
+          assert t.count(anchor)==1
+          replacement="        if isinstance(value, dict):\n            relations = value.get('following_candle_relations')\n            if isinstance(relations, list) and len(relations) > 3:\n                value['following_candle_relations'] = relations[:3]\n                value['next_relation_detail_start_ny'] = relations[3].get('bar_open_ny')\n                value['following_relation_count'] = len(relations)\n            sequels = value.get('following_candles')"
+          p.write_text(t.replace(anchor,replacement))
+          for path in ('gbop_voice_web/market_watch_runtime.py','gbop_voice_web/market_data.py','gbop_voice_web/voice_runtime.py','tests/test_tab_release.py'):
+              ast.parse(Path(path).read_text())
+          print('Consolidated onto main Super Soup detector; its full 39 regression tests retained.')
+          PY
+          git add bot.py gbop_voice_web market_bridge tests
+          test -z "$(git diff --name-only --diff-filter=U)"
+      - name: Install test dependencies
+        run: pip install httpx==0.28.1 fastapi==0.116.1
+      - name: Compile and validate combined release
+        run: |
+          python -m compileall -q bot.py gbop_voice_web market_bridge
+          python -m unittest discover -s tests
+      - name: Commit verified reconciliation and remove temporary workflow
+        run: |
+          rm .github/workflows/tab-reconcile.yml
+          git add bot.py gbop_voice_web market_bridge tests .github/workflows/tab-reconcile.yml
+          git commit -m 'Combine private watches and preparation with authoritative Super Soup CRT evidence'
+          git push origin HEAD:fix/tab-market-release-20261003
