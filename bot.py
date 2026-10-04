@@ -96,7 +96,7 @@ from openai import OpenAI
 import websockets
 
 # -------------------------------------------------
-# GBOP DISCORD RECEIVE REPAIR V2
+# GBOP DISCORD RECEIVE REPAIR V3
 # Pinned discord.py 2.7.1 + porgeeratad voice_recv:
 # keep a single bad/DAVE-transition Opus packet from
 # killing the entire Discord receive listener.
@@ -113,6 +113,8 @@ GBOP_RX_STATS = {
     "unknown_sender": 0,
     "dave_decrypted": 0,
     "plain": 0,
+    "padded": 0,
+    "padding_errors": 0,
 }
 
 
@@ -138,13 +140,35 @@ def _gbop_rx_note(decoder, reason):
         )
 
 
+def _gbop_rtp_payload(packet):
+    """Remove RTP padding after transport decrypt, before DAVE/Opus.
+
+    The pinned voice_recv reader removes the nonce/extension but leaves RTP
+    padding intact. RFC 3550 section 5.1 makes the final byte the padding count
+    (including itself), only when the header's P bit is set. Never inspect an
+    unflagged frame's tail or fall back to unauthenticated audio on failure.
+    """
+    payload = bytes(packet.decrypted_data or b"")
+    if getattr(packet, "padding", False):
+        if not payload or not 0 < payload[-1] <= len(payload):
+            raise ValueError("Invalid RTP padding count")
+        payload = payload[:-payload[-1]]
+        GBOP_RX_STATS["padded"] += 1
+    return payload
+
+
 def _gbop_process_packet(self, packet):
     member = self._get_cached_member()
     if member is None:
         self._cached_id = self.sink.voice_client._get_id_from_ssrc(self.ssrc)
         member = self._get_cached_member()
 
-    payload = bytes(packet.decrypted_data or b"") if packet else None
+    try:
+        payload = _gbop_rtp_payload(packet) if packet else None
+    except ValueError:
+        GBOP_RX_STATS["padding_errors"] += 1
+        _gbop_rx_note(self, "Invalid RTP padding; frame concealed")
+        payload = None
     usable = bool(packet and payload)
 
     if usable and payload != b"\xf8\xff\xfe":
@@ -216,7 +240,7 @@ def _gbop_process_packet(self, packet):
 gbop_recv_opus.PacketDecoder._process_packet = _gbop_process_packet
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
 logging.getLogger("discord.ext.voice_recv.gateway").setLevel(logging.WARNING)
-print("[GBOP-RT] receive repair v2 installed; discord.py", discord.__version__)
+print("[GBOP-RT] receive repair v3 installed; discord.py", discord.__version__)
 
 load_dotenv()
 
@@ -6789,6 +6813,8 @@ async def gbop_voice_health_text(interaction):
             f"Detected voice turns: **{session._voice_turn_count if session else 0}**",
             f"Receive decoded frames: **{GBOP_RX_STATS.get('decoded', 0)}**",
             f"Receive DAVE errors: **{GBOP_RX_STATS.get('dave_errors', 0)}**",
+            f"Receive padded frames: **{GBOP_RX_STATS.get('padded', 0)}**",
+            f"Receive padding errors: **{GBOP_RX_STATS.get('padding_errors', 0)}**",
             f"Receive Opus errors: **{GBOP_RX_STATS.get('opus_errors', 0)}**",
             (
                 f"Your last error: "
