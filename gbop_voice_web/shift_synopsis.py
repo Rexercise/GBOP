@@ -1,7 +1,7 @@
 """Short, evidence-only default shift reply; detailed range evidence stays queryable.
 
 The seven o'clock range is evaluated independently even when eight/nine fails.
-Only a real early boundary purge makes Young Lefty relevant to the default reply.
+Young Lefty's status is always stated; only a real early purge creates its setup.
 No assigned-candle candidate list or entry inference is needed for this view.
 """
 from copy import deepcopy
@@ -12,31 +12,25 @@ from gbop_voice_web.candle_naming import candle_label, source_timeframe
 from gbop_voice_web.shift_narrative import directional_outcome
 from gbop_voice_web.smt_reference import closing_candle
 from gbop_voice_web.active_range_story import selected_range_story, shift_end_state, _double_sentence
-from gbop_voice_web.target_approach import owner_inducement_example
+from gbop_voice_web.target_approach import owner_inducement_example, inducement_clause
 
 
 SYNOPSIS_CONTRACT = (
-    'Use spoken_summary briefly: 9ate8 directional verdict in the first sentence; '
-    'Young Lefty is independent. Follow active_range_context through later hours and '
-    'conclusion to shift_end. Only next_selected_range changes the anchor, never a new '
-    'hour or objective delivery. Candle body direction differs from an independent '
-    'range thesis. Omission is not absence. Model 1/CISD/Soup needs exact detail_request; '
-    'delivery never proves a fill.')
+    '9ate8 verdict first; independent Young Lefty status next, even absent/unverified. '
+    'Follow active_range_context to shift_end; only next_selected_range changes the anchor. '
+    'Body direction is not range thesis. Verdict then BUT induced 50% with measured gap/path '
+    'progress; no glossary or inferred profit. Model 1/CISD/Soup needs exact detail_request; '
+    'omission is not absence.')
 
 OTHER_RANGES_CONTRACT = (
-    'Answer the other-ranges follow-up using spoken_summary and ranges in chronology. '
-    'Previously discussed anchors are excluded from new opportunities even when they failed. '
-    'Carry active_range_context as a brief continuity bridge without repeating old failed plays. '
-    'Finish the selected anchor through manipulation, return, development and delivery or '
-    'invalidation before independent candidates. An hourly candle body direction differs from '
-    'that hour\'s independent range thesis. Use next_selected_range only for a real transition. '
-    'In continue_active_range mode, explain that anchor and any actual next selected range; '
-    'do not substitute other opportunities. Preserve shift_end and the final close. '
-    'An unbranded H1 CRT is still relevant: play=null never means absent. '
-    'Keep each range\'s own direction, variant, objectives, invalidation and selection role. '
-    'Independent context is not a selected-range transition. A range closing at the cutoff '
-    'has no later delivery evidence. Say the explicit H1 range opening for each range '
-    'actually discussed; retrieval alone is not a completed spoken response.')
+    'Use spoken_summary/ranges chronologically. Exclude discussed anchors from new opportunities, '
+    'even failed ones; bridge active_range_context without repeating them. Finish selected-range '
+    'manipulation/return/development/outcome before independent candidates. Body direction is not '
+    'an independent thesis. Only next_selected_range changes selection. continue_active_range '
+    'explains that anchor and actual successors, not other opportunities. Preserve shift_end/final '
+    'close. play=null is not absence. Keep each range\'s own direction/variant/targets/invalidation/role. '
+    'Independent context is no selection change; cutoff ranges have no later evidence. Name each '
+    'discussed H1 opening; retrieval alone is not completed discussion.')
 
 
 def _active_context(story, records, anchor_start_ny=None, asset=None):
@@ -298,7 +292,8 @@ def build_shift_synopsis(review, asset=None):
     ranges = story.get('ranges', [])
     opening = next((r for r in ranges if r.get('label') == '9ate8'), ranges[0] if ranges else None)
     if not opening:
-        return {'spoken_summary': 'Shift evidence is unavailable.', 'ranges': [], 'range_index': [],
+        return {'spoken_summary': 'Shift evidence is unavailable. Young Lefty: unverified.',
+                'ranges': [], 'range_index': [], 'young_lefty_status': 'unverified',
                 'response_contract': SYNOPSIS_CONTRACT}
     records = story.get('recap', {}).get('paired_interpretation', [])
     lead = _paired_fact(opening, records, _local_fact(opening, '9ate8'))
@@ -307,14 +302,17 @@ def build_shift_synopsis(review, asset=None):
     annotation = owner_inducement_example(asset, opening['anchor'], lead['direction'], approach)
     if annotation:
         lead['midpoint_approach'] = {'status': approach['status'],
-            'distance_price_points': approach['distance_price_points'], 'gtop_context': annotation}
-        lead_sentence += ' Its non-touch 50% approach was inducement in GTOP terms.'
+            'distance_price_points': approach['distance_price_points'], 'gtop_context': annotation,
+            'boundary_to_target_reference': deepcopy(approach['target_approach']['boundary_to_target_reference'])}
+        lead_sentence = lead_sentence.rstrip('.') + '; ' + inducement_clause(lead['midpoint_approach'], lead['direction']) + '.'
     facts, sentences = [lead], [lead_sentence]
     # Seven's own range is independent of eight and nine. An invalidated local
     # eight/nine or an opposite-direction paired thesis must not hide it.
     young = next((o.get('evidence') for o in review.get('observations', [])
                   if o.get('play') == 'Young Lefty'), None)
     young_relevant = False
+    young_status = 'unverified'
+    young_sentence = 'Young Lefty: unverified; missing or unfinished seven-range evidence.'
     if young and young.get('anchor', {}).get('complete'):
         start = parse_time(young['anchor']['start_ny'])
         early = [e for e in young.get('events', []) if e['kind'].endswith('_side_purge')
@@ -323,9 +321,13 @@ def build_shift_synopsis(review, asset=None):
             item = _local_fact(young, 'Young Lefty')
             item['opposes_9ate8'] = bool(item['direction'] and lead['direction'] and item['direction'] != lead['direction'])
             facts.append(item)
-            sentences.append(('Earlier, ' if parse_time(early[0]['bar_open_ny']) < parse_time(story['start_ny']) else 'Separately, ')
-                             + _sentence(item, young=True))
+            young_sentence = _sentence(item, young=True)
+            young_status = item['verdict']
             young_relevant = True
+        elif young.get('observation_coverage', {}).get('complete'):
+            young_status = 'absent'
+            young_sentence = 'Young Lefty: absent; no early seven-range purge by eight/nine.'
+    sentences.append(young_sentence)
     for row in ranges:
         if row is opening:
             continue
@@ -355,6 +357,7 @@ def build_shift_synopsis(review, asset=None):
             'active_range_context': _compact_active_context(_active_context(story, records, asset=asset)),
             'shift_end': {k: v for k, v in ending.items() if k != 'spoken_summary'},
             'young_lefty_evaluated': True, 'young_lefty_relevant': young_relevant,
+            'young_lefty_status': young_status,
             'coverage_complete': story.get('coverage', {}).get('complete', False),
             'through_ny': story['end_ny'], 'response_contract': SYNOPSIS_CONTRACT}
 

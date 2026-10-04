@@ -78,6 +78,7 @@ class ContextualJournalTests(unittest.TestCase):
             with self.conn:
                 yield Adapter()
         self.db = db
+        coach.init_coach(db)
         self.context = MarketConversation((10,20,'test-session'), auth_provider=(db,10,20))
         self.review()
 
@@ -109,7 +110,7 @@ class ContextualJournalTests(unittest.TestCase):
         names = (['ai_choose_open_trade','ai_open_trade','ai_close_trade','ai_add_entry','ai_record_trade_event','ai_edit_journal','ensure_member_record']
                  if path=='bot.py' else ['choose_open_trade','tool_open_trade','tool_close_trade','tool_add_entry','tool_record_trade_event'])
         env = dict(db=self.db, GTOP_GUILD_ID=10, trade_number=trade_number, trade_record_id=trade_record_id,
-            journal_number=journal_number, math=math, discord=NS(Member=object),
+            journal_number=journal_number, math=math, json=json, discord=NS(Member=object),
             trade_number_for_id=lambda user,id:trade_number(self.db,10,user,id),
             trade_id_from_number=lambda user,n:trade_record_id(self.db,10,user,n),
             thesis_used_r=lambda _:0.25, tier_used_r=lambda *a:0.25, now=lambda:'2026-10-03T19:00:00+00:00',
@@ -124,7 +125,8 @@ class ContextualJournalTests(unittest.TestCase):
         result = self.save()
         self.assertTrue(result['saved'],result)
         self.assertIsNone(result['result_r'])
-        self.assertEqual(self.conn.execute('SELECT count(*) FROM theses').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM theses').fetchone()[0],1)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM thesis_executions').fetchone()[0],0)
         meta = self.metadata()
         self.assertEqual((meta['asset'],meta['trade_date'],meta['session']),('NAS100','2026-10-02','day'))
         self.assertNotIn('reported_entry_at',meta)
@@ -297,7 +299,8 @@ class ContextualJournalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'not linked'):
             self.context.run('close_trade',dict(trade_id=opened['trade_id'],summary='Unrelated',rule_adherence='',study_note=''),
                 lambda n,a:env['tool_close_trade'](20,a))
-        self.assertEqual(self.conn.execute('SELECT count(*) FROM journals').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM journals').fetchone()[0],1)
+        self.assertEqual(self.conn.execute('SELECT description FROM journals').fetchone()[0],'NAS100 Bearish · 9ate8')
         self.assertEqual(self.conn.execute('SELECT status FROM theses').fetchone()[0],'OPEN')
 
     def test_existing_journal_correction_never_acquires_current_review(self):
@@ -387,7 +390,8 @@ class ContextualJournalTests(unittest.TestCase):
             result=env[closing](20,dict(trade_id=opened['trade_id'],summary='close',rule_adherence='',study_note=''))
             self.before_execute=None
             self.assertFalse(result['ok'],result)
-        self.assertEqual(self.conn.execute('SELECT count(*) FROM journals').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM journals').fetchone()[0],2)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM journals WHERE description='close'").fetchone()[0],0)
 
     def test_same_scope_other_candle_cannot_rebind_open_trade(self):
         env=self.handlers('gbop_voice_web/server.py')

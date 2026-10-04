@@ -11,6 +11,7 @@ class RiskProfileTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(':memory:')
         self.conn.row_factory = sqlite3.Row
+        self.conn.create_function('pg_advisory_xact_lock', 1, lambda _: 1)
         rp._ready = False
         @contextlib.contextmanager
         def db():
@@ -62,6 +63,13 @@ class RiskProfileTests(unittest.TestCase):
           guild_id INTEGER, user_id INTEGER, entry_model TEXT, tier INTEGER, risk_r REAL,
           entry_invalidation TEXT, note TEXT, created_at TEXT);
         ''')
+        self.conn.executescript("""
+        CREATE TABLE IF NOT EXISTS members(guild_id INTEGER,user_id INTEGER,activated INTEGER,revoked INTEGER);
+        INSERT INTO members VALUES(10,20,1,0);
+        CREATE TABLE IF NOT EXISTS journals(id INTEGER PRIMARY KEY,guild_id INTEGER,user_id INTEGER,description TEXT,rule_adherence TEXT,result_r REAL,study_note TEXT,created_at TEXT,thesis_id INTEGER);
+        CREATE TABLE IF NOT EXISTS journal_details(journal_id INTEGER PRIMARY KEY,guild_id INTEGER,user_id INTEGER,photo_id TEXT,entry_index INTEGER DEFAULT 1,metadata TEXT DEFAULT '{}',updated_at TEXT);
+        CREATE TABLE IF NOT EXISTS thesis_events(id INTEGER PRIMARY KEY,thesis_id INTEGER,guild_id INTEGER,user_id INTEGER,event TEXT,details TEXT,result_r REAL,created_at TEXT);
+        """)
         rp.save_profile(self.db, 10, 20, self.args)
         tree = ast.parse(Path('gbop_voice_web/server.py').read_text())
         nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'tool_open_trade']

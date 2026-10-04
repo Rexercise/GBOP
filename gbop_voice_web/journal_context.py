@@ -97,7 +97,7 @@ def binding(args):
 def write_guard(args, guild, user, conn=None):
     value = binding(args)
     with value.guard(guild, user) if value else nullcontext():
-        if conn is not None and value:
+        if conn is not None:
             revision = member_revision(conn, guild, user)
             if value and value.context._auth_revision not in (None, revision):
                 raise ValueError('Member authorization changed. Start a fresh review before saving its context.')
@@ -209,7 +209,7 @@ def merge_metadata(old, reported, context=None, *, result_changed=False, result_
         changes['result_r'] = {'before': result_before, 'after': result_after}
     if changes or result_changed:
         history = prov.get('corrections') or []
-        prov['corrections'] = (history + [{'recorded_at': stamp(), 'fields': changes, 'result_corrected': result_changed}])[-8:]
+        prov['corrections'] = history + [{'recorded_at': stamp(), 'fields': changes, 'result_corrected': result_changed}]
     member.update(reported)
     defaults.difference_update(reported)
     if merged.get('reported_entry_at') and 'trade_date' not in reported:
@@ -229,7 +229,13 @@ def merge_metadata(old, reported, context=None, *, result_changed=False, result_
     prov.update(version=1, member_reported=sorted(member), context_defaults=sorted(defaults))
     merged['provenance'] = prov
     validate_reported(merged)
-    if len(json.dumps(merged)) > 48000:
+    # Durable server audit grows independently of the bounded editable facts.
+    # Never drop older corrections merely to admit a newer one.
+    budget = deepcopy(merged)
+    budget.pop('legacy_audit', None)
+    if isinstance(budget.get('provenance'), dict):
+        budget['provenance'].pop('corrections', None)
+    if len(json.dumps(budget)) > 48000:
         raise ValueError('Journal metadata is too large; shorten the entry or split it.')
     return merged
 
@@ -260,7 +266,13 @@ def load_trade_metadata(conn, guild, user, trade_id):
 
 
 def close_metadata(conn, guild, user, row, args):
-    old = load_trade_metadata(conn, guild, user, row['id'])
+    # The canonical journal is the current member-corrected state. Opening-time
+    # context events are immutable evidence, not a replacement for later edits.
+    # Callers run this lookup after taking the member transaction lock.
+    from gbop_voice_web.unified_journal import canonical_journal_id, owned_journal_details
+    journal_id = canonical_journal_id(conn, guild, user, row['id'])
+    detail = owned_journal_details(conn,guild,user,journal_id) if journal_id is not None else None
+    old = json.loads(detail['metadata'] or '{}') if detail else load_trade_metadata(conn, guild, user, row['id'])
     value = binding(args)
     # Never attach today's selected review to an unrelated existing trade, even
     # when its instrument happens to match. An existing binding follows its thesis.
@@ -279,7 +291,15 @@ def close_metadata(conn, guild, user, row, args):
 
 
 def save_closed_metadata(conn, guild, user, journal_id, metadata):
+    """Compatibility wrapper: every linked write uses canonical audit/fences."""
+    from gbop_voice_web.unified_journal import owned_journal_details, ensure_canonical_journal
+    row = conn.execute('SELECT id,thesis_id FROM journals WHERE id=? AND guild_id=? AND user_id=?',
+                       (journal_id,guild,user)).fetchone()
+    if not row:
+        raise ValueError('Journal not found in your account.')
+    owned_journal_details(conn,guild,user,journal_id)
     if metadata:
-        conn.execute('''INSERT INTO journal_details (journal_id,guild_id,user_id,entry_index,metadata,updated_at)
-            VALUES (?,?,?,1,?,?) ON CONFLICT(journal_id) DO UPDATE SET metadata=excluded.metadata,updated_at=excluded.updated_at''',
-            (journal_id, guild, user, json.dumps(metadata), stamp()))
+        if not row['thesis_id']:
+            raise ValueError('An unlinked legacy journal has no trade to close. Use its explicit legacy editor.')
+        return ensure_canonical_journal(conn,guild,user,row['thesis_id'],metadata=metadata)
+    return journal_id

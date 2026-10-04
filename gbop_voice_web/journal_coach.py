@@ -5,7 +5,10 @@ import os
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 
-from gbop_voice_web.journal_numbers import journal_number, journal_record_id
+from gbop_voice_web.journal_numbers import journal_number, journal_record_id, journal_display, resolve_journal_selector
+from gbop_voice_web.trade_numbers import trade_number
+from gbop_voice_web.unified_journal import (ensure_canonical_journal, canonical_journal_id,
+    create_journal_thesis, source_journal_id, attach_journal_source, owned_journal_details, sync_thesis_fields)
 from gbop_voice_web.trade_photos import init_photos, schema, STR, NUM
 from gbop_voice_web.journal_context import (REPORTED_KEYS, validate_reported, binding,
     merge_metadata, journal_transaction, JournalTarget)
@@ -25,8 +28,9 @@ and ask ONE question about any important ambiguity. If nothing is readable, ask 
 a clearer photo instead of creating an empty journal. For a page with multiple
 trades, save separate entries; never assign one result to every trade. If it appears
 to describe a trade already journaled, resolve the journal number before saving.
-When correcting a journal use save_journal_entry with its displayed journal_number;
-only pass changed fields. Null preserves existing fields. Metadata keys can be set
+Each Trade # has one journal under the same number. Use trade_number for updates;
+clarify ambiguous legacy aliases. When correcting save only changed fields;
+Null preserves existing fields. Metadata keys can be set
 to null to clear them; clear_result explicitly clears a mistaken numeric result.
 Show a compact saved review: journal number, instrument, setup, outcome, uncertainties.
 After a close, capture the exit reason and rule adherence conversationally if absent;
@@ -60,8 +64,6 @@ reported_entry_at/reported_exit_at (date plus timezone), separate from logging t
 Ask only for missing essentials or an ambiguous candle/trade. Do not ask again for
 verified asset/date/shift/range. A stopout does NOT imply -1R; unknown R stays null.
 Market objective delivery does NOT establish a winning personal trade or any fill.
-For corrections use save_journal_entry with the displayed journal_number; preserve
-unchanged source facts and pass the member's correction with provenance.
 """
 
 SCHEMA_SQL = [
@@ -135,79 +137,140 @@ def clean_metadata(value):
 
 def save_entry(db,guild,user,args):
     meta = clean_metadata(args.get('metadata_json'))
+    if any(k in args for k in ('journal_id', 'thesis_id', '_thesis_id')):
+        return {'ok':False,'error':'Use the displayed Trade #, not an internal record identity.'}
     result = args.get('result_r')
     if result is not None and (isinstance(result,bool) or not math.isfinite(float(result))):
         return {'ok':False,'error':'Result R must be a finite number or unknown.'}
-    index = args.get('entry_index') or 1
+    index = args.get('entry_index') if args.get('entry_index') is not None else 1
     if type(index) is not int or index < 1:
         return {'ok':False,'error':'entry_index must start at 1.'}
     photo_id = args.get('photo_id')
-    requested_number = args.get('journal_number')
     target = args.get('_journal_target')
-    if target is not None:
-        if not isinstance(target, JournalTarget) or (target.guild, target.user) != (guild, user):
-            return {'ok':False,'error':'Journal target must come from the authenticated account lookup.'}
-        record_id = target.record_id
-    else:
-        record_id = journal_record_id(db,guild,user,requested_number) if requested_number is not None else None
-    if requested_number is not None and record_id is None:
-        return {'ok':False,'error':'Journal number not found in your account.'}
+    if target is not None and (not isinstance(target, JournalTarget) or (target.guild, target.user) != (guild, user)):
+        return {'ok':False,'error':'Journal target must come from the authenticated account lookup.'}
     init_coach(db)
     with journal_transaction(db, args, guild, user, serialize=True) as conn:
+        record_id, thesis_id, explicit_legacy = None, None, False
+        selection = {k:args.get(k) for k in ('trade_number','journal_number','legacy_journal_number')}
+        if any(value is not None for value in selection.values()):
+            selected = resolve_journal_selector(conn,guild,user,**selection)
+            if not selected['ok']:
+                return selected
+            record_id, thesis_id = selected.get('record_id'), selected.get('thesis_id')
+            explicit_legacy = selected.get('explicit_legacy',False)
+        if target is not None:
+            if record_id is not None and record_id != target.record_id:
+                return {'ok':False,'error':'The selected journal changed. Refresh history before saving.'}
+            record_id = target.record_id
         if photo_id:
             photo = conn.execute('SELECT id FROM trade_photos WHERE id=? AND guild_id=? AND user_id=?',
                                  (photo_id,guild,user)).fetchone()
             if not photo:
                 return {'ok':False,'error':'Photo not found in your account.'}
-            linked = conn.execute('SELECT journal_id FROM journal_details WHERE guild_id=? AND user_id=? AND photo_id=? AND entry_index=?',
-                                  (guild,user,photo_id,index)).fetchone()
-            if linked:
-                if record_id is not None and record_id != linked['journal_id']:
-                    return {'ok':False,'error':'That page entry is already attached to another journal.'}
-                record_id = linked['journal_id']
+            linked_id = source_journal_id(conn,guild,user,photo_id,index)
+            if linked_id is not None:
+                linked = conn.execute('SELECT thesis_id FROM journals WHERE id=? AND guild_id=? AND user_id=?',
+                                      (linked_id,guild,user)).fetchone()
+                if record_id is not None and record_id != linked_id or thesis_id is not None and thesis_id != linked['thesis_id']:
+                    current_thesis = thesis_id
+                    if current_thesis is None and record_id is not None:
+                        current = conn.execute('SELECT thesis_id FROM journals WHERE id=? AND guild_id=? AND user_id=?',
+                                               (record_id,guild,user)).fetchone()
+                        current_thesis = current['thesis_id'] if current else None
+                    if not current_thesis or current_thesis != linked['thesis_id']:
+                        return {'ok':False,'error':'That page entry is already attached to another journal.'}
+                if record_id is None:
+                    record_id = linked_id
         old = conn.execute('SELECT * FROM journals WHERE id=? AND guild_id=? AND user_id=?',
-                           (record_id,guild,user)).fetchone() if record_id else None
-        if record_id and not old:
+                           (record_id,guild,user)).fetchone() if record_id is not None else None
+        if record_id is not None and not old:
             return {'ok':False,'error':'Journal no longer exists. Refresh history.'}
-        details = conn.execute('SELECT * FROM journal_details WHERE journal_id=? AND guild_id=? AND user_id=?',
-                               (record_id,guild,user)).fetchone() if old else None
-        previous = json.loads(details['metadata']) if details else {}
+        if old and old['thesis_id']:
+            own_thesis = conn.execute('SELECT id FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+                                     (old['thesis_id'],guild,user)).fetchone()
+            if not own_thesis:
+                return {'ok':False,'error':'The linked trade is unavailable. Its legacy journal remains unchanged.'}
+            thesis_id = old['thesis_id']
+            canonical = canonical_journal_id(conn,guild,user,thesis_id)
+            if explicit_legacy and canonical != record_id:
+                return {'ok':False,'status':'legacy_history_preserved',
+                        'error':'This is retained legacy history. Specify the Trade # to save a canonical correction.'}
+            # A photo retry may identify a legacy source within this same thesis;
+            # the canonical row is the edit target, never the historical row.
+            if canonical is not None and canonical != record_id:
+                record_id = canonical
+                old = conn.execute('SELECT * FROM journals WHERE id=? AND guild_id=? AND user_id=?',
+                                   (record_id,guild,user)).fetchone()
+        details = owned_journal_details(conn,guild,user,record_id) if old else None
+        previous = json.loads(details['metadata'] or '{}') if details else {}
         context = binding(args)
-        merged = merge_metadata(previous, meta, context.snapshot() if context and not old else None,
+        merged = merge_metadata(previous, meta, context.snapshot() if context and not old and thesis_id is None else None,
             result_changed=bool(old and (args.get('clear_result') or result is not None and result != old['result_r'])),
             result_before=old['result_r'] if old else None,
             result_after=None if args.get('clear_result') else result,
-            text_changes={key: {'before': (old[key] or '')[:500], 'after': args[key][:500]}
+            text_changes={key: {'before': old[key] or '', 'after': args[key]}
                 for key in ('description', 'rule_adherence', 'study_note') if old and args.get(key) is not None
                 and (old[key] or '') != args[key]})
-        description = args.get('description') if args.get('description') is not None else (old['description'] if old else '')
-        if not description or not description.strip():
+        description = args.get('description') if args.get('description') is not None else (old['description'] if old else None)
+        if not old and thesis_id is None and (not description or not description.strip()):
             return {'ok':False,'error':'No readable journal details. Ask for a clearer picture or description.'}
-        adherence = args.get('rule_adherence') if args.get('rule_adherence') is not None else (old['rule_adherence'] if old else '')
-        note = args.get('study_note') if args.get('study_note') is not None else (old['study_note'] if old else '')
+        if description is not None and (not isinstance(description,str) or not description.strip()):
+            return {'ok':False,'error':'No readable journal details. Ask for a clearer picture or description.'}
+        fields = {key:args[key] for key in ('description','rule_adherence','study_note') if args.get(key) is not None}
         if args.get('clear_result'):
-            result = None
-        elif result is None and old:
-            result = old['result_r']
-        values = (description,adherence,result,note)
-        if old:
+            fields['result_r'] = None
+        elif result is not None:
+            fields['result_r'] = result
+        if old and not old['thesis_id']:
+            # Explicit legacy edits preserve the unlinked identity. Full previous
+            # field values and corrections stay in metadata; never infer a trade.
+            history = list(previous.get('legacy_audit') or [])
+            values = {k:fields.get(k,old[k]) for k in ('description','rule_adherence','result_r','study_note')}
+            if any(values[k] != old[k] for k in values) or merged != previous:
+                history.append({'recorded_at':stamp(),'journal':dict(old),
+                                'metadata':{k:v for k,v in previous.items() if k!='legacy_audit'}})
+                merged['legacy_audit'] = history
             conn.execute('UPDATE journals SET description=?,rule_adherence=?,result_r=?,study_note=? WHERE id=? AND guild_id=? AND user_id=?',
-                         values+(record_id,guild,user))
-            if old['thesis_id']:
-                conn.execute('UPDATE theses SET final_result_r=?,close_note=? WHERE id=? AND guild_id=? AND user_id=?',
-                             (result,description,old['thesis_id'],guild,user))
+                         tuple(values.values())+(record_id,guild,user))
+            if photo_id:
+                sources=merged.setdefault('source_attachments',[])
+                source={'photo_id':photo_id,'entry_index':index}
+                if source not in sources: sources.append(source)
+            primary_photo=details['photo_id'] if details and details['photo_id'] else photo_id
+            primary_index=details['entry_index'] if details and details['photo_id'] else index
+            conn.execute('''INSERT INTO journal_details (journal_id,guild_id,user_id,photo_id,entry_index,metadata,updated_at)
+                VALUES (?,?,?,?,?,?,?) ON CONFLICT(journal_id) DO UPDATE SET photo_id=excluded.photo_id,
+                entry_index=excluded.entry_index,metadata=excluded.metadata,updated_at=excluded.updated_at
+                WHERE journal_details.guild_id=excluded.guild_id AND journal_details.user_id=excluded.user_id''',
+                (record_id,guild,user,primary_photo,primary_index,json.dumps(merged,ensure_ascii=False),stamp()))
         else:
-            cur = conn.execute('INSERT INTO journals (description,rule_adherence,result_r,study_note,guild_id,user_id,created_at) VALUES (?,?,?,?,?,?,?)',
-                               values+(guild,user,stamp()))
-            record_id = cur.lastrowid
-        if not photo_id and details:
-            photo_id,index = details['photo_id'],details['entry_index']
-        conn.execute('''INSERT INTO journal_details (journal_id,guild_id,user_id,photo_id,entry_index,metadata,updated_at)
-            VALUES (?,?,?,?,?,?,?) ON CONFLICT(journal_id) DO UPDATE SET
-            photo_id=excluded.photo_id,entry_index=excluded.entry_index,metadata=excluded.metadata,updated_at=excluded.updated_at''',
-            (record_id,guild,user,photo_id,index,json.dumps(merged,ensure_ascii=False),stamp()))
-    return {'ok':True,'saved':True,'updated':bool(old),'journal_number':journal_number(db,guild,user,record_id),
-            'description':description,'result_r':result,'metadata':merged,'photo_attached':bool(photo_id)}
+            if thesis_id is None:
+                merged.setdefault('kind','reflection')
+                merged['journal_only'] = True
+                merged['recorded_risk'] = None
+                thesis_id = create_journal_thesis(conn,guild,user,merged)
+            record_id = ensure_canonical_journal(conn,guild,user,thesis_id,fields=fields,metadata=merged)
+            if photo_id:
+                attach_journal_source(conn,guild,user,record_id,photo_id,index)
+            thesis_patch={key:meta[key] for key in ('asset','direction','play','session') if meta.get(key) is not None}
+            if 'result_r' in fields:
+                thesis_patch['final_result_r']=fields['result_r']
+            thesis=conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+                                (thesis_id,guild,user)).fetchone()
+            if 'description' in fields and thesis['status'] in ('CLOSED','JOURNALED'):
+                thesis_patch['close_note']=fields['description']
+            if thesis_patch:
+                sync_thesis_fields(conn,guild,user,thesis_id,record_id,thesis_patch)
+        saved = conn.execute('SELECT * FROM journals WHERE id=? AND guild_id=? AND user_id=?',
+                             (record_id,guild,user)).fetchone()
+        details = owned_journal_details(conn,guild,user,record_id)
+        merged=json.loads(details['metadata'] or '{}') if details else {}
+        display=next(r for r in journal_display(conn,guild,user) if r['id']==record_id)
+    return {'ok':True,'saved':True,'updated':bool(old),'journal_number':display['journal_number'],
+            'trade_number':display['trade_number'],'legacy_journal_number':display['legacy_journal_number'] if display['is_legacy'] else None,
+            'description':saved['description'],'result_r':saved['result_r'],'metadata':merged,
+            'photo_attached':bool(details and details['photo_id'] or merged.get('source_attachments'))}
 
 
 def journal_rows(db,guild,user):
@@ -218,6 +281,7 @@ def journal_rows(db,guild,user):
             LEFT JOIN theses t ON t.id=j.thesis_id AND t.guild_id=j.guild_id AND t.user_id=j.user_id
             WHERE j.guild_id=? AND j.user_id=? ORDER BY j.id''',(guild,user)).fetchall()
         executions = conn.execute('SELECT thesis_id,entry_model,tier FROM thesis_executions WHERE guild_id=? AND user_id=?',(guild,user)).fetchall()
+        display = {r['id']:r for r in journal_display(conn,guild,user)}
     by_trade = defaultdict(list)
     for ex in executions:
         by_trade[ex['thesis_id']].append(dict(ex))
@@ -232,7 +296,7 @@ def journal_rows(db,guild,user):
             m.setdefault(key,r.get(key))
         # Imported pages with no date must not look like today's trading.
         m.setdefault('trade_date', None)  # Logging day never proves the actual trading day.
-        r.update(journal_number=number,metadata=m)
+        r.update(display[r['id']]); r['metadata']=m
         output.append(r)
     return output
 
@@ -248,7 +312,7 @@ def find_setups(db,guild,user,args):
             continue
         if args.get('query') and args['query'].casefold() not in (r['description']+' '+json.dumps(m)).casefold():
             continue
-        found.append({**{k:r.get(k) for k in ('journal_number','description','result_r','rule_adherence','study_note','photo_id')},
+        found.append({**{k:r.get(k) for k in ('journal_number','trade_number','legacy_journal_number','is_legacy','description','result_r','rule_adherence','study_note','photo_id')},
                       'metadata':m})
     offset=max(0,int(args.get('offset') or 0))
     return {'ok':True,'entries':found[offset:offset+10],'has_more':len(found)>offset+10,'next_offset':offset+10}
@@ -287,12 +351,25 @@ def summarize(rows):
 
 def performance(db,guild,user,args):
     rows=journal_rows(db,guild,user)
-    # One outcome per thesis; standalone handwritten trades remain separate.
+    # Count a thesis once, taking its canonical record. Historical duplicate
+    # conflicts are unknown, never whichever row happened to be fetched last.
+    grouped=defaultdict(list)
+    for row in rows:
+        grouped[('trade',row['thesis_id']) if row.get('thesis_id') else ('journal',row['id'])].append(row)
     unique={}
-    for r in rows:
-        if r['metadata'].get('kind', 'trade' if r.get('thesis_id') else 'reflection')!='trade':
-            continue
-        unique[('trade',r['thesis_id']) if r.get('thesis_id') else ('journal',r['id'])]=r
+    for key, history in grouped.items():
+        canonical=next((r for r in history if r.get('canonical')),None)
+        if canonical is not None:
+            chosen=canonical
+        elif len(history)==1:
+            chosen=history[0]
+        else:
+            chosen=dict(history[0])
+            outcomes=[r['result_r'] for r in history]
+            chosen['result_r']=outcomes[0] if all(v==outcomes[0] for v in outcomes) else None
+            chosen['legacy_outcome_conflict']=len(set(outcomes))>1
+        if chosen['metadata'].get('kind','trade' if chosen.get('thesis_id') else 'reflection')=='trade':
+            unique[key]=chosen
     days=args.get('days')
     start=(datetime.now(timezone.utc).date()-timedelta(days=max(1,min(3650,int(days)))-1)).isoformat() if days else None
     today=datetime.now(timezone.utc).date().isoformat()
@@ -343,7 +420,7 @@ def activity_check(db,guild,user,args):
         if losses and current['risk_r']>previous['risk_r']:
             signals.append({'type':'larger_risk_after_loss','previous_risk_r':previous['risk_r'],
                             'latest_risk_r':current['risk_r'],'meaning':'Ask whether the larger allocation was planned; do not infer revenge trading.'})
-    return {'ok':True,'window_hours':24,'trades_opened':len(trades),'executions':len(entries),'signals':signals,
+    return {'ok':True,'window_hours':24,'trades_opened':sum(t['status'] in ('OPEN','CLOSED') for t in trades),'executions':len(entries),'signals':signals,
             'plans':get_plans(db,guild,user,{})['plans'][:4],
             'instruction':'Compare counts to an explicit personal limit only. No universal trade limit or inferred emotion.'}
 
@@ -367,8 +444,8 @@ def community_review(db,guild,user,args):
 COACH_TOOLS=[
     schema('get_activity_check','Check recent execution counts and larger recorded risk after a loss against the member’s plan; no diagnosis.',{}),
     schema('get_community_review','Owner-only aggregate performance review; never available to regular members.',{'days':NUM,'group_by':STR}),
-    schema('save_journal_entry','Create or correct a journal without inventing a trade. Null fields preserve existing values. metadata_json is a JSON object with keys: '+', '.join(sorted(META_KEYS))+'. Prices, pnl, risk must be text with units; labels an array; tier integer; kind trade/study/reflection; adherence yes/no/partial/unknown; trade_date YYYY-MM-DD; reported_entry_at/reported_exit_at ISO timestamps with timezone; reported_outcome stopped_out/win/loss/breakeven/open/unknown.',
-           {'journal_number':NUM,'photo_id':STR,'entry_index':NUM,'description':STR,'rule_adherence':STR,
+    schema('save_journal_entry','Save one canonical journal per Trade # without inventing executions or risk. trade_number explicitly selects an existing Trade #; journal_number is the same number but ambiguous old aliases require clarification. legacy_journal_number explicitly identifies retained historical rows. Null fields preserve existing values. metadata_json is a JSON object with keys: '+', '.join(sorted(META_KEYS))+'. Prices, pnl, risk must be text with units; labels an array; tier integer; kind trade/study/reflection; adherence yes/no/partial/unknown; trade_date YYYY-MM-DD; reported_entry_at/reported_exit_at ISO timestamps with timezone; reported_outcome stopped_out/win/loss/breakeven/open/unknown.',
+           {'trade_number':NUM,'journal_number':NUM,'legacy_journal_number':NUM,'photo_id':STR,'entry_index':NUM,'description':STR,'rule_adherence':STR,
             'result_r':{'type':['number','null']},'clear_result':{'type':['boolean','null']},'study_note':STR,'metadata_json':STR}),
     schema('find_journal_setups','Search private journal examples, handwritten transcripts and labels; returns up to ten.',
            {'asset':STR,'play':STR,'entry_model':STR,'tier':NUM,'label':STR,'query':STR,'offset':NUM}),

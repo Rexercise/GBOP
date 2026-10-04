@@ -95,6 +95,18 @@ def metadata_summary(value):
         'trade_date', 'reported_entry_at', 'reported_exit_at', 'reported_outcome',
         'entry_price', 'exit_price', 'stop_price', 'target_price', 'pnl', 'risk',
         'exit_reason', 'kind', 'adherence', 'emotion'))
+    sources = value.get('source_attachments')
+    if isinstance(sources, list):
+        result['source_attachment_count'] = len(sources)
+        result['source_attachments'] = [_exact(v, ('photo_id', 'entry_index', 'legacy_journal_id'))
+                                        for v in sources[:5] if isinstance(v, dict)]
+        result['source_attachment_details_omitted'] = len(sources) > 5
+    legacy = value.get('legacy_history')
+    if isinstance(legacy, dict):
+        result['legacy_history'] = _exact(legacy, ('needs_clarification',))
+        result['legacy_history']['entry_count'] = len(legacy.get('journal_ids') or [])
+        result['legacy_history']['conflicting_fields'] = [str(v) for v in (legacy.get('conflicting_fields') or [])[:8]]
+        result['legacy_history']['full_history_preserved'] = True
     if isinstance(value.get('labels'), list):
         result['labels'] = [v for v in value['labels'][:8] if isinstance(v, str) and len(v) <= 80]
     if isinstance(value.get('market_review'), dict):
@@ -135,6 +147,24 @@ def metadata_summary(value):
     return result
 
 
+def _update_preview(value):
+    result = deepcopy(value)
+    previews = []
+    for key in ('details','note','entry_invalidation'):
+        if isinstance(result.get(key), str) and len(result[key]) > 400:
+            result[key] = result[key][:400]
+            previews.append(key)
+    for field, change in (result.get('changes') or {}).items():
+        for side in ('before','after'):
+            if isinstance(change.get(side), str) and len(change[side]) > 250:
+                change[side] = change[side][:250]
+                previews.append(field + '.' + side)
+    if previews:
+        result['text_previews'] = previews
+        result['text_preview_note'] = 'Partial update prose; complete text is preserved and available through send_journal_history.'
+    return result
+
+
 def _record(value, preview_chars=600):
     if not isinstance(value, dict):
         return value
@@ -146,6 +176,27 @@ def _record(value, preview_chars=600):
             previews.append(field)
     if isinstance(result.get('metadata'), dict):
         result['metadata'] = metadata_summary(result['metadata'])
+    updates = result.get('updates')
+    if isinstance(updates, list):
+        result['updates'] = [_update_preview(update) for update in updates[-3:]]
+        result['update_count'] = len(updates)
+        if len(updates) > 3:
+            result['updates_details_omitted'] = True
+            result['updates_note'] = 'Only the latest update previews are shown. Full earlier execution, management and journal history is preserved for send_journal_history.'
+    facts = result.get('trade_facts')
+    if isinstance(facts, dict):
+        for field in ('objective','thesis_invalidation','close_note'):
+            if isinstance(facts.get(field), str) and len(facts[field]) > preview_chars:
+                facts[field] = facts[field][:preview_chars]
+                previews.append('trade_facts.' + field)
+    history = result.get('legacy_history')
+    if isinstance(history, list):
+        result['legacy_history'] = [_record(row, preview_chars=min(200, preview_chars)) for row in history[:3]]
+        result['legacy_history_count'] = len(history)
+        if len(history) > 3:
+            result['legacy_history_details_omitted'] = True
+            result['legacy_history_note'] = ('Full original history remains saved and is available '
+                'through send_journal_history; these are only the first historical previews.')
     if previews:
         result['text_previews'] = previews
         result['text_preview_note'] = ('These fields are partial previews. Full saved journal text '
@@ -191,7 +242,10 @@ def journal_tool_payload(name, result):
     # Never convert a successful mutation into failure merely because its
     # presentation is too large: that could induce an unsafe repeat save.
     minimal = _exact(result, ('ok', 'saved', 'updated', 'journal_id', 'journal_number',
-        'trade_id', 'result_r', 'final_result_r', 'journal_count', 'trade_count',
+        'trade_id', 'trade_number', 'legacy_journal_number', 'is_legacy', 'record_kind',
+        'canonical_record_exists', 'virtual_trade_record', 'legacy_history_count', 'update_count', 'needs_clarification',
+        'result_r', 'final_result_r', 'journal_count', 'canonical_journal_count',
+        'legacy_journal_count', 'preserved_legacy_history_count', 'stored_journal_entry_count', 'trade_count',
         'open_trade_count', 'closed_trade_count', 'error', 'status', 'rule_adherence',
         'risk_flags', 'recorded_thesis_risk', 'advisory_status'))
     minimal['journal_view'] = {'kind': 'journal_details_omitted',

@@ -920,7 +920,9 @@ class MarketConversation:
                 if not self.current(ticket):
                     return self._stale()
                 wants_review = self._journal_reference is True or (reference in {'selected_review', 'selected_candle'} and self._journal_reference is None)
-                existing_journal = name == 'edit_journal' or (name == 'save_journal_entry' and args.get('journal_number') is not None)
+                existing_journal = (name == 'edit_journal' or name == 'save_journal_entry' and
+                    any(args.get(key) is not None for key in ('journal_number', 'trade_number', 'legacy_journal_number'))
+                    or name == 'open_trade' and args.get('trade_id') is not None)
                 if existing_journal:
                     wants_review = False  # Correct the existing record; never attach a different reviewed market.
                 if not existing_journal and reference in {'selected_review', 'selected_candle'} and self._journal_reference is False:
