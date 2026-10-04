@@ -64,6 +64,11 @@ class ShiftSynopsisTests(unittest.TestCase):
     def test_real_nas_failure_keeps_later_named_v1_delivery(self):
         synopsis = self.replay(retained.RetainedMarketReplayTests).tool('NAS100')['review']['shift_synopsis']
         self.assertEqual(synopsis['ranges'][0]['verdict'], 'failed')
+        first = synopsis['spoken_summary'].split('.')[0]
+        self.assertIn('failed bearish', first)
+        self.assertIn('inducement in GTOP terms', synopsis['spoken_summary'])
+        self.assertEqual(synopsis['ranges'][0]['midpoint_approach']['gtop_context']['basis'],
+                         'explicit_owner_characterization')
         later = next(r for r in synopsis['ranges'] if r['anchor_start_ny'] == retained.ny('09:00'))
         self.assertEqual((later['direction'], later['outcome']), ('bearish', 'opposing_liquidity_delivered'))
         self.assertEqual([v['code'] for v in later['variant']['labels']], ['V1'])

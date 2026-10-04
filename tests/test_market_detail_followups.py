@@ -42,6 +42,34 @@ class FocusedRoutingTests(unittest.TestCase):
                 self.assertEqual(len(self.provider.calls), count)
                 self.assertTrue(self.execute(request)['ok'])
 
+    def test_all_midpoint_labels_retrieve_identical_scoped_distance(self):
+        requests = []
+        for label in ('CE', 'consequent encroachment', '50%', 'equilibrium'):
+            request = self.request('How close did it get to ' + label + '?')
+            self.assertEqual(request['query_purpose'], 'objective_distance')
+            self.assertEqual(request['args']['anchor_start_ny'], retained.ny('08:00'))
+            self.assertEqual(request['args']['through_ny'], retained.ny('12:00'))
+            requests.append(request['args'])
+        self.assertTrue(all(r == requests[0] for r in requests))
+        from gbop_voice_web.market_conversation import _detail_intent
+        self.assertIsNone(_detail_intent('How close did price get?'))
+        from gbop_voice_web.market_conversation import _spoken_range
+        fact = {'anchor_start_ny': retained.ny('08:00'), 'play': '9ate8'}
+        for label in ('CE', 'consequent encroachment', '50%', 'equilibrium'):
+            self.assertTrue(_spoken_range("The 8 AM range's " + label + ' was missed by 7.76 points.', fact))
+        self.assertFalse(_spoken_range('The 8 AM range gave a nice price.', fact))
+
+    def test_double_purge_and_inducement_queries_retrieve_facts_but_definitions_do_not(self):
+        for text, purpose in [('Did that range double purge?', 'double_purge'),
+                              ('Did it induce CE?', 'target_approach')]:
+            request = self.request(text)
+            self.assertEqual(request['query_purpose'], purpose)
+            self.assertEqual(request['args']['anchor_start_ny'], retained.ny('08:00'))
+            self.assertEqual(request['args']['through_ny'], retained.ny('12:00'))
+        from gbop_voice_web.market_conversation import _detail_intent
+        for text in ('What is a double purge?', 'What does inducement mean?', 'Explain inducement'):
+            self.assertIsNone(_detail_intent(text))
+
     def test_exact_candle_cannot_be_silently_changed_and_ellipsis_retains_it(self):
         request = self.request('Was the 11:10 M5 candle a Model 1?')
         self.assertEqual(request['args']['detail_candle_start_ny'], retained.ny('11:10'))

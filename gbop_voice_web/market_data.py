@@ -214,7 +214,12 @@ def attach_lifecycle(review, bars, end, step):
         model['lifecycle_contract'] = view['response_contract']
         model['csd_status'] = model['super_soup_status'] = 'see_candle_lifecycle'
     from gbop_voice_web.shift_narrative import attach_directional_outcome
-    return attach_directional_outcome(review, bars, end, step)
+    review = attach_directional_outcome(review, bars, end, step)
+    from gbop_voice_web.objective_approach import objective_approach
+    review['objective_approach'] = objective_approach(review, bars, end, step)
+    from gbop_voice_web.double_purge import double_purge_evidence
+    review['double_purge'] = double_purge_evidence(review, bars, end, step)
+    return review
 
 
 def session_review(bars, day, shift, step=300):
@@ -425,11 +430,16 @@ automatic PD-array recognition is not required.
 
 MARKET_RESPONSE_CONTRACT = """
 NAMED-RANGE ANSWERS
-For outcome questions, first name the range and direction: full opposing delivery,
+For outcome questions, first name the range and direction, and state the verdict in the first sentence: full opposing delivery,
 midpoint only, pending, failed before objective, or unverified. Then give mechanism.
 Use directional_outcome/variant_evidence; later invalidation preserves earlier V2 delivery.
 A later opposite-direction Model 1 cannot replace the earlier wick setup or paired
-thesis. Name both directions and targets. Exact Model 1 questions need the selected
+thesis. Name both directions and targets. A double purge needs the same range's
+ordered original purge, opposite purge and return inside; its reversal objective
+is the original first-purged boundary, with midpoint progress separate. Use the
+double_purge evidence, never a bare opposite Model 1. Inducement means contextual
+relatively-close non-touch, with target identity and explicit percentage denominator;
+no universal numeric threshold or inferred intent. Exact Model 1 questions need the selected
 range's assigned candle/open first, source purge and CSD separately. Follow detail_request.
 No qualifying body Model 1 does not mean no setup: verified Turtle Wick Soup has its
 own midpoint/full outcomes, never a body Model 1 or Super Soup. Forming/missing is unverified.
@@ -724,8 +734,19 @@ def market_tool(db, name, args, now=None):
             if name == 'review_market_session':
                 result['review']['shift_synopsis'] = build_shift_synopsis(result['review'], result['asset'])
         if name == 'review_market_crt':
-            from gbop_voice_web.objective_approach import objective_approach
-            result['review']['objective_approach'] = objective_approach(result['review'], bars, end, step)
+            from gbop_voice_web.target_approach import owner_inducement_example
+            review = result['review']
+            for target in review.get('objective_approach', {}).get('objectives', {}).values():
+                annotation = owner_inducement_example(result['asset'], review['anchor'],
+                    review['objective_approach'].get('direction'), target)
+                if annotation:
+                    target['gtop_context'] = annotation
+            double = review.get('double_purge', {})
+            for target in double.get('reversal_thesis', {}).get('objectives', {}).values():
+                annotation = owner_inducement_example(result['asset'], review['anchor'],
+                    double.get('reverse_direction'), target)
+                if annotation:
+                    target['gtop_context'] = annotation
             result['voice_detail_selection'] = {key: args.get(key) for key in (
                 'detail_candle_start_ny', 'detail_from_ny', 'through_ny',
                 'confirmation_timeframe', 'blessed_thief_timeframe', 'blessed_thief_from_ny')}

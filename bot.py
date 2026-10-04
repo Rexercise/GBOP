@@ -1,6 +1,7 @@
 from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches
 from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT
 from gbop_voice_web.delivery_receipts import DELIVERY_TOOLS, DELIVERY_PROMPT, delivery_status
+from gbop_voice_web.midpoint_preferences import TOOLS as MIDPOINT_TOOLS, MIDPOINT_PROMPT
 import os
 import logging
 from array import array
@@ -4432,7 +4433,9 @@ def ai_member_context(user_id: int):
         )).fetchall()
 
     profile = get_profile(db, GTOP_GUILD_ID, user_id)
-    lines = [market_clock(), "CURRENT MEMBER STATE", profile_context(profile)]
+    from gbop_voice_web.midpoint_preferences import preference_context
+    lines = [market_clock(), "CURRENT MEMBER STATE", profile_context(profile),
+             preference_context(db, GTOP_GUILD_ID, user_id, GTOP_OWNER_USER_ID)]
 
     if open_trades:
         lines.append("Open trades:")
@@ -5352,6 +5355,7 @@ GBOP_AI_TOOLS.extend(MARKET_TOOLS)
 GBOP_AI_TOOLS.extend(WATCH_TOOLS)
 GBOP_AI_TOOLS.extend(JOURNAL_RECALL_TOOLS)
 GBOP_AI_TOOLS.extend(DELIVERY_TOOLS)
+GBOP_AI_TOOLS.extend(MIDPOINT_TOOLS)
 for _recall_tool in GBOP_AI_TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
         _recall_tool['description'] = 'Read this member\'s saved journals, all-trade counts and next page. Empty OPEN trades does not mean no saved trades.'
@@ -5367,6 +5371,7 @@ GTOP_AI_PROMPT += (
     + "\n\n" + MARKET_PROMPT
     + "\n\n" + JOURNAL_RECALL_PROMPT
     + "\n\n" + DELIVERY_PROMPT
+    + "\n\n" + MIDPOINT_PROMPT
 )
 
 
@@ -5374,6 +5379,9 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
     denial = member_access_error(db, GTOP_GUILD_ID, user_id, GTOP_OWNER_USER_ID)
     if denial:
         return {"ok": False, "error": denial}
+    if name in ('get_midpoint_preference', 'save_midpoint_preference'):
+        from gbop_voice_web.midpoint_preferences import preference_tool
+        return preference_tool(db, GTOP_GUILD_ID, user_id, GTOP_OWNER_USER_ID, name, args)
     if name == 'get_delivery_status':
         return delivery_status(db, GTOP_GUILD_ID, user_id, args)
     if name == 'send_journal_history':
@@ -5419,6 +5427,7 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
 
 
 def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None):
+    from gbop_voice_web.midpoint_preferences import bind_preference_args
     from gbop_voice_web.market_conversation import TEXT_MARKET_CONTEXTS, contextual_tools
     market_context = TEXT_MARKET_CONTEXTS.get((GTOP_GUILD_ID, user_id, 'text', conversation_id))
     market_context.auth_provider = (db, GTOP_GUILD_ID, user_id)
@@ -5473,7 +5482,8 @@ def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None)
             try:
                 args = json.loads(call.arguments)
                 result = market_context.run(call.name, args,
-                    lambda name, values: ai_execute_tool(user_id, name, values),
+                    lambda name, values: ai_execute_tool(user_id, name,
+                        bind_preference_args(market_context, name, values, market_generation)),
                     generation=market_generation)
             except Exception as exc:
                 result = {
@@ -5487,6 +5497,9 @@ def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None)
                 "call_id": call.call_id,
                 "output": json.dumps(voice_tool_payload(call.name, result)),
             })
+            if call.name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
+                from gbop_voice_web.midpoint_preferences import refresh_instructions
+                base_instructions = refresh_instructions(base_instructions, result)
 
         instructions = base_instructions + market_context.prompt()
         response = ai_client.responses.create(
@@ -6032,8 +6045,11 @@ class GBOPRealtimeSession:
         # Do not pin journal prose/history in every voice response. All current
         # records remain available through the unchanged member-scoped tools.
         profile = get_profile(db, GTOP_GUILD_ID, self.member.id)
-        member_state = market_clock() + "\n" + profile_context(profile)
-        self._market_base_instructions = build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, member_state)
+        from gbop_voice_web.midpoint_preferences import MIDPOINT_PROMPT, preference_context
+        member_state = (market_clock() + "\n" + profile_context(profile)
+                        + "\n" + preference_context(db, GTOP_GUILD_ID, self.member.id))
+        self._market_base_instructions = (build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, member_state)
+                                          + "\n\n" + MIDPOINT_PROMPT)
         context = getattr(self, 'market_context', None)
         return self._market_base_instructions + (context.prompt() if context is not None else '')
 
@@ -6214,8 +6230,10 @@ class GBOPRealtimeSession:
                 context = getattr(self, 'market_context', None)
                 if context is not None:
                     generation = context.generation
+                    from gbop_voice_web.midpoint_preferences import bind_preference_args
                     return await asyncio.to_thread(context.run, name, args,
-                        lambda tool, values: ai_execute_tool(self.member.id, tool, values),
+                        lambda tool, values: ai_execute_tool(self.member.id, tool,
+                            bind_preference_args(context, tool, values, generation)),
                         generation=generation)
                 return await asyncio.to_thread(ai_execute_tool, self.member.id, name, args)
             runner = lambda: guarded_voice_tool(self, name, args, call_id, run_current_tool,
@@ -6249,6 +6267,12 @@ class GBOPRealtimeSession:
         if sent is False or (work is not None and not work.current(scope)):
             return
 
+        if name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
+            # Update the existing voice session so the next answer uses the new
+            # label, without reconnecting or changing any speech/model settings.
+            await self.refresh_context()
+            if work is not None and not work.current(scope):
+                return
         context = getattr(self, 'market_context', None)
         from gbop_voice_web.market_conversation import SCOPED_TOOLS
         if (context is not None and name in SCOPED_TOOLS

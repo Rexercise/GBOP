@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from gbop_voice_web.candle_evidence import interval, parse_time, stamp, summarize
 from gbop_voice_web.candle_naming import objective_identity
+from gbop_voice_web.target_approach import target_approach_measurement
 
 
 def objective_approach(review, bars, end, step):
@@ -33,6 +34,9 @@ def objective_approach(review, bars, end, step):
         return out
     if not anchor.get('complete'):
         out['status'] = 'unverified_incomplete_anchor'
+        return out
+    if anchor['high'] <= anchor['low']:
+        out['status'] = 'unverified_nonpositive_range'
         return out
     if direction not in ('bearish', 'bullish') or review.get('sweep_order') == 'unknown_within_same_bar':
         return out
@@ -136,5 +140,13 @@ def objective_approach(review, bars, end, step):
                 fact['status'] = 'unverified_boundary_bar_order'
             else:
                 fact.update(status='closest_approach_verified', distance_price_points=distance)
+        if fact['closest_observed_price'] is not None:
+            fact['target_approach'] = target_approach_measurement(
+                {'kind': name, 'level': level, 'anchor_start_ny': anchor['start_ny'],
+                 'timeframe': anchor.get('timeframe', review.get('anchor_timeframe'))},
+                fact['closest_observed_price'], direction,
+                reference_low=anchor['low'], reference_high=anchor['high'],
+                reference_boundary=anchor['high'] if direction == 'bearish' else anchor['low'])
+            fact['target_approach']['evidence_status'] = fact['status']
         out['objectives'][name] = fact
     return out

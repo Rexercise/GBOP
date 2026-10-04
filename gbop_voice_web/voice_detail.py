@@ -11,18 +11,182 @@ DETAIL_CHARACTER_BUDGET = 32000
 DETAIL_COMPACTION_TARGET_CHARS = 31000
 
 
+def _measurement(value):
+    """Keep target identity and both explicitly named percentage denominators."""
+    return _pick(value, ('target', 'gap_price_points', 'touch_relation',
+        'full_range_reference', 'boundary_to_target_reference',
+        'inducement_classification', 'numeric_inducement_threshold'))
+
+
 def _approach(value):
-    """Keep every measured distance/order caveat without duplicate labels."""
+    """Keep measured distance/order evidence without duplicate delivery ratios."""
     out = {key: deepcopy(child) for key, child in value.items()
            if key not in ('response_contract', 'window_rule', 'objectives')}
-    out['objectives'] = {name: _pick(target, (
-        'level', 'status', 'distance_price_points', 'observed_distance_price_points',
-        'closest_observed_price', 'closest_source_interval', 'first_touch_order_verified',
-        'boundary_observations')) for name, target in value.get('objectives', {}).items()}
+    out['objectives'] = {}
     for name, target in value.get('objectives', {}).items():
+        fact = _pick(target, ('level', 'spoken_label', 'status', 'distance_price_points',
+            'observed_distance_price_points', 'closest_observed_price', 'closest_source_interval',
+            'first_touch_order_verified', 'boundary_observations', 'gtop_context'))
+        # A verified delivered target already carries its zero gap and exact
+        # source evidence. New percentage fields add no proximity information.
+        if target.get('target_approach') and target.get('distance_price_points') != 0:
+            fact['target_approach'] = _measurement(target['target_approach'])
         if 'coverage_through_touch' in target:
-            out['objectives'][name]['coverage_through_touch_complete'] = target['coverage_through_touch'].get('complete')
+            fact['coverage_through_touch_complete'] = target['coverage_through_touch'].get('complete')
+        out['objectives'][name] = fact
     return out
+
+
+def _double_purge(value, original):
+    """Separate the reversal evidence while sharing the original delivery."""
+    out = {key: deepcopy(child) for key, child in value.items()
+           if key not in ('response_contract', 'spoken_summary')}
+    prior = out.get('original_outcome')
+    if prior:
+        comparable = deepcopy(prior)
+        prefixes = {}
+        for name in ('midpoint', 'opposing_liquidity'):
+            if comparable.get(name, {}).get('coverage_through_touch') is not None:
+                prefixes[name] = comparable[name].pop('coverage_through_touch')
+        if all(original.get(k) == v for k, v in comparable.items()
+               if k not in ('response_contract', 'spoken_summary')):
+            out['original_outcome'] = {'same_evidence_as': '#/review/directional_outcome'}
+            if prefixes:
+                out['original_coverage_through_touch'] = prefixes
+        else:
+            out['original_outcome'] = _pick(prior, ('direction', 'status',
+                'range_invalidated_at_ny', 'delivery_before_later_invalidation'))
+            for name in ('midpoint', 'opposing_liquidity'):
+                if name in prior:
+                    out['original_outcome'][name] = _pick(prior[name],
+                        ('status', 'spoken_label', 'evidence', 'coverage_through_touch'))
+    thesis = out.get('reversal_thesis', {})
+    thesis.pop('window_rule', None)
+    for target in thesis.get('objectives', {}).values():
+        if target.get('approach'):
+            measured = _measurement(target['approach'])
+            # Named identity is already on the objective, immediately above.
+            measured.pop('target', None)
+            target['approach'] = measured
+    return out
+
+
+def _double_purge_summary(value, request):
+    """Bound a secondary reversal; the opposite identity page has full detail."""
+    out = _pick(value, ('status', 'observed', 'scope', 'range_start_ny', 'range_timeframe',
+        'review_cutoff_ny', 'validity_cutoff_ny', 'range_invalidated_at_ny',
+        'source_resolution_seconds', 'exact_tick_time_known', 'original_outcome',
+        'original_completion_preserved', 'original_first_purged_side', 'reverse_direction',
+        'original_coverage_through_touch'))
+    for key in ('range_start_ny', 'range_timeframe', 'review_cutoff_ny',
+                'validity_cutoff_ny', 'range_invalidated_at_ny', 'reverse_direction'):
+        out.pop(key, None)
+    out['scope_note'] = 'Selected review anchor/cutoff; reversal validity and direction below.'
+    out['sequence'] = _pick(value.get('sequence', {}), ('source_return_inside',
+        'assigned_return_inside', 'known_at_ny', 'coverage', 'coverage_through_return'))
+    for key in ('coverage', 'coverage_through_return'):
+        if key in out['sequence']:
+            # Both begin at the selected range end. The enclosing selected
+            # cutoff and source-return known-at provide their respective ends.
+            out['sequence'][key] = _pick(out['sequence'][key], ('complete', 'missing_bar_count'))
+    if 'original_coverage_through_touch' in out:
+        out['original_coverage_through_touch'] = {name: _pick(prefix,
+            ('complete', 'missing_bar_count'))
+            for name, prefix in out['original_coverage_through_touch'].items()}
+    prior = out.get('original_outcome', {})
+    if 'same_evidence_as' not in prior:
+        out['original_outcome'] = _pick(prior, ('direction', 'status', 'range_invalidated_at_ny'))
+        for name in ('midpoint', 'opposing_liquidity'):
+            if name in prior:
+                out['original_outcome'][name] = _pick(prior[name], ('status',))
+                if 'coverage_through_touch' in prior[name]:
+                    out['original_outcome'][name]['coverage_through_touch'] = _pick(
+                        prior[name]['coverage_through_touch'], ('complete', 'missing_bar_count'))
+    thesis = value.get('reversal_thesis', {})
+    out['reversal_thesis'] = _pick(thesis, ('direction', 'status', 'objective_side',
+        'objective_level', 'objective_basis', 'midpoint_level', 'midpoint_role',
+        'window_start_ny', 'validity_cutoff_ny', 'coverage',
+        'earlier_delivery_preserved_after_invalidation'))
+    if 'coverage' in out['reversal_thesis']:
+        coverage = thesis['coverage']
+        bounded = _pick(coverage, ('complete', 'missing_bar_count'))
+        for key, scope_key in (('start_ny', 'window_start_ny'), ('end_ny', 'validity_cutoff_ny')):
+            if coverage.get(key) != thesis.get(scope_key):
+                bounded[key] = coverage.get(key)
+        out['reversal_thesis']['coverage'] = bounded
+    if 'objectives' in thesis:
+        targets = out['reversal_thesis']['objectives'] = {}
+        for name, target in thesis['objectives'].items():
+            fact = _pick(target, ('level', 'spoken_label', 'status', 'distance_price_points',
+                'observed_distance_price_points', 'closest_observed_price',
+                'closest_source_interval', 'coverage_through_touch', 'gtop_context'))
+            if fact.get('closest_source_interval'):
+                fact['closest_source_interval'] = _pick(fact['closest_source_interval'],
+                    ('bar_open_ny', 'bar_close_ny', 'precision_seconds'))
+            if fact.get('distance_price_points') == fact.get('observed_distance_price_points'):
+                fact.pop('observed_distance_price_points', None)
+            if target.get('approach'):
+                measured = target['approach']
+                fact['approach'] = {
+                    'full_range_reference': _pick(measured.get('full_range_reference', {}),
+                        ('denominator_price_points', 'gap_percent')),
+                    'boundary_to_target_reference': _pick(measured.get('boundary_to_target_reference', {}),
+                        ('denominator_price_points', 'remaining_gap_percent', 'progress_percent'))}
+                out['proximity_policy'] = _pick(measured,
+                    ('numeric_inducement_threshold', 'inducement_classification'))
+            # Preserve actual boundary uncertainty, even when its price rows
+            # move to the opposite identity page.
+            if target.get('boundary_observations'):
+                fact['boundary_order_verified'] = all(
+                    row.get('post_return_before_invalidation_order_known') is True
+                    for row in target['boundary_observations'])
+            targets[name] = fact
+    out['opposite_identity_count'] = len(value.get('opposite_identities', []))
+    out['detail_omissions'] = ('Identity sequence/boundary rows omitted, not absent or ordered; use double_purge_detail_request.')
+    out['double_purge_detail_request'] = deepcopy(request)
+    out['double_purge_detail_request']['args'] = {k: v for k, v in request['args'].items()
+        if v is not None or k == 'detail_from_ny'}
+    return out
+
+
+def _factor_intervals(out):
+    """Share short repeated source intervals with short, resolvable pointers."""
+    from collections import Counter
+    counts, examples = Counter(), {}
+    def scan(value):
+        if isinstance(value, dict):
+            if ('bar_open_ny' in value and 'bar_close_ny' in value
+                    and 'same_evidence_as' not in value):
+                encoded = json.dumps(value, sort_keys=True, separators=(',', ':'))
+                counts[encoded] += 1
+                examples[encoded] = value
+            for child in value.values():
+                scan(child)
+        elif isinstance(value, list):
+            for child in value:
+                scan(child)
+    scan(out['review'])
+    pool, refs = [], {}
+    for encoded, count in counts.items():
+        ref = {'same_evidence_as': '#/review/shared_intervals/' + str(len(pool))}
+        if count > 1 and (len(encoded) * (count - 1) >
+                          len(json.dumps(ref, separators=(',', ':'))) * count + 2):
+            refs[encoded] = ref
+            pool.append(deepcopy(examples[encoded]))
+    def replace(value):
+        if isinstance(value, dict):
+            encoded = json.dumps(value, sort_keys=True, separators=(',', ':'))
+            if encoded in refs:
+                return deepcopy(refs[encoded])
+            return {key: replace(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [replace(child) for child in value]
+        return value
+    if pool:
+        candidate = replace(out['review'])
+        candidate['shared_intervals'] = pool
+        if len(json.dumps(candidate, separators=(',', ':'))) < len(json.dumps(out['review'], separators=(',', ':'))):
+            out['review'] = candidate
 
 
 def crt_voice_detail(result):
@@ -97,6 +261,8 @@ def crt_voice_detail(result):
                                               if fact['bar_open_ny'] == selected]
     if view.get('objective_approach'):
         view['objective_approach'] = _approach(view['objective_approach'])
+    if view.get('double_purge'):
+        view['double_purge'] = _double_purge(view['double_purge'], review.get('directional_outcome', {}))
     if view.get('range_observation_coverage') == view.get('observation_coverage'):
         view['range_observation_coverage'] = {'same_evidence_as': '#/review/observation_coverage'}
     view['model1'] = _pick(review.get('model1', {}), ('status', 'assigned_timeframe',
@@ -157,7 +323,7 @@ def crt_voice_detail(result):
                 view[key] = _pick(view[key], ('start_ny', 'end_ny', 'complete',
                     'source_resolution_seconds', 'bar_count', 'missing_bar_count', 'coverage_note'))
         out['voice_detail_page']['coverage_extrema_omitted'] = (
-            'Repeated extrema omitted; anchor OHLC/first extremes, source gaps and lifecycle times retained.')
+            'Repeated extrema omitted; OHLC/first extremes, gaps and lifecycle times retained.')
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_COMPACTION_TARGET_CHARS:
         # Rejected paired theses are not the selected candle's lifecycle.
         # Potential/qualified boneless evidence remains complete. Explicit
@@ -173,7 +339,81 @@ def crt_voice_detail(result):
                         'context_action': 'continue', 'anchor_start_ny': anchor.get('start_ny'),
                         'anchor_timeframe': review.get('anchor_timeframe'), 'through_ny': cutoff}}
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_COMPACTION_TARGET_CHARS:
+        # Full lifecycle cards remain untouched. Secondary reversal details
+        # have the same selected range/cutoff and an exact opposite-candle page.
+        double = view.get('double_purge', {})
+        opposite = double.get('opposite_identities', [])
+        detail_identity = next((identity for identity in opposite
+                                if identity.get('purge_type') == 'wick_soup'),
+                               opposite[0] if opposite else {})
+        first_opposite = detail_identity.get('bar_open_ny')
+        if first_opposite and first_opposite != selected:
+            request = {'tool': 'review_market_crt', 'args': {
+                **base_args, 'detail_candle_start_ny': first_opposite}}
+            view['double_purge'] = _double_purge_summary(double, request)
+        view['candle_lifecycle'].pop('response_contract', None)
+        approach = view.get('objective_approach', {})
+        if approach.get('coverage'):
+            approach['coverage'] = _pick(approach['coverage'],
+                ('start_ny', 'end_ny', 'complete', 'missing_bar_count'))
+        for target in approach.get('objectives', {}).values():
+            if target.get('distance_price_points') == target.get('observed_distance_price_points'):
+                target.pop('observed_distance_price_points', None)
+            for boundary in target.get('boundary_observations', []):
+                # The exact target level and measured gap already identify
+                # this redundant price; boundary order and interval remain.
+                if boundary.get('distance_price_points', 0) > 0:
+                    boundary.pop('observed_price', None)
+        # Identity names retain the body/wick distinction in this index.
+        for identity in view['candle_lifecycle']['identity_index']:
+            identity.pop('purge_type', None)
+        pair = view.get('paired_smt', {})
+        events = pair.get('events', [])
+        if events and all(e.get('boneless_status') == 'disqualified'
+                          and e.get('recap_eligible') is False for e in events):
+            pair['events'] = [_pick(e, ('direction', 'boneless_status', 'setup_interval',
+                                       'scope', 'recap_eligible')) for e in events]
+            for event in pair['events']:
+                event['setup_interval'] = _pick(event['setup_interval'], ('start_ny', 'end_ny',
+                    'complete', 'qualified_smt', 'potential_smt', 'status'))
+            pair['detail_omitted'] = 'Disqualified pair details; use paired_detail_request.'
+            # Status and exact scope remain explicit; other pair fields are
+            # independently addressable via the canonical paired request.
+            kept_pair = _pick(pair, ('ok', 'status', 'assets', 'anchor_start_ny',
+                'anchor_end_ny', 'anchor_timeframe', 'through_ny',
+                'paired_coverage_complete', 'recap_eligible', 'events', 'detail_omitted'))
+            pair.clear()
+            pair.update(kept_pair)
+        for identity in view['selected_directional_identities']:
+            match = next((i for i, card in enumerate(page)
+                          if card.get('bar_open_ny') == identity.get('bar_open_ny')
+                          and card.get('purged_side') == identity.get('purged_side')), None)
+            if match is not None:
+                kept = _pick(identity, ('identity', 'bar_open_ny', 'timeframe', 'direction',
+                    'attempt_role', 'source_vs_original_delivery', 'formation_vs_original_delivery'))
+                kept['lifecycle_evidence'] = {'same_evidence_as':
+                    '#/review/candle_lifecycle/purge_candles/' + str(match)}
+                identity.clear()
+                identity.update(kept)
+        # Body classification remains on the selected Model 1; its identical
+        # OHLC, targets and source interval are on the exact lifecycle card.
+        for candle in view['model1']['candles']:
+            match = next((i for i, card in enumerate(page)
+                          if card.get('bar_open_ny') == candle.get('bar_open_ny')
+                          and card.get('purged_side') == candle.get('purged_side')), None)
+            if match is not None:
+                kept = _pick(candle, ('bar_open_ny', 'body_cross_and_close_through_level'))
+                kept['lifecycle_evidence'] = {'same_evidence_as':
+                    '#/review/candle_lifecycle/purge_candles/' + str(match)}
+                candle.clear()
+                candle.update(kept)
+        out['voice_detail_page']['note'] = (
+            'Exact lifecycle; same_evidence_as resolves here. Keep scope/cutoff and targets separate. '
+            'Fetch identities with detail_candle_start_ny or next_request. backend_remaining_from_ny '
+            'marks unavailable deeper records, not a cursor. Raw/BT cursors are separate. '
+            'Missing detail proves no absence; source bars do not prove tick order or fills.')
         _factor_review(out)
+        _factor_intervals(out)
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
         failed = error('voice_detail_budget_exceeded',
             'This identity has more evidence than fits one voice page; its details were not sent. '
