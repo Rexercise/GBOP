@@ -98,6 +98,17 @@ running. No automatic cleanup erases channel text. Discord has no atomic
 "check occupants/history and delete" endpoint, so cleanup rechecks cached gateway
 state immediately before deletion; administrators can bypass text restrictions.
 Live Discord voice/disconnect and permission behavior should be smoke-tested.
+
+The pinned receive library leaves RTP padding in its transport-decrypted payload.
+GBOP removes it only when the RTP padding flag is set, before DAVE authentication
+and Opus decoding, following [RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550#section-5.1).
+This also lets padded Discord silence use the existing exact three-byte silence
+exception. Invalid padding is concealed for PCM sinks or dropped for Opus sinks;
+failed DAVE authentication never falls back to plaintext. Receive diagnostics
+count padded frames and malformed padding separately from DAVE failures, without
+logging audio bytes. Synthetic regressions establish the receive-path fix;
+an actual post-release spoken session is still needed to measure its effect on
+production decrypt failures and audible dropouts.
 One bot identity serves one voice channel per server. An optional helper identity
 provides a second independent room without moving the primary bot. When both slots
 are busy, the member gets the browser option. An @mention saying “join me” points
