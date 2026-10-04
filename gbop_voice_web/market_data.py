@@ -26,6 +26,8 @@ ALIASES = {'NAS': 'NAS100', 'USTEC': 'NAS100', 'NASDAQ': 'NAS100', 'DJI': 'US30'
            'BTC': 'BTCUSD', 'ETH': 'ETHUSD', 'US500': 'SPX', 'SP500': 'SPX',
            'SPX500': 'SPX', 'S&P500': 'SPX', 'S&P 500': 'SPX'}
 MAX_BYTES = 4_000_000
+MIN_WEEK_SECONDS = 6 * 86400
+MAX_WEEK_SECONDS = 8 * 86400
 CREATE_SQL = '''CREATE TABLE IF NOT EXISTS gbop_market_feed (
     asset TEXT PRIMARY KEY, captured_at BIGINT NOT NULL, received_at BIGINT NOT NULL,
     payload TEXT NOT NULL)'''
@@ -76,6 +78,28 @@ def epoch(value):
     return int(value)
 
 
+def validate_weekly_periods(periods, captured):
+    """Bounded source-derived [open, next observed open) W1 intervals."""
+    if not isinstance(periods, list) or len(periods) > 2:
+        raise ValueError('At most two source W1 periods allowed.')
+    normalized, previous_close = [], None
+    for period in periods:
+        if not isinstance(period, dict) or set(period) != {'open_time', 'close_time', 'source', 'timeframe'}:
+            raise ValueError('Invalid weekly period fields.')
+        if period['source'] != 'MT5' or period['timeframe'] != 'W1':
+            raise ValueError('Weekly periods require MT5 W1 source metadata.')
+        start, end = period['open_time'], period['close_time']
+        if type(start) is not int or type(end) is not int or not 0 < start < end <= captured:
+            raise ValueError('Weekly periods require positive integer UTC epochs closed at capture.')
+        if not MIN_WEEK_SECONDS <= end - start <= MAX_WEEK_SECONDS:
+            raise ValueError('Source W1 intervals must span six to eight days.')
+        if previous_close is not None and start != previous_close:
+            raise ValueError('Weekly periods must be sorted, unique and consecutive without overlaps or gaps.')
+        normalized.append(dict(open_time=start, close_time=end, source='MT5', timeframe='W1'))
+        previous_close = end
+    return normalized
+
+
 def validate_payload(data, now=None):
     now = int(time.time() if now is None else now)
     if not isinstance(data, dict) or set(data) != {'captured_at', 'instruments'}:
@@ -88,7 +112,7 @@ def validate_payload(data, now=None):
         raise ValueError(f'Expected 1–{len(ASSETS)} instruments.')
     clean, seen = [], set()
     for item in instruments:
-        if not isinstance(item, dict) or not {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars'} <= set(item) or set(item) - {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars', 'bars_m1'}:
+        if not isinstance(item, dict) or not {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars'} <= set(item) or set(item) - {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars', 'bars_m1', 'weekly_periods'}:
             raise ValueError('Unexpected instrument fields.')
         asset = asset_name(item['asset'])
         if asset in seen:
@@ -118,6 +142,8 @@ def validate_payload(data, now=None):
                 normalized.append(dict(time=t, open=o, high=h, low=l, close=c))
                 last = t
             normalized_sets[key] = normalized
+        if 'weekly_periods' in item:
+            normalized_sets['weekly_periods'] = validate_weekly_periods(item['weekly_periods'], captured)
         clean.append(dict(asset=asset, symbol=symbol, bid=bid, ask=ask, tick_time=tick, **normalized_sets))
     return captured, clean
 
@@ -174,7 +200,8 @@ def read_feed(db, asset, now=None):
             'captured_at_utc': datetime.fromtimestamp(row['captured_at'], timezone.utc).isoformat(),
             'received_at_utc': datetime.fromtimestamp(row['received_at'], timezone.utc).isoformat(),
             'received_age_seconds': now - row['received_at'],
-            'bars': payload['bars'], 'bars_m1': payload.get('bars_m1', [])}
+            'bars': payload['bars'], 'bars_m1': payload.get('bars_m1', []),
+            'weekly_periods': payload.get('weekly_periods', [])}
 
 
 def attach_lifecycle(review, bars, end, step):
@@ -648,6 +675,9 @@ def market_tool(db, name, args, now=None):
         result = read_feed(db, args.get('asset'), now=now)
         if not result['ok']:
             return result
+        # Source W1 bounds are for weekly reviews; preserve existing market
+        # tool response contracts and their conversational payload budgets.
+        result.pop('weekly_periods', None)
         if name == 'review_current_market':
             from gbop_voice_web.current_market import review_current_market
             return review_current_market(db, result, args, now)

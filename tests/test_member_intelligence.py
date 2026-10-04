@@ -11,6 +11,14 @@ class IntelligenceTests(unittest.TestCase):
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript("""
+        CREATE TABLE gbop_ss_reports(asset TEXT,week_start TEXT,report_version TEXT,revision INTEGER,generated_at TEXT,payload TEXT,
+            PRIMARY KEY(asset,week_start,report_version));
+        INSERT INTO gbop_ss_reports VALUES ('XAUUSD','2026-09-28','fixture-v1',1,'2026-10-02T22:00:00Z','{"ok":true}');
+        CREATE TABLE gbop_ss_contributions(guild_id INTEGER,user_id INTEGER,asset TEXT,week_start TEXT,
+            report_version TEXT,revision INTEGER,answers TEXT,created_at TEXT,
+            PRIMARY KEY(guild_id,user_id,asset,week_start,report_version,revision));
+        CREATE TABLE members (guild_id INTEGER, user_id INTEGER, activated INTEGER, revoked INTEGER, leadership_ack INTEGER);
+        INSERT INTO members VALUES (10,20,1,0,1);
         CREATE TABLE gbop_ss_weekly_reviews (
             guild_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
@@ -168,6 +176,7 @@ class IntelligenceTests(unittest.TestCase):
         args = {
             "week_start": "2026-09-28",
             "asset": "XAUUSD",
+                "report_version": "fixture-v1",
             "weekly_candle": "Bullish weekly candle with a lower wick.",
             "closure_vs_previous": "Closed above the prior weekly candle.",
             "high_day": "Thursday",
@@ -190,6 +199,9 @@ class IntelligenceTests(unittest.TestCase):
             "prediction_miss_reason": "I expected immediate expansion and ignored the earlier weekly purge.",
         }
         args.update(overrides)
+        self.conn.execute("""INSERT INTO gbop_ss_reports(asset,week_start,report_version,revision,generated_at,payload)
+            VALUES (?,?,?,1,?,'{"ok":true}') ON CONFLICT(asset,week_start,report_version) DO NOTHING""",
+            (args['asset'],args['week_start'],args['report_version'],args['week_start']+'T00:00:00Z'))
         return args
 
     def test_ss_persists_resumes_and_is_json_safe(self):
@@ -200,6 +212,7 @@ class IntelligenceTests(unittest.TestCase):
             {
                 "week_start": "2026-09-28",
                 "asset": "XAUUSD",
+                "report_version": "fixture-v1",
                 "weekly_candle": "Bullish weekly candle",
             },
         )
@@ -236,6 +249,7 @@ class IntelligenceTests(unittest.TestCase):
             {
                 "week_start": "2026-09-28",
                 "asset": "XAUUSD",
+                "report_version": "fixture-v1",
                 "prediction_miss_reason": "I ignored the prior weekly purge.",
             },
         )

@@ -149,11 +149,29 @@ class MarketTests(unittest.TestCase):
             def symbol_select(s,symbol,enable): return True
             def symbol_info_tick(s,symbol): return SimpleNamespace(bid=101,ask=102,time=self.now)
             def copy_rates_from_pos(s,symbol,tf,pos,count):
-                self.assertEqual(pos,1)
+                self.assertEqual(pos,0)
                 return [dict(time=self.now-300,open=100,high=105,low=99,close=102),dict(time=self.now,open=102,high=105,low=101,close=103)]
         payload=collect(FakeMT5(),{'NAS100':'USTECm'},self.now)
         market.validate_payload(payload,self.now)
         self.assertEqual(len(payload['instruments'][0]['bars']),1)
+
+    def test_collector_retains_position_zero_after_friday_close(self):
+        calls = []
+        class ClosedMT5:
+            TIMEFRAME_M5=300
+            TIMEFRAME_M1=60
+            def terminal_info(s): return SimpleNamespace(connected=True)
+            def symbol_select(s,symbol,enable): return True
+            def symbol_info_tick(s,symbol): return SimpleNamespace(bid=101,ask=102,time=self.now-3600)
+            def copy_rates_from_pos(s,symbol,tf,pos,count):
+                calls.append((tf,pos))
+                # MT5 position0 remains the final candle while closed.
+                return [dict(time=self.now-tf,open=100,high=105,low=99,close=102)] if pos==0 else []
+        payload=collect(ClosedMT5(),{'NAS100':'USTECm'},self.now)
+        self.assertEqual(calls,[(300,0),(60,0)])
+        self.assertEqual(payload['instruments'][0]['bars'][-1]['time']+300,self.now)
+        self.assertEqual(payload['instruments'][0]['bars_m1'][-1]['time']+60,self.now)
+        market.validate_payload(payload,self.now)
 
     def test_bad_auth_is_rejected_without_exception(self):
         with patch.dict(os.environ, {'GBOP_MARKET_BRIDGE_TOKEN': 'x'*40}):

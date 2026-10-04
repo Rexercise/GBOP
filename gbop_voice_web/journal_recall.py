@@ -58,7 +58,7 @@ def _trade_timelines(conn, guild_id, user_id, owned_theses, journals):
                 fields = ('transcription', 'uncertainties', 'asset', 'direction', 'play',
                     'entry_model', 'tier', 'session', 'trade_date', 'entry_price', 'exit_price',
                     'stop_price', 'target_price', 'pnl', 'risk', 'exit_reason', 'emotion',
-                    'labels', 'kind', 'adherence', 'reported_entry_at', 'reported_exit_at', 'reported_outcome')
+                    'labels', 'kind', 'adherence', 'reported_entry_at', 'reported_exit_at', 'reported_outcome', 'self_grade')
                 for key in fields:
                     if old_meta.get(key) != new_meta.get(key):
                         changes['metadata.' + key] = {'before': old_meta.get(key), 'after': new_meta.get(key)}
@@ -220,6 +220,27 @@ def _record_text(row, title):
                       ('reported_outcome','Reported outcome')):
         if meta.get(key):
             value += '\n' + label + ': ' + str(meta[key])
+    if meta.get('emotion'):
+        value += '\nLegacy feeling note (stage/time unspecified): ' + str(meta['emotion'])
+    for report in meta.get('feeling_history') or []:
+        value += ('\nFeeling #' + str(report['id']) + ' [' + report['stage'] + ']: ' + report['feeling']
+            + ' · reported time: ' + str(report.get('reported_at') or 'unknown')
+            + ' · logged: ' + str(report.get('recorded_at') or 'unknown'))
+        if report.get('correction_of') is not None:
+            value += ' · corrects feeling #' + str(report['correction_of'])
+    from gbop_voice_web.trade_self_grades import self_grade_summary
+    self_grade = self_grade_summary(meta, row.get('result_r'))
+    if self_grade:
+        label = self_grade['type'].replace('type', 'Type ') if self_grade['type'] else 'Ungraded'
+        value += '\nMember SELF grade: ' + label + ' · ' + self_grade['adherence'] + ' · ' + self_grade['outcome']
+        if self_grade.get('needs_clarification'):
+            value += ' · assessment needs clarification after a journal correction'
+        if self_grade['predefined_stop'] is not None:
+            value += ' · predefined stop: ' + ('yes' if self_grade['predefined_stop'] else 'no')
+        if self_grade['off_plan_reason']:
+            value += ' · reported reason: ' + self_grade['off_plan_reason']
+        if self_grade['note']:
+            value += '\nSELF note: ' + self_grade['note']
     scope = (meta.get('market_review') or {}).get('selection') or {}
     if scope:
         value += '\nReviewed scope: ' + ' · '.join(str(scope[k]) for k in ('asset','date_ny','shift','anchor_start_ny') if scope.get(k))

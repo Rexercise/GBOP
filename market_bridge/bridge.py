@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+from numbers import Integral
 from pathlib import Path
 import ssl
 import time
@@ -14,6 +15,8 @@ import certifi
 ROOT = Path(__file__).resolve().parent
 ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
 MAX_CAPTURE_AGE_SECONDS = 180  # Receiver's existing capture-age allowance.
+MIN_WEEK_SECONDS = 6 * 86400
+MAX_WEEK_SECONDS = 8 * 86400
 
 
 def load_config(path):
@@ -35,6 +38,39 @@ def load_config(path):
     return config
 
 
+def collect_weekly_periods(mt5, symbol, captured):
+    """Use only observed consecutive W1 opens; the newest bar has no known end."""
+    try:
+        timeframe = getattr(mt5, 'TIMEFRAME_W1', None)
+        if timeframe is None:
+            return None
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, 3)
+        if rates is None or not 2 <= len(rates) <= 3:
+            return None
+        opens = []
+        for rate in rates:
+            value = rate['time']
+            # MT5 returns numpy integer epochs. Preserve the exact UTC value;
+            # never truncate a float or apply a guessed broker-time offset.
+            if isinstance(value, bool) or not isinstance(value, Integral) or not 0 < value <= captured:
+                raise ValueError('Invalid W1 source timestamp.')
+            opens.append(int(value))
+        opens.sort()
+        if len(set(opens)) != len(opens):
+            raise ValueError('Duplicate W1 source timestamp.')
+        periods = []
+        for start, end in zip(opens, opens[1:]):
+            if not MIN_WEEK_SECONDS <= end - start <= MAX_WEEK_SECONDS:
+                raise ValueError('Nonweekly source interval.')
+            periods.append(dict(open_time=start, close_time=end, source='MT5', timeframe='W1'))
+        return periods
+    except Exception as exc:
+        # W1 is optional evidence. Its absence or failure must not interrupt the
+        # established quote/M1/M5 feed; no fabricated calendar is substituted.
+        logging.warning('W1 boundaries unavailable for %s (%s); retaining M1/M5 coverage', symbol, type(exc).__name__)
+        return None
+
+
 def collect(mt5, symbols, now=None, *, backfill=True):
     now = int(time.time() if now is None else now)
     # Keep the oldest bars valid for the full allowed upload age, including splits.
@@ -48,7 +84,9 @@ def collect(mt5, symbols, now=None, *, backfill=True):
             logging.warning('Symbol unavailable: %s (%s)', asset, symbol)
             continue
         tick = mt5.symbol_info_tick(symbol)
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 1, 4032 if backfill else 24)
+        # Position zero can already be closed when the broker is between
+        # sessions. Select it, then prove closure by timestamp below.
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 4032 if backfill else 24)
         if tick is None or rates is None or tick.bid <= 0 or tick.ask <= 0:
             logging.warning('No usable market data: %s', asset)
             continue
@@ -56,14 +94,18 @@ def collect(mt5, symbols, now=None, *, backfill=True):
         bars = [dict(time=int(r['time']), **{k: float(r[k]) for k in ('open', 'high', 'low', 'close')})
                 for r in rates if history_cutoff <= int(r['time']) and int(r['time']) + 300 <= now]
         bars.sort(key=lambda b: b['time'])
-        rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 20160 if backfill else 120)
+        rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 20160 if backfill else 120)
         bars_m1 = [] if rates_m1 is None else [
             dict(time=int(r['time']), **{k: float(r[k]) for k in ('open', 'high', 'low', 'close')})
             for r in rates_m1 if history_cutoff <= int(r['time']) and int(r['time']) + 60 <= now]
         bars_m1.sort(key=lambda b: b['time'])
         if not bars_m1:
             logging.warning('M1 history unavailable for %s; retaining M5 coverage', asset)
-        instruments.append(dict(asset=asset, symbol=symbol, bid=float(tick.bid), ask=float(tick.ask), tick_time=int(tick.time), bars=bars, bars_m1=bars_m1))
+        item = dict(asset=asset, symbol=symbol, bid=float(tick.bid), ask=float(tick.ask), tick_time=int(tick.time), bars=bars, bars_m1=bars_m1)
+        weekly_periods = collect_weekly_periods(mt5, symbol, now)
+        if weekly_periods is not None:
+            item['weekly_periods'] = weekly_periods
+        instruments.append(item)
     if not instruments:
         raise RuntimeError('No configured symbols have usable quotes.')
     return dict(captured_at=now, instruments=instruments)

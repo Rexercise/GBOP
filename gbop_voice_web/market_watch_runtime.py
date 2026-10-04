@@ -256,6 +256,7 @@ def start_watch_runtime(client,db,guild_id,owner_id,member_role_id):
             return False
     async def run():
         fingerprints={}
+        weekly_checked={}
         await client.wait_until_ready()
         while not client.is_closed():
             try:
@@ -266,6 +267,12 @@ def start_watch_runtime(client,db,guild_id,owner_id,member_role_id):
                     prepared=await asyncio.to_thread(prepare_next_shift,db,fingerprints)
                     if prepared:
                         log.info('[GBOP-TAB] Prepared %s %s %s',prepared['asset'],prepared['date_ny'],prepared['shift'])
+                    # Same leased runtime; a weekly report is stored, never broadcast.
+                    from gbop_voice_web.weekly_structure import prepare_next_weekly
+                    try:
+                        await asyncio.to_thread(prepare_next_weekly,db,weekly_checked,now=now)
+                    except Exception:
+                        log.exception('[GBOP-SS] Weekly preparation unavailable; no structure claim emitted')
             except asyncio.CancelledError:
                 raise
             except Exception:

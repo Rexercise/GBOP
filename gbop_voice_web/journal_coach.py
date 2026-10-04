@@ -7,11 +7,14 @@ from datetime import date, datetime, timedelta, timezone
 
 from gbop_voice_web.journal_numbers import journal_number, journal_record_id, journal_display, resolve_journal_selector
 from gbop_voice_web.trade_numbers import trade_number
+from gbop_voice_web.trade_feelings import FEELING_PROMPT, STAGES, record_feeling, reflection_summary
 from gbop_voice_web.unified_journal import (ensure_canonical_journal, canonical_journal_id,
     create_journal_thesis, source_journal_id, attach_journal_source, owned_journal_details, sync_thesis_fields)
 from gbop_voice_web.trade_photos import init_photos, schema, STR, NUM
 from gbop_voice_web.journal_context import (REPORTED_KEYS, validate_reported, binding,
     merge_metadata, journal_transaction, JournalTarget)
+
+from gbop_voice_web.trade_self_grades import SELF_GRADE_PROMPT, SELF_GRADE_TOOLS, record_self_grade
 
 COACH_PROMPT = """
 You are GTOP's GBOP — Greatest Bot on the Planet.
@@ -52,7 +55,7 @@ After recording a new execution, use get_activity_check when a member is adding
 repeatedly, reports chasing/recovery/boredom, or asks whether to keep trading.
 Offer a brief check-in based on measured facts and their own plan. Never block saving.
 Only the owner may use get_community_review for community-wide aggregates.
-Weekly reviews are available on request; do not claim scheduled delivery exists.
+Private reviews are available on request and use the existing formation/daily/weekly schedule for eligible members; never claim delivery without evidence.
 When a member says 'that was my trade' after a market review, use
 market_reference=selected_review (selected_candle for 'entered this candle').
 The server supplies its exact verified scope and rejects unresolved candle identity.
@@ -65,6 +68,9 @@ Ask only for missing essentials or an ambiguous candle/trade. Do not ask again f
 verified asset/date/shift/range. A stopout does NOT imply -1R; unknown R stays null.
 Market objective delivery does NOT establish a winning personal trade or any fill.
 """
+
+COACH_PROMPT += FEELING_PROMPT
+COACH_PROMPT += "\n\n" + SELF_GRADE_PROMPT
 
 SCHEMA_SQL = [
     '''CREATE TABLE IF NOT EXISTS journal_details (
@@ -394,8 +400,11 @@ def performance(db,guild,user,args):
     return {'ok':True,'period_start':start,'date_basis':'UTC dates; handwritten trade dates preserved as written',
             'summary':summarize(selected),'group_by':group,'groups':{k:summarize(v) for k,v in groups.items()},
             'adherence':dict(adherence),'undated_entries_excluded':unknown_dates,'recent_risk_flags':flags,
+            'feeling_associations':reflection_summary(selected,summarize),
             'recent_reflections':[{'journal_number':r['journal_number'],'adherence':r['rule_adherence'],'study_note':r['study_note'],
-                'emotion':r['metadata'].get('emotion'),'exit_reason':r['metadata'].get('exit_reason')} for r in selected[-10:]],
+                'emotion':r['metadata'].get('emotion'),'feeling_history':r['metadata'].get('feeling_history',[])[-2:],
+                'feeling_history_count':len(r['metadata'].get('feeling_history',[])),
+                'feeling_history_details_omitted':len(r['metadata'].get('feeling_history',[]))>2,'exit_reason':r['metadata'].get('exit_reason')} for r in selected[-10:]],
             'limitations':'Journal outcomes only. Mixed-entry trades are grouped as Mixed, never attributed fully to each entry. No inferred psychology or automatic trade blocking.'}
 
 
@@ -442,6 +451,9 @@ def community_review(db,guild,user,args):
 
 
 COACH_TOOLS=[
+    schema('record_trade_feeling','Append an explicitly member-reported feeling to the same private Trade # journal. Preserve exact words; stage open/add/mid/close must be stated or clear. reported_at is member-stated time only, null if unknown. correction_of is a prior feeling id, otherwise null. skip=true only for an explicit decline and saves no feeling. Never infer emotion from profit/loss, tone or risk; never use this for an unrelated message.',
+           {'trade_number':NUM,'stage':{'type':['string','null'],'enum':list(STAGES)+[None]},
+            'feeling':STR,'reported_at':STR,'correction_of':NUM,'skip':{'type':['boolean','null']}}),
     schema('get_activity_check','Check recent execution counts and larger recorded risk after a loss against the member’s plan; no diagnosis.',{}),
     schema('get_community_review','Owner-only aggregate performance review; never available to regular members.',{'days':NUM,'group_by':STR}),
     schema('save_journal_entry','Save one canonical journal per Trade # without inventing executions or risk. trade_number explicitly selects an existing Trade #; journal_number is the same number but ambiguous old aliases require clarification. legacy_journal_number explicitly identifies retained historical rows. Null fields preserve existing values. metadata_json is a JSON object with keys: '+', '.join(sorted(META_KEYS))+'. Prices, pnl, risk must be text with units; labels an array; tier integer; kind trade/study/reflection; adherence yes/no/partial/unknown; trade_date YYYY-MM-DD; reported_entry_at/reported_exit_at ISO timestamps with timezone; reported_outcome stopped_out/win/loss/breakeven/open/unknown.',
@@ -455,15 +467,17 @@ COACH_TOOLS=[
            {'session_date':{'type':'string'},'shift':{'type':'string'},'plan':{'type':'string'}}),
     schema('get_shift_plans','Read saved pre-shift plans to compare with execution and reflections.',{'session_date':STR}),
 ]
+COACH_TOOLS.extend(SELF_GRADE_TOOLS)
 COACH_NAMES={t['name'] for t in COACH_TOOLS}
 
 
 def coach_tool(db,guild,user,name,args):
     if not allowed(db,guild,user):
         return {'ok':False,'error':'Your GBOP access is inactive or revoked.'}
-    handlers={'save_journal_entry':save_entry,'find_journal_setups':find_setups,
+    handlers={'record_trade_feeling':record_feeling,'save_journal_entry':save_entry,'find_journal_setups':find_setups,
               'get_performance_review':performance,'save_shift_plan':save_plan,'get_shift_plans':get_plans,
-              'get_activity_check':activity_check,'get_community_review':community_review}
+              'get_activity_check':activity_check,'get_community_review':community_review,
+              'record_trade_self_grade':record_self_grade}
     try:
         return handlers[name](db,guild,user,args)
     except (ValueError,TypeError,KeyError) as exc:

@@ -63,7 +63,8 @@ class SnapshotTests(unittest.TestCase):
                 rule_adherence TEXT,
                 result_r REAL,
                 study_note TEXT,
-                created_at TEXT
+                created_at TEXT,
+                thesis_id INTEGER
             );
             CREATE TABLE post_shift_checkins(
                 id INTEGER PRIMARY KEY,
@@ -93,8 +94,8 @@ class SnapshotTests(unittest.TestCase):
               (1,2,10,20,'TIER_LIMIT','Too much risk','2026-10-02T00:46:00+00:00');
 
             INSERT INTO journals VALUES
-              (1,10,20,'Followed',3.0,'Keep it','2026-10-01T14:05:00+00:00'),
-              (2,10,20,'Partial deviation',-1.0,'Wait longer','2026-10-02T01:05:00+00:00');
+              (1,10,20,'Followed',3.0,'Keep it','2026-10-01T14:05:00+00:00',1),
+              (2,10,20,'Partial deviation',-1.0,'Wait longer','2026-10-02T01:05:00+00:00',2);
 
             INSERT INTO post_shift_checkins VALUES
               (1,10,20,'2026-10-01','day','Followed plan','2026-10-01T17:05:00+00:00'),

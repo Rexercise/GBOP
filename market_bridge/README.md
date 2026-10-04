@@ -144,3 +144,51 @@ distinguish quote/trade restrictions, retain provenance and timezone, and expire
 stale evidence. Holiday overrides and schedule changes require refresh handling;
 outside verified coverage it must return unknown. This change adds no scraping,
 guessed weekly schedule, new service or paid dependency.
+
+## Optional source weekly boundaries
+
+The receiver accepts an optional `weekly_periods` list on each instrument. The
+upgraded collector reads exactly three bars with
+`copy_rates_from_pos(exact_broker_symbol, TIMEFRAME_W1, 0, 3)` on each capture.
+It sends at most two completed intervals, oldest first:
+
+```json
+{"weekly_periods": [{"open_time": 1790035200, "close_time": 1790640000, "source": "MT5", "timeframe": "W1"}]}
+```
+
+The numbers above illustrate the wire format only, not a verified broker anchor.
+Each actual interval is `[observed older W1 open, observed next W1 open)`, in exact
+positive integer UTC epoch seconds, for the enclosing instrument's broker symbol.
+The newest returned bar supplies only the previous bar's end; it is never itself
+sent as completed. Even an old position-zero bar has no known end until a next
+source open is observed. No Monday, New York midnight, fixed-offset correction,
+current-time close, or projected future close is substituted.
+
+Source opens are sorted and must be unique, positive, integer, and no later than
+capture time. Each interval must span six through eight days, a plausibility
+bound that preserves observed DST/anchor changes while rejecting skipped-week
+adjacency. This check does not choose or prove the broker's weekly anchor. The
+receiver additionally requires the exact four fields above, `MT5`/`W1` metadata,
+at most two intervals, and consecutive ordered intervals without overlaps/gaps.
+Malformed submitted metadata is rejected atomically, leaving the last valid feed
+unchanged. Missing/failed/malformed W1 data in the collector simply omits the
+optional field, preserving quote/M1/M5 uploads. An older collector remains valid;
+`read_feed` exposes an empty list when weekly evidence is absent. W1 metadata is
+stored only in the existing latest-snapshot JSON; no table or history timeframe
+is added. A new snapshot without W1 clears the optional metadata rather than
+presenting old boundaries as newly observed. M1/M5 position-zero bars still use
+their existing timestamp-based closure checks.
+
+Deploy the receiver before updating the Windows collector: older receivers reject
+unknown instrument fields. A server deployment alone does not update Windows.
+This addition uses the existing read-only market API and needs no credentials,
+account/trading calls, packages, paid services, or infrastructure changes. Exact
+BTC/ETH weekly boundaries remain unavailable until a real upgraded capture is
+received; local mocked tests do not establish the live broker's W1 anchor.
+
+Sources verified on 2026-10-04:
+- [MetaQuotes UTC bar-time and W1 documentation](https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesfrom_py)
+- [MetaQuotes position-zero and bounded history API](https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesfrompos_py)
+
+Focused checks: `python -m unittest discover -s tests -p 'test_weekly_periods.py'`
+and `python -m unittest discover -s tests -p 'test_market_bridge.py'`.
