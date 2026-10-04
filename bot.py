@@ -25,6 +25,7 @@ from gbop_voice_web.discord_controls import (
 from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
 from db_compat import db
 from gbop_voice_web.member_access import member_access_error
+from gbop_voice_web.checkin_routing import save_checkin_reply
 from gbop_voice_web.voice_policy import build_voice_instructions
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
 from gbop_voice_web.member_intelligence import (
@@ -241,6 +242,11 @@ GBOP_CHECKIN_PROMPT = (
     "(2) whether your trades met your own A+ setup criteria, "
     "(3) whether you avoided boredom, FOMO, revenge trading, or unnecessary entries, "
     "plus one pattern you noticed and one adjustment for your next shift."
+)
+GBOP_CHECKIN_REPLY_HINT = (
+    "\n\nTo save this check-in within 24 hours, use Discord Reply on this message "
+    "or start your answer with `Check-in:`. Other questions and requests remain "
+    "normal conversations."
 )
 
 intents = discord.Intents.default()
@@ -3937,10 +3943,10 @@ def _scheduled_shift_events(now_eastern):
          "⏱️ **Night Shift begins in 5 minutes** (9:00 PM Eastern). Protect your A+ criteria, follow your trading plan, and respect your personal risk protocol.",
          None),
         (13 * 60, 180, "day_formation",
-         "📣 **Post-Day Shift formation — 1:00 PM Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
+         "📣 **Post-Day Shift formation — 1:00 PM Eastern**\n\n" + GBOP_CHECKIN_PROMPT + GBOP_CHECKIN_REPLY_HINT,
          "day"),
         (0, 180, "night_formation",
-         "📣 **Post-Night Shift formation — midnight Eastern**\n\n" + GBOP_CHECKIN_PROMPT,
+         "📣 **Post-Night Shift formation — midnight Eastern**\n\n" + GBOP_CHECKIN_PROMPT + GBOP_CHECKIN_REPLY_HINT,
          "night"),
     )
 
@@ -4024,25 +4030,20 @@ async def _post_shift_checkin_loop():
 async def _consume_checkin_reply(message):
     if message.guild is not None:
         return False
-
-    with db() as conn:
-        existing = conn.execute("""
-            SELECT id
-            FROM post_shift_checkins
-            WHERE guild_id=? AND user_id=? AND response IS NULL
-            ORDER BY id DESC
-            LIMIT 1
-        """, (GTOP_GUILD_ID, message.author.id)).fetchone()
-
-        if existing is None:
-            return False
-
-        checkin_id = existing["id"]
-        conn.execute("""
-            UPDATE post_shift_checkins
-            SET response=?, responded_at=?
-            WHERE id=?
-        """, (message.content.strip(), now(), checkin_id))
+    denial = member_access_error(db, GTOP_GUILD_ID, message.author.id, GTOP_OWNER_USER_ID)
+    if denial:
+        await message.reply(denial)
+        return True
+    reference = getattr(message, 'reference', None)
+    reply_id = getattr(reference, 'message_id', None)
+    if reference is not None and (reply_id is None
+            or getattr(reference, 'channel_id', None) != message.channel.id):
+        return False
+    saved = await asyncio.to_thread(save_checkin_reply, db, GTOP_GUILD_ID,
+        message.author.id, message.content, reply_message_id=reply_id)
+    if saved is None:
+        return False
+    checkin_id = saved['id']
 
     reply = "Saved. GBOP folded this check-in into your member coaching profile."
     try:
@@ -5487,9 +5488,6 @@ async def on_message(message: discord.Message):
         and client.user in message.mentions
     )
 
-    if is_dm and not message.attachments and await _consume_checkin_reply(message):
-        return
-
     if not is_dm and not is_mentioned:
         return
 
@@ -5522,6 +5520,15 @@ async def on_message(message: discord.Message):
                 "`/activate agree:true`."
             )
             return
+
+    # Pending check-ins must not bypass membership/activation checks or capture
+    # unrelated messages such as a member's explicit private-market watch.
+    denial = member_access_error(db, GTOP_GUILD_ID, member.id, GTOP_OWNER_USER_ID)
+    if denial:
+        await message.reply(denial)
+        return
+    if is_dm and not message.attachments and await _consume_checkin_reply(message):
+        return
 
     content = message.content or ""
 
