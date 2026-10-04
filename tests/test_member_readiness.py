@@ -143,8 +143,9 @@ class VoiceReleaseTests(unittest.TestCase):
         overhead = len(prompt) - len(CANONICAL_KNOWLEDGE) - len(MARKET_PROMPT)
         self.assertGreater(overhead, 0)
         self.assertLess(overhead, 10000)
-        # Retain an explicit whole-prompt regression guard for this expanded canon.
-        self.assertLess(len(prompt), 45000)
+        # The owner-approved range-language canon adds bounded definitions/examples.
+        # Operations overhead stays separately bounded; response payload caps are unchanged.
+        self.assertLess(len(prompt), 51000)
         self.assertEqual(prompt.count(CANONICAL_KNOWLEDGE), 1)
         self.assertEqual(prompt.count(MARKET_PROMPT), 1)
 

@@ -11,11 +11,12 @@ from gbop_voice_web.candle_evidence import parse_time
 from gbop_voice_web.candle_naming import candle_label, source_timeframe
 from gbop_voice_web.shift_narrative import directional_outcome
 from gbop_voice_web.smt_reference import closing_candle
-from gbop_voice_web.active_range_story import selected_range_story, shift_end_state
+from gbop_voice_web.active_range_story import selected_range_story, shift_end_state, _double_sentence
+from gbop_voice_web.target_approach import owner_inducement_example
 
 
 SYNOPSIS_CONTRACT = (
-    'Use spoken_summary briefly: 9ate8 direction, variant and own objectives first; '
+    'Use spoken_summary briefly: 9ate8 directional verdict in the first sentence; '
     'Young Lefty is independent. Follow active_range_context through later hours and '
     'conclusion to shift_end. Only next_selected_range changes the anchor, never a new '
     'hour or objective delivery. Candle body direction differs from an independent '
@@ -38,7 +39,7 @@ OTHER_RANGES_CONTRACT = (
     'actually discussed; retrieval alone is not a completed spoken response.')
 
 
-def _active_context(story, records, anchor_start_ny=None):
+def _active_context(story, records, anchor_start_ny=None, asset=None):
     anchor = anchor_start_ny or story.get('active_anchor_ny')
     row = next((r for r in story.get('ranges', []) if r['anchor_start_ny'] == anchor), None)
     if not row:
@@ -49,7 +50,7 @@ def _active_context(story, records, anchor_start_ny=None):
                              'instead of changing the selected-range story.')
         return None
     fact = _paired_fact(row, records, _local_fact(row))
-    return selected_range_story(story, row, fact)
+    return selected_range_story(story, row, fact, asset)
 
 
 def _continuity_bridge(context):
@@ -82,6 +83,8 @@ def _continuity_bridge(context):
         parts.append(f"Only then did {_clock(nxt['to_anchor_ny'])} H1 become selected at {_clock(nxt['confirmed_at_ny'])}.")
     elif context['still_selected_at_cutoff']:
         parts.append('No later selected range replaced it in this shift.')
+    if context.get('double_purge'):
+        parts.append(_double_sentence(context['double_purge'], short=True))
     return ' '.join(parts)
 
 
@@ -119,6 +122,8 @@ def _short_selected_summary(context):
         nxt = context['next_selected_range']
         parts.append(f"{_clock(nxt['to_anchor_ny'])} H1 then became selected at {_clock(nxt['confirmed_at_ny'])}"
                      + ('; no later evidence before the cutoff.' if nxt.get('at_review_cutoff') else '.'))
+    if context.get('double_purge'):
+        parts.append(_double_sentence(context['double_purge'], short=True))
     return ' '.join(parts)
 
 
@@ -257,7 +262,8 @@ def _delivery_text(fact):
 
 def _sentence(fact, *, young=False):
     name = f"{fact['play']} ({_clock(fact['anchor_start_ny'])} H1 range)" if fact.get('play') else f"The {_clock(fact['anchor_start_ny'])} H1 range"
-    intro = (fact.get('direction') or 'direction unverified')
+    intro = (('failed ' if fact['verdict'] in ('failed', 'boneless_failed') else '')
+             + (fact.get('direction') or 'direction unverified'))
     if fact['verdict'].startswith('boneless'):
         intro += ' boneless' + (' potential' if fact['verdict'] == 'boneless_potential' else '')
     elif fact['verdict'] == 'clean':
@@ -296,7 +302,14 @@ def build_shift_synopsis(review, asset=None):
                 'response_contract': SYNOPSIS_CONTRACT}
     records = story.get('recap', {}).get('paired_interpretation', [])
     lead = _paired_fact(opening, records, _local_fact(opening, '9ate8'))
-    facts, sentences = [lead], [_sentence(lead)]
+    lead_sentence = _sentence(lead)
+    approach = opening.get('objective_approach', {}).get('objectives', {}).get('midpoint', {})
+    annotation = owner_inducement_example(asset, opening['anchor'], lead['direction'], approach)
+    if annotation:
+        lead['midpoint_approach'] = {'status': approach['status'],
+            'distance_price_points': approach['distance_price_points'], 'gtop_context': annotation}
+        lead_sentence += ' Its non-touch 50% approach was inducement in GTOP terms.'
+    facts, sentences = [lead], [lead_sentence]
     # Seven's own range is independent of eight and nine. An invalidated local
     # eight/nine or an opposite-direction paired thesis must not hide it.
     young = next((o.get('evidence') for o in review.get('observations', [])
@@ -322,7 +335,7 @@ def build_shift_synopsis(review, asset=None):
                     (row.get('role') == 'selected_range' or item['outcome'] == 'opposing_liquidity_delivered'))
         if relevant:
             facts.append(item)
-            continuity = selected_range_story(story, row, item)
+            continuity = selected_range_story(story, row, item, asset)
             sentences.append(_short_selected_summary(continuity) if continuity else _sentence(item))
     if not story.get('coverage', {}).get('complete') or not story.get('progression_complete'):
         sentences.append('Missing or unfinished candles limit the affected ranges.')
@@ -339,7 +352,7 @@ def build_shift_synopsis(review, asset=None):
     ending = shift_end_state(story)
     sentences.append(ending['spoken_summary'])
     return {'spoken_summary': ' '.join(sentences), 'ranges': facts, 'range_index': index,
-            'active_range_context': _compact_active_context(_active_context(story, records)),
+            'active_range_context': _compact_active_context(_active_context(story, records, asset=asset)),
             'shift_end': {k: v for k, v in ending.items() if k != 'spoken_summary'},
             'young_lefty_evaluated': True, 'young_lefty_relevant': young_relevant,
             'coverage_complete': story.get('coverage', {}).get('complete', False),
@@ -357,14 +370,14 @@ def build_other_ranges(review, asset=None, discussed=(), *, continue_active=Fals
     excluded = set(discussed)
     records = story.get('recap', {}).get('paired_interpretation', [])
     synopsis = build_shift_synopsis(review, asset)
-    active = _active_context(story, records, anchor_start_ny if continue_active else None)
+    active = _active_context(story, records, anchor_start_ny if continue_active else None, asset)
     ending = shift_end_state(story)
     if continue_active:
         if active is None:
             raise ValueError('The active range is unverified because the selected-range progression is incomplete.')
         path, current = [], active
         while current.get('next_selected_range'):
-            current = _active_context(story, records, current['next_selected_range']['to_anchor_ny'])
+            current = _active_context(story, records, current['next_selected_range']['to_anchor_ny'], asset)
             if current is None:
                 break
             path.append(current)
@@ -383,12 +396,12 @@ def build_other_ranges(review, asset=None, discussed=(), *, continue_active=Fals
         prior = next((t['from_anchor_ny'] for t in story.get('range_transitions', [])
                       if t['to_anchor_ny'] == active['anchor_start_ny']), None)
         if prior:
-            active = _active_context(story, records, prior)
+            active = _active_context(story, records, prior, asset)
     discussed_selected = [r for r in story.get('ranges', []) if r.get('role') == 'selected_range'
         and r['anchor_start_ny'] in excluded and r.get('label') != '9ate8']
     if discussed_selected:
         prior = max(discussed_selected, key=lambda r: r['anchor_start_ny'])
-        active = _active_context(story, records, prior['anchor_start_ny'])
+        active = _active_context(story, records, prior['anchor_start_ny'], asset)
     facts = [deepcopy(row) for row in synopsis['ranges'] if row.get('play') == 'Young Lefty']
     for row in story.get('ranges', []):
         play = row.get('label') if row.get('label') in {'9ate8', 'Young Lefty'} else None
@@ -410,7 +423,7 @@ def build_other_ranges(review, asset=None, discussed=(), *, continue_active=Fals
         else:
             fact['observation_status'] = 'observed' if fact['coverage_complete'] else 'incomplete'
             row = next((r for r in story['ranges'] if r['anchor_start_ny'] == anchor), None)
-            continuity = selected_range_story(story, row, fact) if row else None
+            continuity = selected_range_story(story, row, fact, asset) if row else None
             text = (continuity['spoken_summary'] if continuity and not fact.get('play') else
                     _sentence(fact, young=fact.get('play') == 'Young Lefty'))
             if fact['role'] == 'independent_range_context' and not fact.get('play'):
@@ -421,6 +434,10 @@ def build_other_ranges(review, asset=None, discussed=(), *, continue_active=Fals
         sentences.append('All retained ranges in this shift have already been discussed. '
                          'Name a range to revisit it, or explicitly start the review over.')
     sentences.append(ending['spoken_summary'])
+    if active:
+        # The same selected-range prose is already in spoken_summary or the
+        # continuity bridge; keep its complete structured evidence only once.
+        active.pop('spoken_summary', None)
     return {'mode': 'other_ranges', 'spoken_summary': ' '.join(sentences), 'ranges': remaining,
             'active_range_context': active, 'shift_end': ending,
             'excluded_discussed_anchors': sorted(excluded),

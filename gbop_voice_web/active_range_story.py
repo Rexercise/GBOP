@@ -8,6 +8,7 @@ from datetime import datetime
 
 from gbop_voice_web.candle_evidence import parse_time, stamp
 from gbop_voice_web.candle_naming import candle_label, source_timeframe
+from gbop_voice_web.target_approach import owner_inducement_example
 
 
 def _clock(value):
@@ -22,7 +23,54 @@ def _event_label(event):
     return candle_label(event['bar_open_ny'], source_timeframe(event.get('precision_seconds')))
 
 
-def selected_range_story(story, row, fact):
+def _double_context(row, asset=None):
+    evidence = row.get('double_purge', {})
+    if not evidence.get('observed'):
+        return None
+    reversal = evidence['reversal_thesis']
+    value = {'original_direction': evidence['original_outcome']['direction'],
+        'original_outcome': evidence['original_outcome']['status'],
+        'reversal_direction': reversal['direction'], 'reversal_outcome': reversal['status'],
+        'full_objective_side': reversal['objective_side'], 'full_objective_level': reversal['objective_level'],
+        'source_return_inside': deepcopy(evidence['sequence']['source_return_inside']),
+        'assigned_return_inside': deepcopy(evidence['sequence']['assigned_return_inside']),
+        'objectives': {}}
+    for name, target in reversal['objectives'].items():
+        result = {k: deepcopy(target[k]) for k in ('status', 'level', 'distance_price_points',
+            'observed_distance_price_points', 'closest_observed_price', 'closest_source_interval') if k in target}
+        if result.get('closest_source_interval'):
+            result['closest_source_interval'] = _interval(result['closest_source_interval'])
+        approach = target.get('approach') or {}
+        result['full_range_reference'] = deepcopy(approach.get('full_range_reference'))
+        result['boundary_to_target_reference'] = deepcopy(approach.get('boundary_to_target_reference'))
+        annotation = owner_inducement_example(asset, row['anchor'], reversal['direction'], target)
+        if annotation:
+            result['gtop_context'] = annotation
+        value['objectives'][name] = result
+    return value
+
+
+def _double_sentence(value, short=False):
+    if not value:
+        return ''
+    side, direction = value['full_objective_side'], value['reversal_direction']
+    outcome = value['reversal_outcome']
+    state = {'original_side_delivered': 'delivered the original ' + side + '-side',
+        'midpoint_only': 'delivered 50% only', 'unverified': 'has an unverified outcome',
+        'failed_before_objectives': 'failed before its objectives',
+        'pending_at_review_cutoff': 'remained pending at the cutoff'}[outcome]
+    text = f'The same-range double-purge {direction} reversal {state}.'
+    if not short:
+        returned = value['source_return_inside']
+        text += (' Its return inside was in ' + candle_label(returned['bar_open_ny'], returned['timeframe'])
+                 + f'; its full objective is the original {side}-side, with 50% only halfway.')
+        midpoint = value['objectives'].get('midpoint', {})
+        if midpoint.get('gtop_context'):
+            text += ' Its non-touch 50% rebound was inducement in GTOP terms.'
+    return text
+
+
+def selected_range_story(story, row, fact, asset=None):
     """Keep one selected anchor through its real hourly development and outcome."""
     anchor = row['anchor_start_ny']
     if row.get('role') != 'selected_range':
@@ -127,6 +175,9 @@ def selected_range_story(story, row, fact):
         text += ' No later selected-range transition occurred before the cutoff.'
     else:
         text += ' A later selected-range transition is unverified.'
+    double = _double_context(row, asset)
+    if double:
+        text += ' ' + _double_sentence(double)
     verified_through = next((h['candle_end_ny'] for h in reversed(development) if h.get('candle_science')), selection_start)
     return {'anchor_start_ny': anchor, 'selected_at_ny': selection_start,
             'selected_through_ny': next_range['confirmed_at_ny'] if next_range else verified_through,
@@ -136,7 +187,7 @@ def selected_range_story(story, row, fact):
             'invalidated_at_ny': invalid,
             'conclusion': conclusion, 'variant': deepcopy(fact.get('variant', {})),
             'variant_known_at_ny': variant_known,
-            'next_selected_range': next_range, 'spoken_summary': text}
+            'next_selected_range': next_range, 'double_purge': double, 'spoken_summary': text}
 
 
 def shift_end_state(story):

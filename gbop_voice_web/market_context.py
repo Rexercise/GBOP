@@ -28,8 +28,9 @@ buy/sell-side or 50% delivery and timing versus local invalidation, THEN selecte
 objectives. Clean structure is not a win; later delivery cannot restore CRT validity.
 Keep formation, CSD, retests, execution and selected-range invalidation distinct.
 CISD: assigned close strictly below full LOW bearish, above full HIGH bullish; never body open.
-Use paired_smt/paired_context for gold/silver, BTC/ETH and NAS100/SPX. Include
-qualified boneless_asset and each own objective_status BEFORE the overall verdict.
+Use paired_smt/paired_context for gold/silver, BTC/ETH and NAS100/SPX. Assess
+qualified boneless_asset and each own objective_status BEFORE the overall verdict
+is chosen; speak the named directional verdict first, then its supporting evidence.
 Same setup-hour purges mean both bones: no boneless/SMT label or minute asynchrony
 by default. Use setup_interval.qualified_smt; forming hours are provisional. Minute
 detail only when asked. Local/paired objectives are independent outcomes; honor invalidation.

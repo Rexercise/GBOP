@@ -303,7 +303,7 @@ def _spoken_range(text, row):
         patterns.append(r'\b(?:9|nine)\s*(?:ate|eight|8)\s*(?:8|eight)\b')
     if row.get('play') == 'Young Lefty':
         patterns.append(r'\byoung\s+lefty\b')
-    explanation = (r'\b(?:bullish|bearish|failed|invalidat\w*|deliver\w*|reach\w*|midpoint|'
+    explanation = (r'\b(?:bullish|bearish|failed|invalidat\w*|deliver\w*|reach\w*|midpoint|ce|consequent encroachment|equilibrium|'
                    r'objectives?|liquidity|purg\w*|pending|unverified|uninitiated|'
                    r'no (?:directional )?setup|(?:stayed|remained|became) selected|'
                    r'closes? at|cutoff|v[1-6]|boneless|clean setup)\b|50%')
@@ -327,7 +327,7 @@ def _spoken_range(text, row):
 def _detail_intent(text, previous=None):
     """Only actual current user text; audio callers must not synthesize a transcript."""
     text = text.lower().strip()
-    terms = r'(?:model\s*(?:1|one)|super\s*soup|ci?sd|wick(?:[ -]soup)?|body[ -](?:soup|purge))'
+    terms = r'(?:model\s*(?:1|one)|super\s*soup|ci?sd|wick(?:[ -]soup)?|body[ -](?:soup|purge)|double[ -]purge|inducement)'
     if (re.search(r'\b(?:define|definition|meaning of|explain the concept)\b', text)
             or re.search(r'\bwhat (?:is|are) (?:a |an |the )?' + terms + r'\s*[?.!]*$', text)
             or re.search(r'\bwhat does ' + terms + r' mean\b', text)
@@ -340,7 +340,9 @@ def _detail_intent(text, previous=None):
         (r'\bci?sd\b|change (?:in|of) state of delivery', 'csd'),
         (r'\bmodel\s*(?:1|one)\b', 'model1'),
         (r'\b(?:wick|body)[ -](?:soup|purge)\b|\bwick or body\b', 'purge_identity'),
-        (r'(?:how (?:far|close)|distance|points away|distance-to).*(?:midpoint|50%|target|objective|opposing liquidity|buy[ -]side|sell[ -]side)', 'objective_distance'),
+        (r'(?:how (?:far|close)|distance|points away|distance-to).*(?:50%|\b(?:midpoint|ce|consequent encroachment|equilibrium|target|objective|opposing liquidity|buy[ -]side|sell[ -]side)\b)', 'objective_distance'),
+        (r'\bdouble[ -]purge\b', 'double_purge'),
+        (r'\binduc(?:e|ed|ement|ing)\b', 'target_approach'),
         (r'\bcandle (?:evidence|identity|details?)\b', 'candle_identity'))
         if re.search(pattern, text)), None)
     # Parent range clocks are not candidate identities. Multiple named candles

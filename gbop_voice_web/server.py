@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches
 from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT
 from gbop_voice_web.delivery_receipts import DELIVERY_TOOLS, DELIVERY_PROMPT, delivery_status
+from gbop_voice_web.midpoint_preferences import TOOLS as MIDPOINT_TOOLS, MIDPOINT_PROMPT, LIVE_MIDPOINT_PROMPT
 from gbop_voice_web.market_data import MARKET_TOOLS, MARKET_NAMES, MARKET_PROMPT, LIVE_MARKET_PROMPT, market_clock, market_tool, init_market
 from gbop_voice_web.market_routes import market_router
 from db_compat import db
@@ -350,7 +351,9 @@ def member_context(user_id: int) -> str:
             (GTOP_GUILD_ID, user_id),
         ).fetchall()
 
-    lines = [market_clock(), "CURRENT VERIFIED GBOP MEMBER STATE", profile_context(get_profile(db, GTOP_GUILD_ID, user_id))]
+    from gbop_voice_web.midpoint_preferences import preference_context
+    lines = [market_clock(), "CURRENT VERIFIED GBOP MEMBER STATE", profile_context(get_profile(db, GTOP_GUILD_ID, user_id)),
+             preference_context(db, GTOP_GUILD_ID, user_id, OWNER_USER_ID)]
 
     if trades:
         lines.append("Open trades:")
@@ -994,6 +997,7 @@ TOOLS.extend(MARKET_TOOLS)
 TOOLS.extend(WATCH_TOOLS)
 TOOLS.extend(JOURNAL_RECALL_TOOLS)
 TOOLS.extend(DELIVERY_TOOLS)
+TOOLS.extend(MIDPOINT_TOOLS)
 for _recall_tool in TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
         _recall_tool['description'] = 'Read this member\'s saved journals, all-trade counts and next page. Empty OPEN trades does not mean no saved trades.'
@@ -1008,6 +1012,9 @@ def run_tool(user_id: int, name: str, args: dict, confirmation_token=None):
     denial = member_access_error(db, GTOP_GUILD_ID, user_id, OWNER_USER_ID)
     if denial:
         return {"ok": False, "error": denial}
+    if name in ('get_midpoint_preference', 'save_midpoint_preference'):
+        from gbop_voice_web.midpoint_preferences import preference_tool
+        return preference_tool(db, GTOP_GUILD_ID, user_id, OWNER_USER_ID, name, args)
     if name == 'get_delivery_status':
         return delivery_status(db, GTOP_GUILD_ID, user_id, args)
     if name == 'send_journal_history':
@@ -1111,10 +1118,12 @@ BACKEND_PROMPT += (
     + "\n\n" + MARKET_PROMPT
     + "\n\n" + JOURNAL_RECALL_PROMPT
     + "\n\n" + DELIVERY_PROMPT
+    + "\n\n" + MIDPOINT_PROMPT
 )
 
 
 def run_backend(history: list[dict[str, str]], user_id: int, market_context=None, client_turn=None) -> str:
+    from gbop_voice_web.midpoint_preferences import bind_preference_args
     from gbop_voice_web.market_conversation import MarketConversation, contextual_tools, SCOPED_TOOLS
     from gbop_voice_web.journal_context import WRITE_TOOLS
     market_context = market_context or MarketConversation((GTOP_GUILD_ID, user_id, 'browser_request'))
@@ -1156,9 +1165,10 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
     items = [{"role": "user", "content": user_input}]
     if prefetched:
         items.append({'role': 'developer', 'content': prefetched})
+    turn_instructions = BACKEND_PROMPT
     response = client.responses.create(
         model=BACKEND_MODEL,
-        instructions=BACKEND_PROMPT + market_context.prompt(),
+        instructions=turn_instructions + market_context.prompt(),
         input=items,
         tools=conversation_tools,
         store=False,
@@ -1187,7 +1197,8 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
             try:
                 args = json.loads(call.arguments)
                 result = market_context.run(call.name, args,
-                    lambda name, values: run_tool(user_id, name, values, confirmation_token),
+                    lambda name, values: run_tool(user_id, name,
+                        bind_preference_args(market_context, name, values, market_generation), confirmation_token),
                     generation=market_generation)
             except Exception as exc:
                 result = {
@@ -1207,12 +1218,15 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
                     "output": json.dumps(voice_tool_payload(call.name, result)),
                 }
             )
+            if call.name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
+                from gbop_voice_web.midpoint_preferences import refresh_instructions
+                turn_instructions = refresh_instructions(turn_instructions, result)
 
         if not market_context.current(market_generation):
             return 'This request was superseded by newer speech.'
         response = client.responses.create(
             model=BACKEND_MODEL,
-            instructions=BACKEND_PROMPT + market_context.prompt(),
+            instructions=turn_instructions + market_context.prompt(),
             input=items,
             tools=conversation_tools,
             store=False,
@@ -1276,6 +1290,7 @@ LIVE_INSTRUCTIONS = (
       "Specific observed setups, dates, prices or candle times always require backend delegation. "
       "Do not substitute generic trading definitions when GTOP defines the concept.\n\n"
     + GTOP_CANONICAL_KNOWLEDGE
+    + "\n\n" + LIVE_MIDPOINT_PROMPT
 )
 
 
