@@ -214,7 +214,9 @@ class JournalRecallTests(unittest.TestCase):
 
     def test_no_journals_does_not_erase_closed_trade_records(self):
         r=history(self.db,1,300,{})
-        self.assertEqual(r['journal_count'],0); self.assertEqual(r['trade_count'],1)
+        self.assertEqual(r['journal_count'],1); self.assertEqual(r['trade_count'],1)
+        self.assertTrue(r['journals'][0]['virtual_trade_record'])
+        self.assertEqual(r['stored_journal_entry_count'],0)
         self.assertEqual(r['open_trade_count'],0)
 
     def test_empty_member_is_not_owners_records(self):
@@ -230,7 +232,8 @@ class JournalRecallTests(unittest.TestCase):
 
     def test_cross_member_bad_link_does_not_leak_trade_number(self):
         self.conn.execute('UPDATE journals SET thesis_id=20 WHERE id=9')
-        self.assertIsNone(history(self.db,1,100,{})['journals'][0]['trade_id'])
+        rows = history(self.db,1,100,{})['journals']
+        self.assertIsNone(next(r for r in rows if r.get('journal_id') == 9)['trade_id'])
 
     def test_private_delivery_uses_authenticated_recipient_and_disables_mentions(self):
         client=Mock(); client.post.side_effect=[NS(status_code=200,json=lambda:{'id':'dm'}),NS(status_code=200),NS(status_code=200)]
@@ -269,7 +272,7 @@ class JournalRecallTests(unittest.TestCase):
 
     def test_new_tool_has_no_recipient_or_owner_override(self):
         props=JOURNAL_RECALL_TOOLS[0]['parameters']['properties']
-        self.assertEqual(set(props),{'limit','offset','delivery_action'})
+        self.assertEqual(set(props),{'limit','offset','trade_number','journal_number','legacy_journal_number','delivery_action'})
 
     def test_both_platforms_use_shared_member_scoped_recall(self):
         for path,name in [('bot.py','ai_get_journal_history'),('gbop_voice_web/server.py','tool_get_journal_history')]:

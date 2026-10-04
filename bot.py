@@ -505,37 +505,22 @@ class JournalModal(discord.ui.Modal, title="GBOP Trade Journal"):
                 )
                 return
 
-        with db() as conn:
-            cur = conn.execute("""
-                INSERT INTO journals (
-                    guild_id,
-                    user_id,
-                    description,
-                    rule_adherence,
-                    result_r,
-                    study_note,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                GTOP_GUILD_ID,
-                interaction.user.id,
-                str(self.description).strip(),
-                str(self.rule_adherence).strip(),
-                result_value,
-                str(self.study_note).strip(),
-                now()
-            ))
-
-            journal_id = cur.lastrowid
-
+        from gbop_voice_web.journal_coach import coach_tool
+        saved = coach_tool(db, GTOP_GUILD_ID, interaction.user.id, 'save_journal_entry', {
+            'description': str(self.description).strip(),
+            'rule_adherence': str(self.rule_adherence).strip(),
+            'result_r': result_value, 'study_note': str(self.study_note).strip(),
+            'metadata_json': '{"kind":"trade"}',
+        })
+        if not saved.get('ok'):
+            await interaction.response.send_message(saved.get('error', 'Journal could not be saved.'), ephemeral=True)
+            return
         await interaction.response.send_message(
-            f"📓 **Private journal #{journal_number(db, GTOP_GUILD_ID, interaction.user.id, journal_id)} saved.**\n"
+            f"📓 **Trade #{saved['trade_number']} saved to your journal.**\n"
             f"Result: **{format_r(result_value)}**\n"
             f"Rule Adherence: **{self.rule_adherence}**\n"
-            f"Study Note: {self.study_note}",
-            ephemeral=True
-        )
+            f"Study Note: {self.study_note}", ephemeral=True)
+
 
 
 @tree.command(
@@ -553,41 +538,12 @@ async def journal(
 
     limit = max(1, min(limit, 10))
 
-    with db() as conn:
-        rows = conn.execute("""
-            SELECT *
-            FROM journals
-            WHERE guild_id=? AND user_id=?
-            ORDER BY id DESC
-            LIMIT ?
-        """, (
-            GTOP_GUILD_ID,
-            interaction.user.id,
-            limit
-        )).fetchall()
-
-    if not rows:
-        await interaction.response.send_message(
-            "You do not have any journal entries yet.",
-            ephemeral=True
-        )
+    from gbop_voice_web.journal_recall import history, messages
+    result = history(db, GTOP_GUILD_ID, interaction.user.id, {'limit': limit})
+    if not result['journals']:
+        await interaction.response.send_message("You do not have any journal entries yet.", ephemeral=True)
         return
-
-    parts = ["**Your Recent GBOP Journal Entries**"]
-
-    for row in rows:
-        parts.append(
-            f"\n**Journal #{journal_number(db, GTOP_GUILD_ID, row['user_id'], row['id'])}**"
-            f"\nResult: {format_r(row['result_r'])}"
-            f"\nAdherence: {row['rule_adherence'] or 'Not specified'}"
-            f"\nEntry: {row['description'][:450]}"
-            f"\nStudy Note: {row['study_note'] or 'Not specified'}"
-        )
-
-    await interaction.response.send_message(
-        "\n".join(parts)[:1900],
-        ephemeral=True
-    )
+    await interaction.response.send_message("\n\n".join(messages(result))[:1900], ephemeral=True)
 
 
 @tree.command(
@@ -808,7 +764,8 @@ async def thesis_open(
     if not await require_member(interaction):
         return
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, {}, GTOP_GUILD_ID, interaction.user.id, serialize=True) as conn:
         cur = conn.execute("""
             INSERT INTO theses (
                 guild_id,
@@ -843,9 +800,12 @@ async def thesis_open(
         ))
 
         thesis_id = cur.lastrowid
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, interaction.user.id, thesis_id,
+            fields={'description': f'{asset.strip()} {direction.value} · {play.value}'}, timestamp=now())
 
     await interaction.response.send_message(
-        f"🧠 **GTOP Thesis #{thesis_id} opened.**\n"
+        f"🧠 **Trade #{trade_number_for_id(interaction.user.id, thesis_id)} opened.**\n"
         f"Asset: **{asset}**\n"
         f"Direction: **{direction.value}**\n"
         f"Play: **{play.value}**\n"
@@ -867,6 +827,12 @@ async def thesis_status(
     if not await require_member(interaction):
         return
 
+    visible_number = thesis_id
+    thesis_id = trade_id_from_number(interaction.user.id, visible_number)
+    if thesis_id is None:
+        await interaction.response.send_message('Trade number not found in your account.', ephemeral=True)
+        return
+
     row = get_thesis(thesis_id, interaction.user.id)
 
     if row is None:
@@ -876,11 +842,12 @@ async def thesis_status(
         )
         return
 
-    used = thesis_used_r(thesis_id)
+    from gbop_voice_web.trade_numbers import recorded_trade_risk
+    used = recorded_trade_risk(db, GTOP_GUILD_ID, interaction.user.id, thesis_id)
     remaining = thesis_remaining_r(thesis_id)
 
     await interaction.response.send_message(
-        f"**GTOP Thesis #{row['id']}**\n"
+        f"**Trade #{visible_number}**\n"
         f"Asset: **{row['asset']}**\n"
         f"Direction: **{row['direction']}**\n"
         f"Play: **{row['play']}**\n"
@@ -888,8 +855,8 @@ async def thesis_status(
         f"CRT Variant: **{row['crt_variant'] or 'Not specified'}**\n"
         f"Objective: **{row['objective']}**\n"
         f"Status: **{row['status']}**\n\n"
-        f"Risk Used: **{used:.2f}R**\n"
-        f"Risk Remaining: **{remaining:.2f}R**\n\n"
+        f"Risk Used: **{format_r(used)}**\n"
+        f"Risk Remaining: **{format_r(remaining) if row['status'] == 'OPEN' else 'Not an open risk position'}**\n\n"
         f"Thesis Invalidation: {row['thesis_invalidation']}",
         ephemeral=True
     )
@@ -956,7 +923,7 @@ execution = app_commands.Group(
     description="Record an actual execution inside a GTOP thesis."
 )
 @app_commands.describe(
-    thesis_id="Thesis this execution belongs to",
+    thesis_id="Your displayed Trade # for this execution",
     entry_model="Recognized GTOP execution model",
     tier="GTOP Risk Protocol tier",
     risk_r="Actual risk used on the execution",
@@ -993,6 +960,12 @@ async def execution_log(
     if not await require_member(interaction):
         return
 
+    visible_number = thesis_id
+    thesis_id = trade_id_from_number(interaction.user.id, visible_number)
+    if thesis_id is None:
+        await interaction.response.send_message('Trade number not found in your account.', ephemeral=True)
+        return
+
     thesis_row = get_thesis(thesis_id, interaction.user.id)
 
     if thesis_row is None:
@@ -1004,12 +977,12 @@ async def execution_log(
 
     if thesis_row["status"] != "OPEN":
         await interaction.response.send_message(
-            f"❌ Thesis #{thesis_id} is **{thesis_row['status']}** and cannot accept new executions.",
+            f"❌ Trade #{visible_number} is **{thesis_row['status']}** and cannot accept new executions.",
             ephemeral=True
         )
         return
 
-    if risk_r <= 0:
+    if not math.isfinite(risk_r) or risk_r <= 0:
         await interaction.response.send_message(
             "❌ Risk must be greater than 0R.",
             ephemeral=True
@@ -1044,7 +1017,15 @@ async def execution_log(
             f"This execution brings total recorded risk to {projected_total:.2f}R."
         ))
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, {}, GTOP_GUILD_ID, interaction.user.id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+            (thesis_id, GTOP_GUILD_ID, interaction.user.id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            await interaction.response.send_message('This trade has closed or changed. Refresh its journal before adding details.', ephemeral=True)
+            return
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, interaction.user.id, thesis_id)
         cur = conn.execute("""
             INSERT INTO thesis_executions (
                 thesis_id,
@@ -1092,7 +1073,7 @@ async def execution_log(
 
         response = (
             f"📝 **Execution #{execution_id} recorded.**\n"
-            f"Thesis: **#{thesis_id}**\n"
+            f"Trade: **#{visible_number}**\n"
             f"Entry Model: **{entry_model.value}**\n"
             f"Tier: **{tier.value}**\n"
             f"Actual Risk: **{risk_r:.2f}R**\n\n"
@@ -1111,7 +1092,7 @@ async def execution_log(
     else:
         response = (
             f"✅ **Execution #{execution_id} recorded within protocol.**\n"
-            f"Thesis: **#{thesis_id}**\n"
+            f"Trade: **#{visible_number}**\n"
             f"Entry Model: **{entry_model.value}**\n"
             f"Tier: **{tier.value}**\n"
             f"Actual Risk: **{risk_r:.2f}R**\n\n"
@@ -1130,7 +1111,7 @@ async def execution_log(
     description="View executions recorded under a GTOP thesis."
 )
 @app_commands.describe(
-    thesis_id="Thesis to review",
+    thesis_id="Your displayed Trade # to review",
     limit="Number of recent executions to show, 1-10"
 )
 async def execution_list(
@@ -1139,6 +1120,12 @@ async def execution_list(
     limit: int = 10
 ):
     if not await require_member(interaction):
+        return
+
+    visible_number = thesis_id
+    thesis_id = trade_id_from_number(interaction.user.id, visible_number)
+    if thesis_id is None:
+        await interaction.response.send_message('Trade number not found in your account.', ephemeral=True)
         return
 
     thesis_row = get_thesis(thesis_id, interaction.user.id)
@@ -1168,13 +1155,13 @@ async def execution_list(
 
     if not rows:
         await interaction.response.send_message(
-            f"No executions recorded for Thesis #{thesis_id}.",
+            f"No executions recorded for Trade #{visible_number}.",
             ephemeral=True
         )
         return
 
     parts = [
-        f"**Executions — Thesis #{thesis_id}**"
+        f"**Executions — Trade #{visible_number}**"
     ]
 
     with db() as conn:
@@ -1238,6 +1225,12 @@ async def thesis_event(
     if not await require_member(interaction):
         return
 
+    visible_number = thesis_id
+    thesis_id = trade_id_from_number(interaction.user.id, visible_number)
+    if thesis_id is None:
+        await interaction.response.send_message('Trade number not found in your account.', ephemeral=True)
+        return
+
     row = get_thesis(thesis_id, interaction.user.id)
 
     if row is None:
@@ -1247,7 +1240,21 @@ async def thesis_event(
         )
         return
 
-    with db() as conn:
+    if event.strip().casefold().startswith('journal_'):
+        await interaction.response.send_message('That event name is reserved for the journal system.', ephemeral=True)
+        return
+    if result_r is not None and not math.isfinite(result_r):
+        await interaction.response.send_message('Result R must be finite or unknown.', ephemeral=True)
+        return
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, {}, GTOP_GUILD_ID, interaction.user.id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+            (thesis_id, GTOP_GUILD_ID, interaction.user.id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            await interaction.response.send_message('This trade has closed or changed. Refresh its journal before adding details.', ephemeral=True)
+            return
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, interaction.user.id, thesis_id)
         conn.execute("""
             INSERT INTO thesis_events (
                 thesis_id,
@@ -1273,7 +1280,7 @@ async def thesis_event(
 
     await interaction.response.send_message(
         f"📝 **Thesis event recorded.**\n"
-        f"Thesis: **#{thesis_id}**\n"
+        f"Trade: **#{visible_number}**\n"
         f"Event: **{event}**\n"
         f"Remaining thesis ammunition: **{remaining:.2f}R**\n\n"
         f"Risk budget was **not reset**.",
@@ -1294,6 +1301,12 @@ async def thesis_close(
     if not await require_member(interaction):
         return
 
+    visible_number = thesis_id
+    thesis_id = trade_id_from_number(interaction.user.id, visible_number)
+    if thesis_id is None:
+        await interaction.response.send_message('Trade number not found in your account.', ephemeral=True)
+        return
+
     row = get_thesis(thesis_id, interaction.user.id)
 
     if row is None:
@@ -1303,7 +1316,13 @@ async def thesis_close(
         )
         return
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, {}, GTOP_GUILD_ID, interaction.user.id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+            (thesis_id, GTOP_GUILD_ID, interaction.user.id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            await interaction.response.send_message('This trade has already closed or changed. Read its journal before retrying.', ephemeral=True)
+            return
         conn.execute("""
             UPDATE theses
             SET status='CLOSED',
@@ -1320,8 +1339,12 @@ async def thesis_close(
             interaction.user.id
         ))
 
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, interaction.user.id, thesis_id,
+            fields={'description': note.strip() or row['close_note'] or f"{row['asset']} {row['direction']} · {row['play']}", 'result_r': final_result_r}, timestamp=now())
+
     await interaction.response.send_message(
-        f"✅ **Thesis #{thesis_id} closed.**\n"
+        f"✅ **Trade #{visible_number} closed.**\n"
         f"Final Result: **{format_r(final_result_r)}**",
         ephemeral=True
     )
@@ -1339,6 +1362,12 @@ async def thesis_invalidate(
     if not await require_member(interaction):
         return
 
+    visible_number = thesis_id
+    thesis_id = trade_id_from_number(interaction.user.id, visible_number)
+    if thesis_id is None:
+        await interaction.response.send_message('Trade number not found in your account.', ephemeral=True)
+        return
+
     row = get_thesis(thesis_id, interaction.user.id)
 
     if row is None:
@@ -1348,7 +1377,13 @@ async def thesis_invalidate(
         )
         return
 
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, {}, GTOP_GUILD_ID, interaction.user.id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+            (thesis_id, GTOP_GUILD_ID, interaction.user.id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            await interaction.response.send_message('This trade has already closed or changed. Read its journal before retrying.', ephemeral=True)
+            return
         conn.execute("""
             UPDATE theses
             SET status='INVALIDATED',
@@ -1363,8 +1398,12 @@ async def thesis_invalidate(
             interaction.user.id
         ))
 
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, interaction.user.id, thesis_id,
+            fields={'description': reason.strip()}, timestamp=now())
+
     await interaction.response.send_message(
-        f"⛔ **Thesis #{thesis_id} invalidated.**\n"
+        f"⛔ **Trade #{visible_number} invalidated.**\n"
         f"Reason: {reason}",
         ephemeral=True
     )
@@ -1464,7 +1503,8 @@ async def save_member_trade(
     risk_r
 ):
     # Create thesis behind the scenes.
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db, {}, GTOP_GUILD_ID, interaction.user.id, serialize=True) as conn:
         cur = conn.execute("""
             INSERT INTO theses (
                 guild_id,
@@ -1525,6 +1565,9 @@ async def save_member_trade(
         ))
 
         execution_id = cur.lastrowid
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, interaction.user.id, trade_id,
+            fields={'description': f'{asset.strip()} {direction} · {play}'}, timestamp=now())
     trade_number = trade_number_for_id(interaction.user.id, trade_id)
     warnings = []
     mismatch = classification_warning(entry_model, tier)
@@ -2196,7 +2239,13 @@ class CloseMemberTradeModal(
                 )
                 return
 
-        with db() as conn:
+        from gbop_voice_web.journal_context import journal_transaction
+        with journal_transaction(db, {}, GTOP_GUILD_ID, interaction.user.id, serialize=True) as conn:
+            current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+                (self.trade_id, GTOP_GUILD_ID, interaction.user.id)).fetchone()
+            if not current or current['status'] != 'OPEN':
+                await interaction.response.send_message('This trade has already closed or changed. Read its journal before retrying.', ephemeral=True)
+                return
             conn.execute("""
                 UPDATE theses
                 SET status='CLOSED',
@@ -2215,30 +2264,12 @@ class CloseMemberTradeModal(
                 interaction.user.id
             ))
 
-            cur = conn.execute("""
-                INSERT INTO journals (
-                    guild_id,
-                    user_id,
-                    description,
-                    rule_adherence,
-                    result_r,
-                    study_note,
-                    created_at,
-                    thesis_id
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                GTOP_GUILD_ID,
-                interaction.user.id,
-                str(self.summary).strip(),
-                str(self.rule_adherence).strip(),
-                result_value,
-                str(self.study_note).strip(),
-                now(),
-                self.trade_id
-            ))
+            from gbop_voice_web.unified_journal import ensure_canonical_journal
+            journal_id = ensure_canonical_journal(conn, GTOP_GUILD_ID, interaction.user.id, self.trade_id,
+                fields={'description': str(self.summary).strip(),
+                        'rule_adherence': str(self.rule_adherence).strip(),
+                        'result_r': result_value, 'study_note': str(self.study_note).strip()}, timestamp=now())
 
-            journal_id = cur.lastrowid
 
             flags = conn.execute("""
                 SELECT COUNT(*)
@@ -2257,8 +2288,7 @@ class CloseMemberTradeModal(
             f"Asset: **{row['asset']}**\n"
             f"Play: **{row['play']}**\n"
             f"Final Result: **{format_r(result_value)}**\n"
-            f"Risk Flags: **{flags}**\n"
-            f"Journal: **#{journal_number(db, GTOP_GUILD_ID, interaction.user.id, journal_id)}**",
+            f"Risk Flags: **{flags}**",
             ephemeral=True
         )
 
@@ -2475,54 +2505,37 @@ class EditJournalModal(discord.ui.Modal, title="Edit GBOP Journal"):
                 )
                 return
 
-        with db() as conn:
-            conn.execute(
-                """
-                UPDATE journals
-                SET description=?,
-                    rule_adherence=?,
-                    result_r=?,
-                    study_note=?
-                WHERE id=?
-                  AND guild_id=?
-                  AND user_id=?
-                """,
-                (
-                    str(self.summary).strip(),
-                    str(self.rule_adherence).strip(),
-                    result_value,
-                    str(self.study_note).strip(),
-                    self.journal_id,
-                    GTOP_GUILD_ID,
-                    interaction.user.id,
-                ),
-            )
-
-            if row["thesis_id"]:
-                conn.execute(
-                    """
-                    UPDATE theses
-                    SET final_result_r=?,
-                        close_note=?
-                    WHERE id=?
-                      AND guild_id=?
-                      AND user_id=?
-                    """,
-                    (
-                        result_value,
-                        str(self.summary).strip(),
-                        row["thesis_id"],
-                        GTOP_GUILD_ID,
-                        interaction.user.id,
-                    ),
-                )
-
+        from gbop_voice_web.journal_coach import save_entry
+        from gbop_voice_web.journal_context import JournalTarget
+        saved = save_entry(db, GTOP_GUILD_ID, interaction.user.id, {
+            '_journal_target': JournalTarget(GTOP_GUILD_ID, interaction.user.id, self.journal_id),
+            'description': str(self.summary).strip(),
+            'rule_adherence': str(self.rule_adherence).strip(),
+            'result_r': result_value, 'clear_result': not raw_result,
+            'study_note': str(self.study_note).strip(),
+        })
+        if not saved.get('ok'):
+            await interaction.response.send_message(saved.get('error', 'Journal could not be updated.'), ephemeral=True)
+            return
+        label = f"Trade #{saved['trade_number']}" if saved.get('trade_number') else f"Legacy journal #{saved.get('legacy_journal_number')}"
         await interaction.response.send_message(
-            f"✏️ **Journal #{self.journal_number} updated.**\n"
-            f"Result: **{format_r(result_value)}**\n"
-            f"Rule Adherence: **{self.rule_adherence}**",
-            ephemeral=True,
-        )
+            f"✏️ **{label} updated.**\nResult: **{format_r(result_value)}**\n"
+            f"Rule Adherence: **{self.rule_adherence}**", ephemeral=True)
+
+
+def select_member_journal(user_id, *, journal_id=0, trade_number=None, legacy_journal_number=None, latest=False):
+    from gbop_voice_web.journal_numbers import resolve_journal_selector, journal_display
+    from gbop_voice_web.deletion import lock_member_deletion
+    with db() as conn:
+        lock_member_deletion(conn, GTOP_GUILD_ID, user_id)
+        if latest and journal_id == 0 and trade_number is None and legacy_journal_number is None:
+            rows = journal_display(conn, GTOP_GUILD_ID, user_id)
+            if not rows:
+                return {'ok': False, 'error': 'No matching journal entry was found.'}
+            return {'ok': True, **rows[-1], 'record_id': rows[-1]['id']}
+        return resolve_journal_selector(conn, GTOP_GUILD_ID, user_id,
+            journal_number=journal_id if journal_id != 0 else None,
+            trade_number=trade_number, legacy_journal_number=legacy_journal_number)
 
 
 @tree.command(
@@ -2531,29 +2544,35 @@ class EditJournalModal(discord.ui.Modal, title="Edit GBOP Journal"):
     guild=GUILD,
 )
 @app_commands.describe(
-    journal_id="Your displayed journal number; leave blank for the most recent."
+    journal_id="Your displayed Journal #; leave all selectors blank for the most recent.",
+    trade_number="Explicit Trade # for its canonical journal",
+    legacy_journal_number="Explicit legacy journal number from old history",
 )
 async def editjournal(
     interaction: discord.Interaction,
     journal_id: int = 0,
+    trade_number: int | None = None,
+    legacy_journal_number: int | None = None,
 ):
     if not await require_member(interaction):
         return
-
-    record_id = journal_record_id(db, GTOP_GUILD_ID, interaction.user.id, journal_id) if journal_id else 0
-    row = get_member_journal(interaction.user.id, record_id) if record_id is not None else None
-
-    if row is None:
-        await interaction.response.send_message(
-            "❌ No matching journal entry was found.",
-            ephemeral=True,
-        )
+    try:
+        selected = select_member_journal(interaction.user.id, journal_id=journal_id,
+            trade_number=trade_number, legacy_journal_number=legacy_journal_number, latest=True)
+    except ValueError as exc:
+        selected = {'ok': False, 'error': str(exc)}
+    if not selected['ok']:
+        await interaction.response.send_message(selected['error'], ephemeral=True)
         return
-
-    await interaction.response.send_modal(
-        EditJournalModal(row)
-    )
-
+    if selected.get('thesis_id') and not selected.get('canonical'):
+        await interaction.response.send_message(
+            'This is retained legacy history or a trade without a canonical journal. Specify the Trade # in a journal correction to preserve its history.', ephemeral=True)
+        return
+    row = get_member_journal(interaction.user.id, selected.get('record_id')) if selected.get('record_id') else None
+    if row is None:
+        await interaction.response.send_message('No matching journal entry was found.', ephemeral=True)
+        return
+    await interaction.response.send_modal(EditJournalModal(row))
 
 
 # -----------------------------
@@ -2575,30 +2594,46 @@ def find_owned_journal(user_id: int, journal_id: int):
         )).fetchone()
 
 
-def delete_owned_journal(user_id: int, journal_id: int):
+def get_journal_delete_preview(user_id: int, journal_id: int):
+    from gbop_voice_web.deletion import deletion_snapshot
+    from gbop_voice_web.journal_numbers import journal_display
     with db() as conn:
-        row = conn.execute(
-            "SELECT * FROM journals WHERE id=? AND guild_id=? AND user_id=? FOR UPDATE",
-            (journal_id, GTOP_GUILD_ID, user_id),
-        ).fetchone()
-        if row is None:
-            return {"ok": False, "error": "No matching journal entry was found."}
-        visible_trade_number = trade_number_for_id(user_id, row["thesis_id"])
-        if row["thesis_id"] is not None:
-            delete_trade_records(conn, GTOP_GUILD_ID, user_id, row["thesis_id"])
-        else:
-            conn.execute("DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?",
-                         (journal_id, GTOP_GUILD_ID, user_id))
-    return {"ok": True, "journal_id": journal_id, "trade_id": visible_trade_number,
-            "trade_preserved": False}
+        snapshot = deletion_snapshot(conn, GTOP_GUILD_ID, user_id, journal_id=journal_id)
+        display = next(r for r in journal_display(conn, GTOP_GUILD_ID, user_id) if r['id'] == journal_id)
+    return {**snapshot['journal'], **display, 'fingerprint': snapshot['fingerprint'],
+            'records': snapshot['counts']}
+
+
+def delete_owned_journal(user_id: int, journal_id: int, expected_fingerprint=None, *, expires_at=None):
+    from gbop_voice_web.deletion import deletion_snapshot, validate_deletion_snapshot
+    from gbop_voice_web.journal_numbers import journal_display
+    try:
+        with db() as conn:
+            snapshot = deletion_snapshot(conn, GTOP_GUILD_ID, user_id, journal_id=journal_id)
+            if expires_at is not None and time.monotonic() >= expires_at:
+                return {'ok': False, 'error': 'This preview expired. Preview the records again.'}
+            validate_deletion_snapshot(snapshot, expected_fingerprint)
+            row = snapshot['journal']
+            display = next(r for r in journal_display(conn, GTOP_GUILD_ID, user_id) if r['id'] == journal_id)
+            if row['thesis_id'] is not None:
+                delete_trade_records(conn, GTOP_GUILD_ID, user_id, row['thesis_id'])
+            else:
+                conn.execute('DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?',
+                             (journal_id, GTOP_GUILD_ID, user_id))
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}
+    return {'ok': True, 'journal_id': journal_id, 'trade_id': display['trade_number'], 'trade_preserved': False}
 
 
 class DeleteJournalView(discord.ui.View):
-    def __init__(self, owner_id: int, journal_id: int):
+    def __init__(self, owner_id: int, preview: dict):
         super().__init__(timeout=60)
         self.owner_id = owner_id
-        self.journal_id = journal_id
-        self.journal_number = journal_number(db, GTOP_GUILD_ID, owner_id, journal_id)
+        self.journal_id = preview['id']
+        self.fingerprint = preview['fingerprint']
+        self.label = (f"Trade #{preview['trade_number']}" if preview.get('trade_number')
+                      else f"Legacy journal #{preview['legacy_journal_number']}")
+        self.expires_at = time.monotonic() + 60
 
     async def interaction_check(self, interaction: discord.Interaction):
         if interaction.user.id != self.owner_id:
@@ -2618,11 +2653,16 @@ class DeleteJournalView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ):
-        result = delete_owned_journal(interaction.user.id, self.journal_id)
+        if not await require_member(interaction):
+            return
+        if time.monotonic() >= self.expires_at:
+            result = {'ok': False, 'error': 'This preview expired. Preview the journal again.'}
+        else:
+            result = delete_owned_journal(interaction.user.id, self.journal_id, self.fingerprint, expires_at=self.expires_at)
 
         if not result["ok"]:
             await interaction.response.edit_message(
-                content="❌ That journal entry could not be found.",
+                content="❌ " + result.get("error", "That journal entry could not be found."),
                 view=None,
             )
             self.stop()
@@ -2636,7 +2676,7 @@ class DeleteJournalView(discord.ui.View):
 
         await interaction.response.edit_message(
             content=(
-                f"🗑️ **Journal #{self.journal_number} deleted.**"
+                f"🗑️ **{self.label} deleted.**"
                 f"{trade_note}\n"
                 "Linked trade, executions, events, risk flags, and journals are removed together."
             ),
@@ -2655,7 +2695,7 @@ class DeleteJournalView(discord.ui.View):
     ):
         await interaction.response.edit_message(
             content=(
-                f"Deletion cancelled. Journal #{self.journal_number} "
+                f"Deletion cancelled. {self.label} "
                 "was not changed."
             ),
             view=None,
@@ -2669,49 +2709,40 @@ class DeleteJournalView(discord.ui.View):
     guild=GUILD,
 )
 @app_commands.describe(
-    journal_id="Your displayed journal number to delete"
+    journal_id="Your displayed Journal # to delete",
+    trade_number="Explicit Trade # for its canonical journal",
+    legacy_journal_number="Explicit legacy journal number from old history",
 )
 async def deletejournal(
     interaction: discord.Interaction,
-    journal_id: int,
+    journal_id: int = 0,
+    trade_number: int | None = None,
+    legacy_journal_number: int | None = None,
 ):
     if not await require_member(interaction):
         return
-
-    record_id = journal_record_id(db, GTOP_GUILD_ID, interaction.user.id, journal_id)
-    row = find_owned_journal(interaction.user.id, record_id) if record_id is not None else None
-
-    if row is None:
-        await interaction.response.send_message(
-            "❌ No matching journal entry was found.",
-            ephemeral=True,
-        )
+    try:
+        selected = select_member_journal(interaction.user.id, journal_id=journal_id,
+            trade_number=trade_number, legacy_journal_number=legacy_journal_number)
+        if not selected['ok']:
+            await interaction.response.send_message(selected['error'], ephemeral=True)
+            return
+        if not selected.get('record_id'):
+            await interaction.response.send_message('No canonical journal exists yet. Use /deletetrade for that Trade #.', ephemeral=True)
+            return
+        preview = get_journal_delete_preview(interaction.user.id, selected['record_id'])
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
         return
-
-    result_text = (
-        "Not specified"
-        if row["result_r"] is None
-        else f"{float(row['result_r']):+.2f}R"
-    )
-
-    trade_text = (
-        "None"
-        if not row["thesis_id"]
-        else f"Trade #{trade_number_for_id(interaction.user.id, row['thesis_id'])}"
-    )
-
+    result_text = 'Not specified' if preview['result_r'] is None else f"{float(preview['result_r']):+.2f}R"
+    label = (f"Trade #{preview['trade_number']}" if preview.get('trade_number')
+             else f"Legacy journal #{preview['legacy_journal_number']}")
     await interaction.response.send_message(
-        (
-            f"**Delete Journal #{journal_id}?**\n"
-            f"Result: **{result_text}**\n"
-            f"Rule Adherence: **{row['rule_adherence'] or 'Not specified'}**\n"
-            f"Linked Trade: **{trade_text}**\n\n"
-            "This permanently deletes the journal and its linked trade. "
-            "All linked executions, events, risk flags, and journals will also be removed."
-        ),
-        view=DeleteJournalView(interaction.user.id, record_id),
-        ephemeral=True,
-    )
+        f"**Delete {label}?**\nResult: **{result_text}**\n"
+        f"Rule Adherence: **{preview['rule_adherence'] or 'Not specified'}**\n\n"
+        'This permanently deletes the journal and its linked trade. All linked executions, events, risk flags, '
+        'photos linked to the trade, and journals will also be removed.',
+        view=DeleteJournalView(interaction.user.id, preview), ephemeral=True)
 
 
 # -----------------------------
@@ -2734,100 +2765,44 @@ def find_owned_trade(user_id: int, trade_id: int):
 
 
 def get_trade_delete_preview(user_id: int, trade_id: int):
-    row = find_owned_trade(user_id, trade_id)
-    if row is None:
+    from gbop_voice_web.deletion import deletion_snapshot
+    try:
+        with db() as conn:
+            snapshot = deletion_snapshot(conn, GTOP_GUILD_ID, user_id, trade_id=trade_id)
+            ids = [r['id'] for r in conn.execute('SELECT id FROM theses WHERE guild_id=? AND user_id=? ORDER BY id',
+                                                (GTOP_GUILD_ID, user_id)).fetchall()]
+    except ValueError:
         return None
-
-    with db() as conn:
-        execution_count = conn.execute("""
-            SELECT COUNT(*)
-            FROM thesis_executions
-            WHERE thesis_id=? AND guild_id=? AND user_id=?
-        """, (
-            trade_id,
-            GTOP_GUILD_ID,
-            user_id,
-        )).fetchone()[0]
-
-        event_count = conn.execute("""
-            SELECT COUNT(*)
-            FROM thesis_events
-            WHERE thesis_id=? AND guild_id=? AND user_id=?
-        """, (
-            trade_id,
-            GTOP_GUILD_ID,
-            user_id,
-        )).fetchone()[0]
-
-        journal_count = conn.execute("""
-            SELECT COUNT(*)
-            FROM journals
-            WHERE thesis_id=? AND guild_id=? AND user_id=?
-        """, (
-            trade_id,
-            GTOP_GUILD_ID,
-            user_id,
-        )).fetchone()[0]
-
-        flag_count = conn.execute("""
-            SELECT COUNT(*)
-            FROM risk_flags
-            WHERE thesis_id=? AND guild_id=? AND user_id=?
-        """, (
-            trade_id,
-            GTOP_GUILD_ID,
-            user_id,
-        )).fetchone()[0]
-
-    return {
-        "trade_id": trade_number_for_id(user_id, trade_id),
-        "asset": row["asset"],
-        "direction": row["direction"],
-        "play": row["play"],
-        "status": row["status"],
-        "result_r": row["final_result_r"],
-        "executions": execution_count,
-        "events": event_count,
-        "journals": journal_count,
-        "risk_flags": flag_count,
-    }
+    row = snapshot['trade']
+    return {'trade_id': ids.index(trade_id) + 1, 'record_id': trade_id,
+            'fingerprint': snapshot['fingerprint'], 'asset': row['asset'],
+            'direction': row['direction'], 'play': row['play'], 'status': row['status'],
+            'result_r': row['final_result_r'], **snapshot['counts']}
 
 
-def permanently_delete_trade(user_id: int, trade_id: int):
-    visible_trade_number = trade_id
-
-    trade_id = trade_id_from_number(
-        user_id,
-        visible_trade_number
-    )
-
-    if trade_id is None:
-        return {
-            "ok": False,
-            "error": f"Trade #{visible_trade_number} was not found."
-        }
-    preview = get_trade_delete_preview(user_id, trade_id)    
-    if preview is None:
-        return {
-            "ok": False,
-            "error": "No matching trade was found.",
-        }
-
-    with db() as conn:
-        delete_trade_records(conn, GTOP_GUILD_ID, user_id, trade_id)
-
-    return {
-        "ok": True,
-        "deleted": True,
-        **preview,
-    }
+def permanently_delete_trade(user_id: int, trade_id: int, expected_fingerprint=None, *, expires_at=None):
+    """trade_id is a stable raw ID, never re-resolved from a display ordinal."""
+    from gbop_voice_web.deletion import deletion_snapshot, validate_deletion_snapshot
+    try:
+        with db() as conn:
+            snapshot = deletion_snapshot(conn, GTOP_GUILD_ID, user_id, trade_id=trade_id)
+            if expires_at is not None and time.monotonic() >= expires_at:
+                return {'ok': False, 'error': 'This preview expired. Preview the records again.'}
+            validate_deletion_snapshot(snapshot, expected_fingerprint)
+            delete_trade_records(conn, GTOP_GUILD_ID, user_id, trade_id)
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}
+    return {'ok': True, 'deleted': True, **snapshot['counts']}
 
 
 class DeleteTradeView(discord.ui.View):
-    def __init__(self, owner_id: int, trade_id: int):
+    def __init__(self, owner_id: int, preview: dict):
         super().__init__(timeout=60)
         self.owner_id = owner_id
-        self.trade_id = trade_id
+        self.trade_id = preview['trade_id']
+        self.record_id = preview['record_id']
+        self.fingerprint = preview['fingerprint']
+        self.expires_at = time.monotonic() + 60
 
     async def interaction_check(self, interaction: discord.Interaction):
         if interaction.user.id != self.owner_id:
@@ -2847,14 +2822,16 @@ class DeleteTradeView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ):
-        result = permanently_delete_trade(
-            interaction.user.id,
-            self.trade_id,
-        )
+        if not await require_member(interaction):
+            return
+        if time.monotonic() >= self.expires_at:
+            result = {'ok': False, 'error': 'This preview expired. Preview the trade again.'}
+        else:
+            result = permanently_delete_trade(interaction.user.id, self.record_id, self.fingerprint, expires_at=self.expires_at)
 
         if not result["ok"]:
             await interaction.response.edit_message(
-                content="❌ That trade could not be found.",
+                content="❌ " + result.get("error", "That trade could not be found."),
                 view=None,
             )
             self.stop()
@@ -2952,10 +2929,7 @@ async def deletetrade(
             f"**{preview['risk_flags']} risk flag(s)**.\n\n"
             "**This cannot be undone.**"
         ),
-        view=DeleteTradeView(
-            interaction.user.id,
-            trade_id,
-        ),
+        view=DeleteTradeView(interaction.user.id, preview),
         ephemeral=True,
     )
 
@@ -4262,7 +4236,7 @@ For ordinary trade conversation:
 - Deleting a journal also deletes its linked trade, executions, events, risk flags, and all linked journals.
 
 # JOURNAL NUMBER DISPLAY
-Use journal_number for all journal numbers spoken or shown to members. journal_id is an internal database key: never speak it as a journal number. Resolve a member's displayed journal number using the current journal history before calling tools; pass its internal journal_id to tools.
+Use one member-facing Trade # for its trade and journal. journal_id is an internal database key. Use trade_number to append or correct the matching canonical journal. Old unlinked records use the explicit legacy_journal_number from current history; ask when a legacy alias is ambiguous. Never fabricate executions or risk just to save a journal.
 
 # UNCLEAR OR INCOMPLETE INPUT
 
@@ -4440,31 +4414,19 @@ def ai_member_context(user_id: int):
     if open_trades:
         lines.append("Open trades:")
         for row in open_trades:
-            used = thesis_used_r(row["id"])
+            from gbop_voice_web.trade_numbers import recorded_trade_risk
+            used = recorded_trade_risk(db, GTOP_GUILD_ID, user_id, row["id"])
             lines.append(
                 f"- Trade #{trade_number_for_id(user_id, row['id'])}: {row['asset']} | "
                 f"{row['direction']} | Play: {row['play']} | "
-                f"Recorded risk: {used:.2f}R | "
+                f"Recorded risk: {format_r(used)} | "
                 f"Objective: {row['objective']}"
             )
     else:
         lines.append("Open trades: none.")
 
-    if journals:
-        lines.append("Recent journals:")
-        for row in journals:
-            result = (
-                "not specified"
-                if row["result_r"] is None
-                else f"{float(row['result_r']):+.2f}R"
-            )
-            lines.append(
-                f"- Journal #{journal_number(db, GTOP_GUILD_ID, user_id, row['id'])} (internal journal_id={row['id']}): result {result}; "
-                f"adherence {row['rule_adherence'] or 'not specified'}; "
-                f"note {row['study_note'] or 'not specified'}"
-            )
-    else:
-        lines.append("Recent journals: none.")
+    from gbop_voice_web.journal_recall import member_context_lines
+    lines.extend(member_context_lines(db, GTOP_GUILD_ID, user_id))
 
     lines.append(intelligence_context(db, GTOP_GUILD_ID, user_id))
     lines.append(trade_assist_context(db, GTOP_GUILD_ID, user_id))
@@ -4508,7 +4470,7 @@ def ai_open_trade(user_id: int, args: dict):
         or "Not specified at entry"
     ).strip()
 
-    if risk_r <= 0:
+    if not math.isfinite(risk_r) or risk_r <= 0:
         return {"ok": False, "error": "Risk must be greater than 0R."}
 
     if tier is None:
@@ -4523,28 +4485,48 @@ def ai_open_trade(user_id: int, args: dict):
 
     from gbop_voice_web.journal_context import prepare_trade_metadata, save_trade_metadata, journal_transaction
     metadata = prepare_trade_metadata(GTOP_GUILD_ID, user_id, args)
-    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
-        cur = conn.execute("""
-            INSERT INTO theses (
-                guild_id, user_id, asset, direction, play, session,
-                crt_variant, htf_context, liquidity_purged, objective,
-                thesis_invalidation, status, max_r, created_at
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, 'OPEN', 1.0, ?
-            )
-        """, (
-            GTOP_GUILD_ID,
-            user_id,
-            asset,
-            direction,
-            play,
-            metadata.get('session') or '',
-            objective,
-            invalidation,
-            now(),
-        ))
-        thesis_id = cur.lastrowid
+    metadata['kind'] = 'trade'
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        selected_number = args.get('trade_id')
+        if selected_number is not None:
+            from gbop_voice_web.trade_numbers import trade_record_id
+            selected_id = trade_record_id(db, GTOP_GUILD_ID, user_id, selected_number)
+            existing = conn.execute('SELECT * FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+                (selected_id, GTOP_GUILD_ID, user_id)).fetchone()
+            if not existing or existing['status'] not in ('JOURNALED', 'IDEA'):
+                return {'ok': False, 'error': 'Choose an existing journal-only Trade #. Use add_entry for an open trade; closed trades cannot be reopened this way.'}
+            thesis_id = existing['id']
+            from gbop_voice_web.unified_journal import canonical_journal_id
+            from gbop_voice_web.journal_context import merge_metadata
+            current_journal = canonical_journal_id(conn, GTOP_GUILD_ID, user_id, existing['id'])
+            detail = conn.execute('SELECT metadata FROM journal_details WHERE journal_id=? AND guild_id=? AND user_id=?',
+                (current_journal, GTOP_GUILD_ID, user_id)).fetchone() if current_journal else None
+            metadata = merge_metadata(json.loads(detail['metadata'] or '{}') if detail else {}, metadata)
+            conn.execute("UPDATE theses SET asset=?,direction=?,play=?,objective=?,thesis_invalidation=?,status='OPEN',max_r=1.0 WHERE id=? AND guild_id=? AND user_id=?",
+                (str(args['asset']).strip(), str(args['direction']).strip(), str(args['play']).strip(),
+                 objective, invalidation, thesis_id, GTOP_GUILD_ID, user_id))
+        else:
+            cur = conn.execute("""
+                INSERT INTO theses (
+                    guild_id, user_id, asset, direction, play, session,
+                    crt_variant, htf_context, liquidity_purged, objective,
+                    thesis_invalidation, status, max_r, created_at
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, 'OPEN', 1.0, ?
+                )
+            """, (
+                GTOP_GUILD_ID,
+                user_id,
+                asset,
+                direction,
+                play,
+                metadata.get('session') or '',
+                objective,
+                invalidation,
+                now(),
+            ))
+            thesis_id = cur.lastrowid
 
         cur = conn.execute("""
             INSERT INTO thesis_executions (
@@ -4562,7 +4544,13 @@ def ai_open_trade(user_id: int, args: dict):
             now(),
         ))
         execution_id = cur.lastrowid
+        metadata['journal_only'] = False
+        metadata['recorded_risk'] = risk_r
         save_trade_metadata(conn, GTOP_GUILD_ID, user_id, thesis_id, metadata)
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, user_id, thesis_id,
+            fields=None if selected_number is not None else {'description': f'{asset} {direction} · {play}'},
+            metadata=metadata, timestamp=now())
 
     warnings = []
     profile = get_profile(db, GTOP_GUILD_ID, user_id)
@@ -4676,7 +4664,17 @@ def ai_add_entry(user_id: int, args: dict):
     projected = used_before + risk_r
 
     from gbop_voice_web.journal_context import journal_transaction
-    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+            (row['id'], GTOP_GUILD_ID, user_id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            return {'ok': False, 'error': 'This trade has closed or changed. Refresh its journal before adding details.'}
+        used_before = conn.execute('SELECT COALESCE(SUM(risk_r),0) FROM thesis_executions WHERE thesis_id=? AND guild_id=? AND user_id=?',
+            (row['id'], GTOP_GUILD_ID, user_id)).fetchone()[0]
+        projected = used_before + risk_r
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, user_id, row['id'],
+            metadata={'kind': 'trade', 'journal_only': False, 'recorded_risk': projected})
         cur = conn.execute("""
             INSERT INTO thesis_executions (
                 thesis_id, guild_id, user_id, entry_model, tier, risk_r,
@@ -4748,8 +4746,19 @@ def ai_record_trade_event(user_id: int, args: dict):
     if result_r is not None:
         result_r = float(result_r)
 
+    if str(args['event']).strip().casefold().startswith('journal_'):
+        return {'ok': False, 'error': 'That event name is reserved for the journal system.'}
+    if result_r is not None and not math.isfinite(result_r):
+        return {'ok': False, 'error': 'Result R must be finite or unknown.'}
+
     from gbop_voice_web.journal_context import journal_transaction
-    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+            (row['id'], GTOP_GUILD_ID, user_id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            return {'ok': False, 'error': 'This trade has closed or changed. Refresh its journal before adding details.'}
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, user_id, row['id'])
         conn.execute("""
             INSERT INTO thesis_events (
                 thesis_id, guild_id, user_id, event, details, result_r,
@@ -4820,24 +4829,12 @@ def ai_close_trade(user_id: int, args: dict):
             user_id,
         ))
 
-        cur = conn.execute("""
-            INSERT INTO journals (
-                guild_id, user_id, description, rule_adherence, result_r,
-                study_note, created_at, thesis_id
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            GTOP_GUILD_ID,
-            user_id,
-            summary,
-            adherence,
-            final_result,
-            study_note,
-            now(),
-            row["id"],
-        ))
-        journal_id = cur.lastrowid
-        save_closed_metadata(conn, GTOP_GUILD_ID, user_id, journal_id, metadata)
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        journal_id = ensure_canonical_journal(conn, GTOP_GUILD_ID, user_id, row['id'],
+            fields={'description': summary, 'rule_adherence': adherence,
+                    'result_r': final_result, 'study_note': study_note},
+            metadata=metadata, timestamp=now())
+
 
         flags = conn.execute("""
             SELECT COUNT(*)
@@ -4889,6 +4886,8 @@ def ai_get_trade_state(user_id: int, args: dict):
                 user_id,
             )).fetchall()
 
+    from gbop_voice_web.trade_numbers import recorded_trade_risk
+
     return {
         "ok": True,
         "trades": [
@@ -4900,7 +4899,7 @@ def ai_get_trade_state(user_id: int, args: dict):
                 "status": row["status"],
                 "objective": row["objective"],
                 "thesis_invalidation": row["thesis_invalidation"],
-                "recorded_risk_r": thesis_used_r(row["id"]),
+                "recorded_risk_r": recorded_trade_risk(db, GTOP_GUILD_ID, user_id, row["id"]),
             }
             for row in rows
         ],
@@ -4944,7 +4943,8 @@ def ai_edit_journal(user_id: int, args: dict):
     from gbop_voice_web.journal_coach import save_entry
     from gbop_voice_web.journal_context import JournalTarget
     return save_entry(db, GTOP_GUILD_ID, user_id, {
-        **args, '_journal_target': JournalTarget(GTOP_GUILD_ID, user_id, row['id']),
+        **{key: value for key, value in args.items() if key != 'journal_id'},
+        '_journal_target': JournalTarget(GTOP_GUILD_ID, user_id, row['id']),
         'description': args.get('summary'),
     })
 
@@ -4957,6 +4957,7 @@ GBOP_AI_TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
+                "trade_id": {"type": ["integer", "null"], "description": "Existing journal-only member Trade # to record its first execution, or null for a genuinely new thesis. Never guess."},
                 "asset": {"type": "string"},
                 "direction": {
                     "type": "string",
@@ -4972,7 +4973,7 @@ GBOP_AI_TOOLS = [
                 "objective": {"type": ["string", "null"]},
                 "thesis_invalidation": {"type": ["string", "null"]},
             },
-            "required": [
+            "required": ["trade_id",
                 "asset",
                 "direction",
                 "play",
@@ -5029,7 +5030,7 @@ GBOP_AI_TOOLS = [
     {
         "type": "function",
         "name": "close_trade",
-        "description": "Close an open trade and create the linked GTOP journal.",
+        "description": "Close an open trade and update its existing canonical journal.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -5071,13 +5072,16 @@ GBOP_AI_TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
+                "trade_number": {"type": ["integer", "null"]},
+                "legacy_journal_number": {"type": ["integer", "null"]},
+                "offset": {"type": ["integer", "null"]},
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 10,
                 },
             },
-            "required": ["limit"],
+            "required": ["trade_number", "legacy_journal_number", "offset", "limit"],
             "additionalProperties": False,
         },
         "strict": True,
@@ -5195,50 +5199,20 @@ def ai_save_risk_profile(user_id: int, args: dict):
 
 
 def ai_delete_journal(user_id: int, args: dict):
-    journal_id = args.get("journal_id")
-    confirm = bool(args.get("confirm"))
-
-    if journal_id is None:
-        return {"ok": False, "error": "A journal ID is required for deletion."}
-
-    row = find_owned_journal(user_id, int(journal_id))
-    if row is None:
-        return {"ok": False, "error": "No matching journal entry was found."}
-
-    preview = {
-        "journal_id": row["id"],
-                "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, row["id"]),
-        "trade_id": trade_number_for_id(user_id, row["thesis_id"]),
-        "result_r": row["result_r"],
-        "rule_adherence": row["rule_adherence"],
-        "summary": row["description"],
-        "study_note": row["study_note"],
-    }
-
-    if not confirm:
-        return {
-            "ok": True,
-            "requires_confirmation": True,
-            "preview": preview,
-            "message": (
-                "Do not delete yet. Ask the member to explicitly confirm "
-                "that they want this journal permanently deleted. "
-                "The linked trade, executions, events, risk flags, and journals will also be deleted."
-            ),
-        }
-
-    result = delete_owned_journal(user_id, int(journal_id))
-    if not result["ok"]:
-        return result
-
-    return {
-        "ok": True,
-        "deleted": True,
-        "journal_id": result["journal_id"],
-        "journal_number": preview["journal_number"],
-        "trade_id": result["trade_id"],
-        "trade_preserved": False,
-    }
+    journal_id = args.get('journal_id')
+    if type(journal_id) is not int or journal_id <= 0:
+        return {'ok': False, 'error': 'A valid journal ID is required for deletion.'}
+    try:
+        preview = get_journal_delete_preview(user_id, journal_id)
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}
+    # Model-supplied confirm is not an authenticated later-turn capability.
+    # Use the existing owner-only, expiring button workflow for Discord.
+    command = f"/deletejournal legacy_journal_number:{preview['legacy_journal_number']}"
+    return {'ok': True, 'requires_click_confirmation': True, 'requires_confirmation': True,
+            'preview': {k: v for k, v in preview.items() if k != 'fingerprint'},
+            'command': command,
+            'message': f'Nothing deleted. Open {command}, review the records, and press Delete Journal to confirm. This also removes its linked trade and linked records.'}
 
 
 
@@ -5247,9 +5221,8 @@ GBOP_AI_TOOLS.append(
         "type": "function",
         "name": "delete_journal",
         "description": (
-            "Preview or permanently delete one of the member's own journals. "
-            "Never call with confirm=true until the member explicitly confirms "
-            "deletion after seeing or clearly identifying the journal."
+            "Preview a member journal for deletion and return its authenticated slash/button confirmation command. "
+            "This tool does not delete records, even with confirm=true."
         ),
         "parameters": {
             "type": "object",
@@ -5267,56 +5240,18 @@ GBOP_AI_TOOLS.append(
 
 
 def ai_delete_trade(user_id: int, args: dict):
-    trade_id = args.get("trade_id")
-    confirm = bool(args.get("confirm"))
-
-    if trade_id is None:
-        return {
-            "ok": False,
-            "error": "A trade ID is required for permanent deletion.",
-        }
-
-    visible_trade_number = int(trade_id)
-
-    internal_trade_id = trade_id_from_number(
-        user_id,
-        visible_trade_number
-    )
-
-    if internal_trade_id is None:
-        return {
-            "ok": False,
-            "error": f"Trade #{visible_trade_number} was not found."
-        }
-
-    preview = get_trade_delete_preview(
-        user_id,
-        internal_trade_id
-    )
-
+    number = args.get('trade_id')
+    if type(number) is not int or number <= 0:
+        return {'ok': False, 'error': 'A valid Trade # is required for deletion.'}
+    record_id = trade_id_from_number(user_id, number)
+    preview = get_trade_delete_preview(user_id, record_id) if record_id is not None else None
     if preview is None:
-        return {
-            "ok": False,
-            "error": "No matching trade was found.",
-        }
-
-    if not confirm:
-        return {
-            "ok": True,
-            "requires_confirmation": True,
-            "preview": preview,
-            "message": (
-                "Do not delete yet. Explain exactly what will be removed and "
-                "ask the member for explicit confirmation. This is permanent."
-            ),
-        }
-
-    result = permanently_delete_trade(
-        user_id,
-        visible_trade_number,
-    )
-
-    return result
+        return {'ok': False, 'error': f'Trade #{number} was not found.'}
+    command = f"/deletetrade trade_id:{preview['trade_id']}"
+    return {'ok': True, 'requires_click_confirmation': True, 'requires_confirmation': True,
+            'preview': {k: v for k, v in preview.items() if k not in ('fingerprint', 'record_id')},
+            'command': command,
+            'message': f'Nothing deleted. Open {command}, review the records, and press Delete Entire Trade to confirm permanent deletion.'}
 
 
 
@@ -5325,10 +5260,8 @@ GBOP_AI_TOOLS.append(
         "type": "function",
         "name": "delete_trade",
         "description": (
-            "Preview or permanently delete one of the member's complete trade "
-            "records, including executions, events, risk flags, and linked "
-            "journals. Never use confirm=true until the member explicitly "
-            "confirms permanent deletion of that exact trade."
+            "Preview a member trade and its linked records for deletion, and return its authenticated "
+            "slash/button confirmation command. This tool does not delete records, even with confirm=true."
         ),
         "parameters": {
             "type": "object",
@@ -5360,7 +5293,8 @@ for _recall_tool in GBOP_AI_TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
         _recall_tool['description'] = 'Read this member\'s saved journals, all-trade counts and next page. Empty OPEN trades does not mean no saved trades.'
         _recall_tool['parameters']['properties']['offset'] = {'type': ['integer', 'null']}
-        _recall_tool['parameters']['required'].append('offset')
+        if 'offset' not in _recall_tool['parameters']['required']:
+            _recall_tool['parameters']['required'].append('offset')
 
 GTOP_AI_PROMPT += (
     "\n\n" + TRADE_NUMBERING_PROMPT

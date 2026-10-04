@@ -30,8 +30,11 @@ class TermsIntegrationTests(unittest.TestCase):
         synopsis = payload['review']['shift_synopsis']
         text = synopsis['spoken_summary']
         self.assertIn('failed bearish', text.split('.')[0])
-        self.assertIn('non-touch 50% approach was inducement', text)
-        self.assertIn('double-purge bullish reversal remained pending', text)
+        self.assertIn('BUT induced 50%: 7.76 points short (~94% of the high-to-50% path)', text)
+        self.assertIn('double-purge bullish reversal failed to deliver objectives by shift end', text)
+        self.assertIn('BUT induced 50%: 33.20 points short (~60% of the low-to-50% path)', text)
+        self.assertNotIn('inducement in GTOP terms', text)
+        self.assertNotIn('remained pending', text)
         self.assertLess(len(text.split()), 160)
         self.assertLess(len(json.dumps(payload, separators=(',', ':'))), 9000)
         nine = next(r for r in synopsis['ranges'] if r['anchor_start_ny'] == retained.ny('09:00'))
@@ -67,6 +70,8 @@ class TermsIntegrationTests(unittest.TestCase):
         value = result['active_range_context']['double_purge']
         self.assertEqual(value['original_outcome'], 'opposing_liquidity_delivered')
         self.assertEqual(value['reversal_outcome'], 'pending_at_review_cutoff')
+        self.assertEqual(value['presentation_outcome'], 'failed_to_deliver_objectives_by_shift_end')
+        self.assertIsNone(value['invalidated_at_ny'])
         self.assertEqual(value['full_objective_side'], 'buy')
         self.assertEqual(value['source_return_inside']['bar_open_ny'], retained.ny('11:13'))
         self.assertEqual(value['source_return_inside']['known_at_ny'], retained.ny('11:14'))
@@ -76,6 +81,7 @@ class TermsIntegrationTests(unittest.TestCase):
         self.assertEqual(mid['gtop_context']['basis'], 'explicit_owner_characterization')
         self.assertAlmostEqual(mid['full_range_reference']['gap_percent'], 19.9855526125692)
         self.assertAlmostEqual(mid['boundary_to_target_reference']['progress_percent'], 60.0288947748615)
+        self.assertIn('the range was not structurally invalidated', result['spoken_summary'])
 
     def test_zero_width_anchor_remains_unverified_without_breaking_review(self):
         start = parse_time(retained.ny('09:00'))

@@ -29,3 +29,11 @@ and tool results over old conversation messages containing obsolete numbers.
 Use that displayed number for lookup, entries, events, closing, and deletion.
 Photo tools use the same number under trade_number. Never invent a trade number.
 """
+
+
+def recorded_trade_risk(db, guild_id, user_id, trade_id):
+    """No saved execution means unknown actual risk, never the protocol budget."""
+    with db() as conn:
+        row = conn.execute('SELECT COUNT(*) AS execution_count,SUM(risk_r) AS recorded_risk FROM thesis_executions WHERE thesis_id=? AND guild_id=? AND user_id=?',
+                           (trade_id,guild_id,user_id)).fetchone()
+    return row['recorded_risk'] if row and row['execution_count'] else None

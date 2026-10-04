@@ -6,7 +6,7 @@ import re
 
 def normalized_filters(args):
     """One selector interpretation for searches and their delivery fingerprints."""
-    result = {k: args[k] for k in ('journal_number', 'trade_number', 'tier') if args.get(k) is not None}
+    result = {k: args[k] for k in ('journal_number', 'legacy_journal_number', 'trade_number', 'tier') if args.get(k) is not None}
     for key in ('entry_model', 'play', 'asset'):
         value = args.get(key)
         if value is not None and not isinstance(value, str):
@@ -66,6 +66,8 @@ def summary(photo):
             lines.append(f'**{label}:** {clean}')
     if journal:
         lines.append('**Final R:** ' + result_text(journal.get('result_r')))
+        if journal.get('historical_projection'):
+            lines.append('Historical journal entries are grouped; conflicting details remain unresolved.')
     return '\n'.join(lines)
 
 
@@ -112,7 +114,10 @@ def recall_cards(photos, has_more=False):
         group = sorted(group, key=lambda p: (p.get('created_at') or '', p['id']))
         first = group[0]
         number = first.get('trade_number')
-        name = f'Trade #{number}' if number is not None else 'Unlinked journal photo'
+        associations = first.get('associated_trade_numbers') or []
+        name = (f'Trade #{number}' if number is not None else
+                'Journal photo · Trades ' + ', '.join('#' + str(n) for n in associations)
+                if associations else 'Unlinked journal photo')
         trade = first.get('trade_details') or {}
         title_parts = [name]
         for key in ('asset', 'direction', 'status'):

@@ -66,7 +66,12 @@ class ShiftSynopsisTests(unittest.TestCase):
         self.assertEqual(synopsis['ranges'][0]['verdict'], 'failed')
         first = synopsis['spoken_summary'].split('.')[0]
         self.assertIn('failed bearish', first)
-        self.assertIn('inducement in GTOP terms', synopsis['spoken_summary'])
+        self.assertIn('BUT induced 50%: 7.76 points short (~94% of the high-to-50% path)', synopsis['spoken_summary'])
+        self.assertNotIn('inducement in GTOP terms', synopsis['spoken_summary'])
+        self.assertEqual(synopsis['young_lefty_status'], 'failed')
+        self.assertEqual(young_rows(synopsis)[0]['verdict'], 'failed')
+        self.assertLess(synopsis['spoken_summary'].index('Young Lefty'),
+                        synopsis['spoken_summary'].index('The 9:00 AM H1 range'))
         self.assertEqual(synopsis['ranges'][0]['midpoint_approach']['gtop_context']['basis'],
                          'explicit_owner_characterization')
         later = next(r for r in synopsis['ranges'] if r['anchor_start_ny'] == retained.ny('09:00'))
@@ -91,13 +96,14 @@ class ShiftSynopsisTests(unittest.TestCase):
         self.assertEqual(btc['outcome'], 'midpoint_only')
         self.assertEqual(btc['verdict'], 'failed')
 
-    def test_absent_young_lefty_is_silent_but_exact_seven_detail_recoverable(self):
+    def test_absent_young_lefty_status_is_explicit_and_exact_seven_detail_recoverable(self):
         data = synthetic([(100, 110, 90, 100)] + [(100, 105, 95, 100)] * 4)
         synopsis = self.synopsis(data)
         self.assertTrue(synopsis['young_lefty_evaluated'])
         self.assertFalse(synopsis['young_lefty_relevant'])
         self.assertEqual(young_rows(synopsis), [])
-        self.assertNotIn('Young Lefty', synopsis['spoken_summary'])
+        self.assertEqual(synopsis['young_lefty_status'], 'absent')
+        self.assertIn('Young Lefty: absent', synopsis['spoken_summary'])
         seven = next(r for r in synopsis['range_index'] if r['label'] == 'Young Lefty')
         self.assertEqual(seven['detail_request']['args']['anchor_start_ny'], retained.ny('07:00'))
 
@@ -106,7 +112,8 @@ class ShiftSynopsisTests(unittest.TestCase):
         data[36]['high'] = 112
         synopsis = self.synopsis(data)
         self.assertFalse(synopsis['young_lefty_relevant'])
-        self.assertNotIn('Young Lefty', synopsis['spoken_summary'])
+        self.assertEqual(synopsis['young_lefty_status'], 'absent')
+        self.assertIn('Young Lefty: absent', synopsis['spoken_summary'])
 
     def test_eight_purge_pending_young_lefty_is_relevant_without_nineate8(self):
         data = synthetic([(100, 110, 90, 100)] + [(95, 99, 92, 95)] * 4)
@@ -151,7 +158,9 @@ class ShiftSynopsisTests(unittest.TestCase):
         del data[0]
         synopsis = self.synopsis(data)
         self.assertFalse(synopsis['young_lefty_relevant'])
-        self.assertNotIn('Young Lefty', synopsis['spoken_summary'])
+        self.assertEqual(synopsis['young_lefty_status'], 'unverified')
+        self.assertIn('Young Lefty: unverified', synopsis['spoken_summary'])
+        self.assertNotIn('Young Lefty: absent', synopsis['spoken_summary'])
 
     def test_missing_eight_does_not_skip_sevens_independent_evidence(self):
         data = synthetic([(100, 110, 90, 100)] + [(95, 99, 92, 95)] * 4)
@@ -273,6 +282,9 @@ class ShiftSynopsisTests(unittest.TestCase):
             self.assertIn('SHORT', prompt)
             self.assertIn('shift_synopsis.spoken_summary', prompt)
             self.assertIn('Young Lefty', prompt)
+            self.assertIn("always state Young Lefty's independent status", prompt)
+            self.assertNotIn('Omit absent/uninitiated', prompt)
+            self.assertIn('Ordinary recaps have no inline inducement glossary', prompt)
             self.assertNotIn('4-7 concise sentences', prompt)
 
 

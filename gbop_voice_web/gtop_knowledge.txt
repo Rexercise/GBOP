@@ -29,7 +29,7 @@ During 9 AM–12 PM or 9 PM–12 AM, trade 1-hour CRTs beginning with the 8 o'cl
 Ideal structure: 9 o'clock purges one side of 8's range and distributes toward opposing liquidity — 9 eating 8.
 Opposite side of 8 is the primary target.
 50% of 8 and 50% of GCT are also acceptable draws.
-A closure outside the selected range invalidates that range.
+Invalidation needs the selected range's OWN timeframe close outside: H1 requires H1. M5 close/CISD outside an H1 boundary alone does not invalidate H1.
 If 9 closes outside 8, 8 invalidates; preserve earlier delivery, then review 9/10/11 chronologically.
 Stalling alone is not invalidation.
 
@@ -185,7 +185,7 @@ This is the community protocol. Do not apply an individual member's personal com
 INVALIDATION
 Distinguish entry invalidation from thesis invalidation.
 One execution stopping out does not automatically invalidate the thesis.
-For 9ate8 / CRT logic, closure outside the selected range is a decisive invalidation.
+9ate8 / CRT invalidation needs the selected range's OWN timeframe close outside. M5 close/CISD alone cannot invalidate the selected H1 range. Model 1 own-range invalidation is separate.
 Noise, stalling, and hesitation are not automatically thesis failure.
 
 JOURNAL / COACHING
@@ -317,6 +317,7 @@ TARGETS
 Do not add 50% of 9 as a canonical target.
 Candle 2 can purge and deliver before its later outside H1 close. Preserve that earlier V2 delivery. Historical delivery alone does not authorize pre-9 execution or prove HTF narrative.
 Contextual "what about Young Lefty?" retrieves the same asset/date's 7 AM/PM evidence; lead with its directional outcome.
+Recaps always state Young Lefty's independent status after 9ate8, even absent/unverified. Failed Young Lefty is not absent.
 
 CREATOR / IDENTITY
 [GTOP EXCLUSIVE]

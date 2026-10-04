@@ -14,7 +14,10 @@ class CoachTests(unittest.TestCase):
         self.conn.execute('PRAGMA foreign_keys=ON')
         self.conn.executescript('''
         CREATE TABLE journals(id INTEGER PRIMARY KEY,guild_id INTEGER,user_id INTEGER,description TEXT,rule_adherence TEXT,result_r REAL,study_note TEXT,created_at TEXT,thesis_id INTEGER);
-        CREATE TABLE theses(id INTEGER PRIMARY KEY,guild_id INTEGER,user_id INTEGER,asset TEXT,play TEXT,session TEXT,status TEXT);
+        CREATE TABLE theses(id INTEGER PRIMARY KEY,guild_id INTEGER,user_id INTEGER,asset TEXT NOT NULL,direction TEXT NOT NULL,
+            play TEXT NOT NULL,session TEXT,objective TEXT NOT NULL,thesis_invalidation TEXT NOT NULL,status TEXT NOT NULL,
+            max_r REAL NOT NULL DEFAULT 1,created_at TEXT NOT NULL,final_result_r REAL,close_note TEXT,closed_at TEXT);
+        CREATE TABLE thesis_events(id INTEGER PRIMARY KEY,thesis_id INTEGER,guild_id INTEGER,user_id INTEGER,event TEXT,details TEXT,result_r REAL,created_at TEXT);
         CREATE TABLE thesis_executions(id INTEGER PRIMARY KEY,thesis_id INTEGER,guild_id INTEGER,user_id INTEGER,entry_model TEXT,tier INTEGER);
         CREATE TABLE risk_flags(id INTEGER PRIMARY KEY,guild_id INTEGER,user_id INTEGER,rule_code TEXT,message TEXT,created_at TEXT);
         CREATE TABLE members(guild_id INTEGER,user_id INTEGER,activated INTEGER,revoked INTEGER);
@@ -45,7 +48,11 @@ class CoachTests(unittest.TestCase):
         found=coach.find_setups(self.db,10,20,{'query':'unclear'})['entries'][0]
         self.assertEqual(found['photo_id'],self.photo)
         self.assertEqual(found['metadata']['transcription'],'Gold long. Result [unclear]')
-        self.assertEqual(self.conn.execute('SELECT count(*) FROM theses').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM theses').fetchone()[0],1)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM thesis_executions').fetchone()[0],0)
+        thesis=self.conn.execute('SELECT * FROM theses').fetchone()
+        self.assertEqual(thesis['status'],'JOURNALED')
+        self.assertEqual(thesis['max_r'],0)
         retrieved=photos.search(self.db,10,20,{'journal_number':1})['photos'][0]
         self.assertEqual(retrieved['id'],self.photo)
         self.assertEqual(retrieved['handwritten_journals'][0]['description'],'Gold long. Result [unclear]')
@@ -86,14 +93,14 @@ class CoachTests(unittest.TestCase):
         self.assertEqual(summary['win_rate_percent'],33.33)
 
     def test_one_outcome_per_thesis_mixed_entries(self):
-        self.conn.execute("INSERT INTO theses VALUES(41,10,20,'XAUUSD','9ate8','day','CLOSED')")
+        self.conn.execute("INSERT INTO theses(id,guild_id,user_id,asset,direction,play,session,objective,thesis_invalidation,status,created_at) VALUES(41,10,20,'XAUUSD','long','9ate8','day','Target','Invalidation','CLOSED','2026-10-03')")
         self.conn.execute("INSERT INTO thesis_executions VALUES(1,41,10,20,'Super Soup',1),(2,41,10,20,'Model 1',2)")
         for result in (2,3):
-            self.save(description='Trade',result_r=result)
-        self.conn.execute('UPDATE journals SET thesis_id=41')
+            self.conn.execute("INSERT INTO journals(guild_id,user_id,description,result_r,thesis_id) VALUES(10,20,'Trade',?,41)",(result,))
         report=coach.performance(self.db,10,20,{})
         self.assertEqual(report['summary']['entries'],1)
-        self.assertEqual(report['groups']['Mixed']['total_r'],3)
+        self.assertIsNone(report['groups']['Mixed']['total_r'])
+        self.assertEqual(report['summary']['missing_outcomes'],1)
 
     def test_weekly_undated_pages_excluded(self):
         self.save(photo_id=self.photo,description='Trade without date',result_r=3,metadata_json='{"kind":"trade"}')
@@ -108,12 +115,10 @@ class CoachTests(unittest.TestCase):
         self.assertEqual(coach.get_plans(self.db,10,30,{})['plans'],[])
 
     def test_activity_check_uses_measured_risk_and_keeps_neutral(self):
-        for column in ('final_result_r REAL','created_at TEXT','closed_at TEXT'):
-            self.conn.execute('ALTER TABLE theses ADD COLUMN '+column)
         for column in ('risk_r REAL','created_at TEXT'):
             self.conn.execute('ALTER TABLE thesis_executions ADD COLUMN '+column)
         today=coach.stamp()
-        self.conn.execute("INSERT INTO theses(id,guild_id,user_id,final_result_r,created_at,closed_at) VALUES(41,10,20,-1,?,?)",(today,today))
+        self.conn.execute("INSERT INTO theses(id,guild_id,user_id,asset,direction,play,objective,thesis_invalidation,status,final_result_r,created_at,closed_at) VALUES(41,10,20,'NAS100','long','Test','Target','Invalidation','CLOSED',-1,?,?)",(today,today))
         self.conn.execute("INSERT INTO thesis_executions(id,thesis_id,guild_id,user_id,risk_r,created_at) VALUES(1,41,10,20,0.25,?),(2,41,10,20,0.75,?)",(today,today))
         report=coach.coach_tool(self.db,10,20,'get_activity_check',{})
         self.assertTrue(report['ok'])

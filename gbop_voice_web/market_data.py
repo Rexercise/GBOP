@@ -322,7 +322,7 @@ MARKET_TOOLS = [
         'anchor_start_ny': {'type': 'string'}, 'anchor_timeframe': {'type': 'string'},
         'through_ny': {'type': 'string'}}),
     schema('get_market_price', 'Get latest broker bid/ask ONLY when a quote is requested. Disclose stale or absent data.', {'asset': {'type': 'string'}}),
-    schema('review_market_session', 'Review the GTOP shift: 9AM-noon or 9PM-midnight New York. Default shift_synopsis leads with 9ate8, supported variant and own objective outcomes; includes relevant independent Young Lefty and later named ranges only. Full underlying range and paired evidence remains available for explicit walkthroughs. For Model 1 identity, Super Soup, CSD, wick/body, or objective-distance followups use review_market_crt for the specific range and exact named candle instead; overview omissions never establish absence.', {
+    schema('review_market_session', 'Review the GTOP shift: 9AM-noon or 9PM-midnight New York. Default shift_synopsis leads with 9ate8, supported variant and own objective outcomes; always states independent Young Lefty status, including verified absence or uncertainty, before later ranges. Full underlying range and paired evidence remains available for explicit walkthroughs. For Model 1 identity, Super Soup, CSD, wick/body, or objective-distance followups use review_market_crt for the specific range and exact named candle instead; overview omissions never establish absence.', {
         'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null'], 'description': 'Explicit NY date; null selects the latest completed usable shift. Unavailable dates are never silently changed.'},
         'shift': {'type': 'string', 'enum': ['day', 'night']}}),
     schema('inspect_market_candles', 'Read historical or current candle OHLC and when extremes formed. Explicit ISO start/end in New York (or with offset). M1-M60, H1-H24, D1, W1, MN1; custom anchors supported. Incomplete coverage is not a definitive daily/weekly extreme. Paginate next_start_ny.', {
@@ -343,10 +343,10 @@ Current/what-do-you-see: review_current_market, not completed shifts. Keep curre
 Whole shift: use shift_synopsis.spoken_summary, SHORT (usually 2-4 sentences; add only relevant evidence).
 Lead with 9ate8 direction/verdict (clean, failed, boneless potential/delivered as supported),
 variant established/pending, and own 50%/opposing delivery/invalidation/pending.
-Then mention only relevant next named ranges in chronology; later setups survive failed 9ate8.
-Day 09:00-12:00, night 21:00-00:00 NY. Independently evaluate seven: briefly include Young Lefty
-only for an actual 7-boundary purge by 8/9, even if 8/9 fails. Use its own direction/range/objectives;
-it can oppose 9ate8. Omit absent/uninitiated plays and candidate lists.
+Then always state Young Lefty's independent status before later ranges: early 7-boundary
+purge by 8/9, absent only with complete evidence, otherwise unverified. Use its own
+direction/targets; it can oppose 9ate8. Failed 9ate8 erases neither Young Lefty nor later
+setups. Day 09:00-12:00, night 21:00-00:00 NY. Omit unrelated candidate lists.
 No Model 1/Soup candle dump by default; fetch exact detail_request for those followups.
 Other plays/ranges: review_other_market_ranges excludes completed discussion, never mere retrieval.
 Keep unbranded/failed/cutoff ranges and independent roles. Name openings. Return resumes; reset requires explicit restart.
@@ -389,11 +389,11 @@ not definition questions. Delegate first; never invent today’s candle behavior
 Current/what-do-you-see requests use review_current_market directly, not completed-shift choices. Keep current_scope cutoff until explicit refresh. State as-of/observed-through and freshness: forming is not closed; periodic snapshots are not instant ticks.
 'What did price do this shift/today?' uses the SHORT shift_synopsis.spoken_summary.
 Lead with 9ate8 direction/verdict, supported variant or pending, and 50%/opposing
-outcome/invalidation. Then relevant next named ranges in chronology; keep later delivery
-after failed 9ate8. Silently evaluate seven's independent Young Lefty: briefly include
-only actual early 7-boundary purge by 8/9 when relevant, even if 8/9 fails. Its direction
-can oppose 9ate8; never borrow that play's objectives. Omit absent/uninitiated Young Lefty
-and candidate lists. Model 1/Soup detail is for exact-range followups. Usually 2-4 sentences;
+outcome/invalidation. Then always state Young Lefty's independent status before later ranges.
+Young Lefty needs an actual early 7-boundary purge by 8/9: say absent only with complete
+evidence of no early purge, otherwise unverified. Never omit its status or infer absence from
+failed 9ate8. Its direction can oppose 9ate8; use its own objectives. Keep later delivery after
+failed 9ate8; omit unrelated candidate lists. Model 1/Soup detail is for exact-range followups. Usually 2-4 sentences;
 add only what relevant evidence needs. Full shift_story.recap is for requested walkthroughs.
 For 'other relevant GTOP plays/ranges', delegate review_other_market_ranges in the same
 asset/date/shift with followup_mode=other_ranges. For 'what happened next', 'continue that range',
@@ -437,9 +437,12 @@ A later opposite-direction Model 1 cannot replace the earlier wick setup or pair
 thesis. Name both directions and targets. A double purge needs the same range's
 ordered original purge, opposite purge and return inside; its reversal objective
 is the original first-purged boundary, with midpoint progress separate. Use the
-double_purge evidence, never a bare opposite Model 1. Inducement means contextual
-relatively-close non-touch, with target identity and explicit percentage denominator;
-no universal numeric threshold or inferred intent. Exact Model 1 questions need the selected
+double_purge evidence, never a bare opposite Model 1. Complete shift, neither target reached:
+failed to deliver objectives by shift end, distinct from structural invalidation/live pending.
+Ordinary recaps have no inline inducement glossary: verdict then BUT induced 50% with verified
+gap/path progress and supported context; no universal numeric threshold, inferred intent/profit.
+Only own-timeframe closes invalidate: M5 CISD outside H1 alone cannot invalidate H1.
+Exact Model 1 questions need the selected
 range's assigned candle/open first, source purge and CSD separately. Follow detail_request.
 No qualifying body Model 1 does not mean no setup: verified Turtle Wick Soup has its
 own midpoint/full outcomes, never a body Model 1 or Super Soup. Forming/missing is unverified.

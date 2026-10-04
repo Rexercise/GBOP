@@ -20,24 +20,41 @@ class JournalDeleteTests(unittest.TestCase):
         nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
         self.conn = sqlite3.connect(':memory:')
         self.conn.row_factory = sqlite3.Row
+        self.conn.create_function('md5', 1, lambda value: hashlib.md5(value.encode()).hexdigest() if value is not None else None)
         self.conn.executescript('''
-        CREATE TABLE journals(id INTEGER PRIMARY KEY, guild_id INTEGER, user_id INTEGER, description TEXT, created_at TEXT, thesis_id INTEGER);
-        INSERT INTO journals VALUES(1, 10, 20, 'My journal', 'today', NULL);
-        INSERT INTO journals VALUES(2, 10, 30, 'Other member', 'today', NULL);
-        INSERT INTO journals VALUES(3, 11, 20, 'Other guild', 'today', NULL);
-        CREATE TABLE theses(id INTEGER PRIMARY KEY, guild_id INTEGER, user_id INTEGER);
-        INSERT INTO theses VALUES(41, 10, 20);
-        INSERT INTO theses VALUES(42, 10, 30);
+        PRAGMA foreign_keys=ON;
+        CREATE TABLE members(guild_id INTEGER,user_id INTEGER,activated INTEGER,leadership_ack INTEGER,revoked INTEGER,updated_at TEXT);
+        INSERT INTO members VALUES(10,20,1,1,0,'v1'),(10,30,1,1,0,'v1');
+        CREATE TABLE journals(id INTEGER PRIMARY KEY, guild_id INTEGER, user_id INTEGER, description TEXT, created_at TEXT, thesis_id INTEGER,
+            result_r REAL, rule_adherence TEXT, study_note TEXT);
+        INSERT INTO journals(id,guild_id,user_id,description,created_at) VALUES(1,10,20,'My journal','today'),(2,10,30,'Other member','today'),(3,11,20,'Other guild','today');
+        CREATE TABLE theses(id INTEGER PRIMARY KEY, guild_id INTEGER, user_id INTEGER, asset TEXT DEFAULT 'TEST', direction TEXT DEFAULT 'Bullish',
+            play TEXT DEFAULT 'Synthetic', status TEXT DEFAULT 'OPEN', final_result_r REAL);
+        INSERT INTO theses(id,guild_id,user_id) VALUES(41,10,20),(42,10,30);
+        CREATE TABLE trade_photos(id TEXT PRIMARY KEY,guild_id INTEGER,user_id INTEGER,thesis_id INTEGER REFERENCES theses(id) ON DELETE CASCADE,
+            analysis TEXT,image_base64 TEXT);
+        INSERT INTO trade_photos VALUES('photo1',10,20,41,'Original chart','invented'),('photo2',10,30,42,'Other chart','invented');
+        CREATE TABLE journal_details(journal_id INTEGER PRIMARY KEY REFERENCES journals(id) ON DELETE CASCADE,
+            guild_id INTEGER,user_id INTEGER,photo_id TEXT REFERENCES trade_photos(id) ON DELETE SET NULL,
+            entry_index INTEGER DEFAULT 1,metadata TEXT DEFAULT '{}',updated_at TEXT);
+        INSERT INTO journal_details(journal_id,guild_id,user_id,photo_id,metadata) VALUES(1,10,20,'photo1','{}'),(2,10,30,'photo2','{}');
         UPDATE journals SET thesis_id=41 WHERE id=1;
         CREATE TABLE thesis_executions(id INTEGER PRIMARY KEY, thesis_id INTEGER, guild_id INTEGER, user_id INTEGER);
-        CREATE TABLE thesis_events(id INTEGER PRIMARY KEY, thesis_id INTEGER, guild_id INTEGER, user_id INTEGER);
+        CREATE TABLE thesis_events(id INTEGER PRIMARY KEY, thesis_id INTEGER, guild_id INTEGER, user_id INTEGER, event TEXT, details TEXT, result_r REAL, created_at TEXT);
         CREATE TABLE risk_flags(id INTEGER PRIMARY KEY, thesis_id INTEGER, guild_id INTEGER, user_id INTEGER);
         INSERT INTO thesis_executions VALUES(1,41,10,20),(2,42,10,30);
-        INSERT INTO thesis_events VALUES(1,41,10,20),(2,42,10,30);
+        INSERT INTO thesis_events(id,thesis_id,guild_id,user_id) VALUES(1,41,10,20),(2,42,10,30);
         INSERT INTO risk_flags VALUES(1,41,10,20),(2,42,10,30);
         ''')
+        self.before_execute = None
+        self.executed = []
         class Conn:
             def execute(_, sql, params=()):
+                self.executed.append((sql, params))
+                if self.before_execute:
+                    self.before_execute(sql, params)
+                if 'pg_advisory_xact_lock' in sql:
+                    return self.conn.execute('SELECT 1')
                 return self.conn.execute(sql.replace(' FOR UPDATE', ''), params)
         @contextlib.contextmanager
         def db():
@@ -110,6 +127,104 @@ class JournalDeleteTests(unittest.TestCase):
         for table in ('theses', 'thesis_executions', 'thesis_events', 'risk_flags'):
             self.assertEqual(self.conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 2)
         self.assertEqual(self.conn.execute('SELECT count(*) FROM journals').fetchone()[0], 3)
+
+    def test_aggregate_changes_require_new_preview(self):
+        changes = [
+            "UPDATE journal_details SET metadata='{\"emotion\":\"calm\"}' WHERE journal_id=1",
+            "INSERT INTO thesis_executions VALUES(3,41,10,20)",
+            "INSERT INTO thesis_events(id,thesis_id,guild_id,user_id,event,details) VALUES(3,41,10,20,'journal_canonical_v1','{}')",
+            "INSERT INTO risk_flags VALUES(3,41,10,20)",
+            "INSERT INTO journals(id,guild_id,user_id,description,thesis_id) VALUES(4,10,20,'More history',41)",
+            "INSERT INTO trade_photos VALUES('photo3',10,20,41,'Added photo','invented')",
+            "UPDATE trade_photos SET analysis='Updated photo' WHERE id='photo1'",
+            "UPDATE theses SET status='CLOSED' WHERE id=41",
+            "DELETE FROM thesis_executions WHERE id=1",
+            "DELETE FROM journal_details WHERE journal_id=1",
+            "DELETE FROM trade_photos WHERE id='photo1'",
+        ]
+        for change in changes:
+            with self.subTest(change=change):
+                self.preview()
+                before = tuple(self.conn.execute('SELECT * FROM journals WHERE id=1').fetchone())
+                self.conn.execute(change)
+                result = self.delete(token=self.token())
+                self.assertFalse(result['ok'], result)
+                self.assertIn('changed', result['error'])
+                self.assertEqual(tuple(self.conn.execute('SELECT * FROM journals WHERE id=1').fetchone()), before)
+                self.assertIsNotNone(self.conn.execute('SELECT id FROM theses WHERE id=41').fetchone())
+
+    def test_unlinked_source_photo_content_is_in_preview(self):
+        self.conn.execute("INSERT INTO trade_photos VALUES('source',10,20,NULL,'Original','invented')")
+        self.conn.execute('UPDATE journal_details SET metadata=? WHERE journal_id=1',
+                          (json.dumps({'source_attachments': [{'photo_id': 'source', 'entry_index': 1}]}),))
+        self.preview()
+        self.conn.execute("UPDATE trade_photos SET analysis='New annotation' WHERE id='source'")
+        self.assertFalse(self.delete(token=self.token())['ok'])
+
+    def test_other_owner_changes_do_not_invalidate_snapshot(self):
+        self.preview()
+        self.conn.execute("UPDATE trade_photos SET analysis='Other change' WHERE user_id=30")
+        self.conn.execute('INSERT INTO risk_flags VALUES(3,42,10,30)')
+        self.assertTrue(self.delete(token=self.token())['ok'])
+        self.assertIsNotNone(self.conn.execute("SELECT id FROM trade_photos WHERE id='photo2'").fetchone())
+
+    def test_member_revocation_at_lock_blocks_confirmation(self):
+        self.preview()
+        def hook(sql, params):
+            if 'pg_advisory_xact_lock' in sql:
+                self.conn.execute('UPDATE members SET revoked=1 WHERE user_id=20')
+        self.before_execute = hook
+        result = self.delete(token=self.token())
+        self.assertFalse(result['ok']); self.assertIn('revoked', result['error'])
+        self.assertIsNotNone(self.conn.execute('SELECT id FROM journals WHERE id=1').fetchone())
+
+    def test_preview_expiry_while_waiting_on_lock_blocks_confirmation(self):
+        self.preview()
+        def hook(sql, params):
+            if 'pg_advisory_xact_lock' in sql:
+                self.ns['PENDING_JOURNAL_DELETIONS'][20]['expires_at'] = 0
+        self.before_execute = hook
+        self.assertFalse(self.delete(token=self.token())['ok'])
+        self.assertIsNotNone(self.conn.execute('SELECT id FROM journals WHERE id=1').fetchone())
+
+    def test_aggregate_reads_and_delete_share_member_lock(self):
+        self.preview(); self.executed.clear()
+        self.assertTrue(self.delete(token=self.token())['ok'])
+        self.assertIn('pg_advisory_xact_lock', self.executed[0][0])
+        self.assertEqual(self.executed[0][1], (20,))
+        self.assertIn('FROM members', self.executed[1][0])
+        first_delete = next(i for i, (sql, _) in enumerate(self.executed) if sql.startswith('DELETE'))
+        for table in ('journal_details', 'trade_photos', 'thesis_executions', 'thesis_events', 'risk_flags'):
+            self.assertTrue(any('SELECT ' in sql and ' FROM ' + table in sql for sql, _ in self.executed[:first_delete]))
+
+    def test_inconsistent_child_ownership_never_cascades(self):
+        targets = [('trade_photos', "id='photo1'"), ('journal_details', 'journal_id=1'),
+                   ('journals', 'id=1'), ('thesis_events', 'id=1'),
+                   ('thesis_executions', 'id=1'), ('risk_flags', 'id=1')]
+        for table, selector in targets:
+            for assignment in ('guild_id=11', 'user_id=30', 'user_id=NULL'):
+                with self.subTest(table=table, assignment=assignment):
+                    self.assertTrue(self.preview()['ok'])
+                    self.conn.execute(f'UPDATE {table} SET {assignment} WHERE {selector}')
+                    self.conn.commit()
+                    before = list(self.conn.iterdump())
+                    self.assertFalse(self.delete(token=self.token())['ok'])
+                    self.assertEqual(list(self.conn.iterdump()), before)
+                    self.assertFalse(self.preview()['ok'])
+                    with self.assertRaisesRegex(ValueError, 'inconsistent ownership'):
+                        with self.ns['db']() as conn:
+                            delete_trade_records(conn, 10, 20, 41)
+                    self.assertEqual(list(self.conn.iterdump()), before)
+                    self.conn.execute(f'UPDATE {table} SET guild_id=10,user_id=20 WHERE {selector}')
+
+    def test_photo_content_digest_detects_changes_without_selecting_base64(self):
+        self.preview()
+        photo_selects = [sql for sql, _ in self.executed if 'SELECT ' in sql and ' FROM trade_photos' in sql]
+        self.assertTrue(any('md5(image_base64)' in sql for sql in photo_selects))
+        self.assertFalse(any('SELECT *' in sql for sql in photo_selects))
+        self.conn.execute("UPDATE trade_photos SET image_base64='different invented bytes' WHERE id='photo1'")
+        self.assertFalse(self.delete(token=self.token())['ok'])
+        self.assertIsNotNone(self.conn.execute('SELECT id FROM theses WHERE id=41').fetchone())
 
     def test_wiring_and_request_snapshot(self):
         source = SOURCE.read_text()

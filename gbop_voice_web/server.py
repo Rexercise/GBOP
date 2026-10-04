@@ -356,26 +356,19 @@ def member_context(user_id: int) -> str:
              preference_context(db, GTOP_GUILD_ID, user_id, OWNER_USER_ID)]
 
     if trades:
+        from gbop_voice_web.trade_numbers import recorded_trade_risk
         lines.append("Open trades:")
         for row in trades:
             lines.append(
                 f"- Trade #{trade_number(db, GTOP_GUILD_ID, user_id, row['id'])}: {row['asset']} | {row['direction']} | "
-                f"Play {row['play']} | recorded risk {thesis_used_r(row['id']):.2f}R | "
+                f"Play {row['play']} | recorded risk {format_r(recorded_trade_risk(db, GTOP_GUILD_ID, user_id, row['id']))} | "
                 f"objective {row['objective']}"
             )
     else:
         lines.append("Open trades: none.")
 
-    if journals:
-        lines.append("Recent journals:")
-        for row in journals:
-            lines.append(
-                f"- Journal #{journal_number(db, GTOP_GUILD_ID, user_id, row['id'])} (internal journal_id={row['id']}): {format_r(row['result_r'])}; "
-                f"adherence {row['rule_adherence'] or 'not specified'}; "
-                f"study note {row['study_note'] or 'not specified'}"
-            )
-    else:
-        lines.append("Recent journals: none.")
+    from gbop_voice_web.journal_recall import member_context_lines
+    lines.extend(member_context_lines(db, GTOP_GUILD_ID, user_id))
 
     lines.append(intelligence_context(db, GTOP_GUILD_ID, user_id))
     lines.append(trade_assist_context(db, GTOP_GUILD_ID, user_id))
@@ -448,6 +441,8 @@ def tool_get_trade_state(user_id: int, args: dict):
                 (trade_record_id(db, GTOP_GUILD_ID, user_id, trade_id), GTOP_GUILD_ID, user_id),
             ).fetchall()
 
+    from gbop_voice_web.trade_numbers import recorded_trade_risk
+
     return {
         "ok": True,
         "trades": [
@@ -459,7 +454,7 @@ def tool_get_trade_state(user_id: int, args: dict):
                 "status": r["status"],
                 "objective": r["objective"],
                 "thesis_invalidation": r["thesis_invalidation"],
-                "recorded_risk_r": thesis_used_r(r["id"]),
+                "recorded_risk_r": recorded_trade_risk(db, GTOP_GUILD_ID, user_id, r["id"]),
                 "final_result_r": r["final_result_r"],
             }
             for r in rows
@@ -490,29 +485,49 @@ def tool_open_trade(user_id: int, args: dict):
 
     from gbop_voice_web.journal_context import prepare_trade_metadata, save_trade_metadata, journal_transaction
     metadata = prepare_trade_metadata(GTOP_GUILD_ID, user_id, args)
-    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO theses (
-                guild_id, user_id, asset, direction, play, session,
-                crt_variant, htf_context, liquidity_purged, objective,
-                thesis_invalidation, status, max_r, created_at
+    metadata['kind'] = 'trade'
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        selected_number = args.get('trade_id')
+        if selected_number is not None:
+            from gbop_voice_web.trade_numbers import trade_record_id
+            selected_id = trade_record_id(db, GTOP_GUILD_ID, user_id, selected_number)
+            existing = conn.execute('SELECT * FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+                (selected_id, GTOP_GUILD_ID, user_id)).fetchone()
+            if not existing or existing['status'] not in ('JOURNALED', 'IDEA'):
+                return {'ok': False, 'error': 'Choose an existing journal-only Trade #. Use add_entry for an open trade; closed trades cannot be reopened this way.'}
+            trade_id = existing['id']
+            from gbop_voice_web.unified_journal import canonical_journal_id
+            from gbop_voice_web.journal_context import merge_metadata
+            current_journal = canonical_journal_id(conn, GTOP_GUILD_ID, user_id, existing['id'])
+            detail = conn.execute('SELECT metadata FROM journal_details WHERE journal_id=? AND guild_id=? AND user_id=?',
+                (current_journal, GTOP_GUILD_ID, user_id)).fetchone() if current_journal else None
+            metadata = merge_metadata(json.loads(detail['metadata'] or '{}') if detail else {}, metadata)
+            conn.execute("UPDATE theses SET asset=?,direction=?,play=?,objective=?,thesis_invalidation=?,status='OPEN',max_r=1.0 WHERE id=? AND guild_id=? AND user_id=?",
+                (str(args['asset']).strip(), str(args['direction']).strip(), str(args['play']).strip(),
+                 objective, invalidation, trade_id, GTOP_GUILD_ID, user_id))
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO theses (
+                    guild_id, user_id, asset, direction, play, session,
+                    crt_variant, htf_context, liquidity_purged, objective,
+                    thesis_invalidation, status, max_r, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, '', '', '', ?, ?, 'OPEN', 1.0, ?)
+                """,
+                (
+                    GTOP_GUILD_ID,
+                    user_id,
+                    str(args["asset"]).strip(),
+                    str(args["direction"]).strip(),
+                    str(args["play"]).strip(),
+                    metadata.get('session') or '',
+                    str(objective).strip(),
+                    str(invalidation).strip(),
+                    now_iso(),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, '', '', '', ?, ?, 'OPEN', 1.0, ?)
-            """,
-            (
-                GTOP_GUILD_ID,
-                user_id,
-                str(args["asset"]).strip(),
-                str(args["direction"]).strip(),
-                str(args["play"]).strip(),
-                metadata.get('session') or '',
-                str(objective).strip(),
-                str(invalidation).strip(),
-                now_iso(),
-            ),
-        )
-        trade_id = cur.lastrowid
+            trade_id = cur.lastrowid
 
         cur = conn.execute(
             """
@@ -533,7 +548,13 @@ def tool_open_trade(user_id: int, args: dict):
             ),
         )
         execution_id = cur.lastrowid
+        metadata['journal_only'] = False
+        metadata['recorded_risk'] = risk_r
         save_trade_metadata(conn, GTOP_GUILD_ID, user_id, trade_id, metadata)
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, user_id, trade_id,
+            fields=None if selected_number is not None else {'description': f"{args['asset']} {args['direction']} · {args['play']}"},
+            metadata=metadata, timestamp=now_iso())
 
     warnings = []
     if risk_r > tier_limit(profile, tier) + 1e-6:
@@ -575,7 +596,16 @@ def tool_add_entry(user_id: int, args: dict):
     used_before = thesis_used_r(row["id"])
 
     from gbop_voice_web.journal_context import journal_transaction
-    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+            (row['id'], GTOP_GUILD_ID, user_id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            return {'ok': False, 'error': 'This trade has closed or changed. Refresh its journal before adding details.'}
+        used_before = conn.execute('SELECT COALESCE(SUM(risk_r),0) FROM thesis_executions WHERE thesis_id=? AND guild_id=? AND user_id=?',
+            (row['id'], GTOP_GUILD_ID, user_id)).fetchone()[0]
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, user_id, row['id'],
+            metadata={'kind': 'trade', 'journal_only': False, 'recorded_risk': used_before + risk_r})
         cur = conn.execute(
             """
             INSERT INTO thesis_executions (
@@ -630,8 +660,19 @@ def tool_record_trade_event(user_id: int, args: dict):
     if result_r is not None:
         result_r = float(result_r)
 
+    if str(args['event']).strip().casefold().startswith('journal_'):
+        return {'ok': False, 'error': 'That event name is reserved for the journal system.'}
+    if result_r is not None and not math.isfinite(result_r):
+        return {'ok': False, 'error': 'Result R must be finite or unknown.'}
+
     from gbop_voice_web.journal_context import journal_transaction
-    with journal_transaction(db, args, GTOP_GUILD_ID, user_id) as conn:
+    with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+            (row['id'], GTOP_GUILD_ID, user_id)).fetchone()
+        if not current or current['status'] != 'OPEN':
+            return {'ok': False, 'error': 'This trade has closed or changed. Refresh its journal before adding details.'}
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        ensure_canonical_journal(conn, GTOP_GUILD_ID, user_id, row['id'])
         conn.execute(
             """
             INSERT INTO thesis_events (
@@ -702,49 +743,12 @@ def tool_close_trade(user_id: int, args: dict):
             ),
         )
 
-        journal_cols = table_columns("journals")
-        if "thesis_id" in journal_cols:
-            cur = conn.execute(
-                """
-                INSERT INTO journals (
-                    guild_id, user_id, description, rule_adherence, result_r,
-                    study_note, created_at, thesis_id
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    GTOP_GUILD_ID,
-                    user_id,
-                    summary,
-                    adherence,
-                    result_r,
-                    study_note,
-                    now_iso(),
-                    row["id"],
-                ),
-            )
-        else:
-            cur = conn.execute(
-                """
-                INSERT INTO journals (
-                    guild_id, user_id, description, rule_adherence, result_r,
-                    study_note, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    GTOP_GUILD_ID,
-                    user_id,
-                    summary,
-                    adherence,
-                    result_r,
-                    study_note,
-                    now_iso(),
-                ),
-            )
+        from gbop_voice_web.unified_journal import ensure_canonical_journal
+        journal_id = ensure_canonical_journal(conn, GTOP_GUILD_ID, user_id, row['id'],
+            fields={'description': summary, 'rule_adherence': adherence,
+                    'result_r': result_r, 'study_note': study_note},
+            metadata=metadata, timestamp=now_iso())
 
-        journal_id = cur.lastrowid
-        save_closed_metadata(conn, GTOP_GUILD_ID, user_id, journal_id, metadata)
 
     return {
         "ok": True,
@@ -762,23 +766,24 @@ PENDING_JOURNAL_DELETIONS: dict[int, dict] = {}
 JOURNAL_DELETE_TTL = 300
 
 
-def journal_fingerprint(row):
-    return hashlib.sha256(
-        json.dumps(dict(row), sort_keys=True, default=str).encode()
-    ).hexdigest()
+def journal_fingerprint(conn, user_id, journal_id):
+    from gbop_voice_web.deletion import deletion_snapshot
+    return deletion_snapshot(conn, GTOP_GUILD_ID, user_id, journal_id=journal_id)['fingerprint']
 
 
 def tool_prepare_journal_delete(user_id: int, args: dict):
+    from gbop_voice_web.deletion import deletion_snapshot
+    from gbop_voice_web.journal_numbers import journal_display
     journal_id = args.get("journal_id")
     if type(journal_id) is not int or journal_id <= 0:
         return {"ok": False, "error": "Choose a valid journal ID, not a trade number."}
-    with db() as conn:
-        row = conn.execute(
-            "SELECT * FROM journals WHERE id=? AND guild_id=? AND user_id=?",
-            (journal_id, GTOP_GUILD_ID, user_id),
-        ).fetchone()
-    if row is None:
-        return {"ok": False, "error": "That journal was not found in your account."}
+    try:
+        with db() as conn:
+            snapshot = deletion_snapshot(conn, GTOP_GUILD_ID, user_id, journal_id=journal_id)
+            row = snapshot['journal']
+            display = next(r for r in journal_display(conn, GTOP_GUILD_ID, user_id) if r['id'] == journal_id)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     stamp = time.time()
     for uid, pending in list(PENDING_JOURNAL_DELETIONS.items()):
         if pending["expires_at"] <= stamp:
@@ -786,19 +791,22 @@ def tool_prepare_journal_delete(user_id: int, args: dict):
     PENDING_JOURNAL_DELETIONS[user_id] = {
         "journal_id": journal_id,
         "token": secrets.token_urlsafe(24),
-        "fingerprint": journal_fingerprint(row),
-        "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, journal_id),
+        "fingerprint": snapshot['fingerprint'],
+        "journal_number": display['journal_number'],
         "expires_at": stamp + JOURNAL_DELETE_TTL,
     }
     return {
         "ok": True, "requires_confirmation": True, "journal_id": journal_id,
-        "journal_number": journal_number(db, GTOP_GUILD_ID, user_id, journal_id),
+        "journal_number": display['journal_number'],
+        "legacy_journal_number": display['legacy_journal_number'],
         "description": row["description"], "created_at": row["created_at"],
-        "message": "Ask the user to confirm deleting this journal. Its linked trade, executions, events, risk flags, and all linked journals will also be deleted. Nothing has been deleted.",
+        "records": snapshot['counts'],
+        "message": "Ask the user to confirm deleting this journal. Its linked trade, executions, events, risk flags, photos linked to the trade, and all linked journals will also be deleted. Nothing has been deleted.",
     }
 
 
 def tool_delete_journal(user_id: int, args: dict, confirmation_token=None):
+    from gbop_voice_web.deletion import deletion_snapshot, validate_deletion_snapshot
     pending = PENDING_JOURNAL_DELETIONS.get(user_id)
     journal_id = args.get("journal_id")
     if (args.get("confirmed") is not True or type(journal_id) is not int
@@ -807,28 +815,25 @@ def tool_delete_journal(user_id: int, args: dict, confirmation_token=None):
             or not confirmation_token
             or not hmac.compare_digest(pending["token"], confirmation_token)):
         return {"ok": False, "error": "Preview the journal and get confirmation in a later user turn before deleting."}
-    with db() as conn:
-        row = conn.execute(
-            "SELECT * FROM journals WHERE id=? AND guild_id=? AND user_id=? FOR UPDATE",
-            (journal_id, GTOP_GUILD_ID, user_id),
-        ).fetchone()
-        if row is None:
-            return {"ok": False, "error": "That journal was not found in your account. Nothing deleted."}
-        if journal_fingerprint(row) != pending["fingerprint"]:
-            return {"ok": False, "error": "The journal changed. Preview it again and ask for confirmation."}
-        if row["thesis_id"] is not None:
-            delete_trade_records(conn, GTOP_GUILD_ID, user_id, row["thesis_id"])
-            deleted = row
-        else:
-            deleted = conn.execute(
-                "DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=? RETURNING id",
-                (journal_id, GTOP_GUILD_ID, user_id),
-            ).fetchone()
-    if not deleted:
-        return {"ok": False, "error": "No journal was deleted."}
+    try:
+        with db() as conn:
+            snapshot = deletion_snapshot(conn, GTOP_GUILD_ID, user_id, journal_id=journal_id)
+            # A concurrent new preview or expiry while waiting for the member lock
+            # cannot authorize this older confirmation.
+            if PENDING_JOURNAL_DELETIONS.get(user_id) is not pending or pending['expires_at'] <= time.time():
+                return {'ok': False, 'error': 'The deletion preview expired or changed. Preview it again.'}
+            validate_deletion_snapshot(snapshot, pending['fingerprint'])
+            row = snapshot['journal']
+            if row["thesis_id"] is not None:
+                delete_trade_records(conn, GTOP_GUILD_ID, user_id, row["thesis_id"])
+            else:
+                conn.execute("DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?",
+                             (journal_id, GTOP_GUILD_ID, user_id))
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}
     if PENDING_JOURNAL_DELETIONS.get(user_id) is pending:
         PENDING_JOURNAL_DELETIONS.pop(user_id, None)
-    return {"ok": True, "deleted": True, "journal_id": deleted["id"], "journal_number": pending["journal_number"], "trade_records_preserved": False}
+    return {"ok": True, "deleted": True, "journal_id": journal_id, "journal_number": pending["journal_number"], "trade_records_preserved": False}
 
 
 def tool_get_risk_profile(user_id: int, args: dict):
@@ -875,7 +880,7 @@ TOOLS = [
     },
     {
         "type": "function", "name": "delete_journal",
-        "description": "Delete the previously previewed journal only after the user explicitly confirms in a later turn. Preserves trades and executions.",
+        "description": "Delete the previously previewed journal and linked trade records only after the user explicitly confirms in a later turn.",
         "parameters": {"type": "object", "properties": {"journal_id": {"type": "integer", "minimum": 1}, "confirmed": {"type": "boolean"}}, "required": ["journal_id", "confirmed"], "additionalProperties": False},
     },
     {
@@ -896,9 +901,12 @@ TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
+                "trade_number": {"type": ["integer", "null"]},
+                "legacy_journal_number": {"type": ["integer", "null"]},
+                "offset": {"type": ["integer", "null"]},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20}
             },
-            "required": ["limit"],
+            "required": ["trade_number", "legacy_journal_number", "offset", "limit"],
             "additionalProperties": False,
         },
     },
@@ -909,6 +917,7 @@ TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
+                "trade_id": {"type": ["integer", "null"], "description": "Existing journal-only member Trade # to record its first execution, or null for a genuinely new thesis. Never guess."},
                 "asset": {"type": "string"},
                 "direction": {"type": "string", "enum": ["Bullish", "Bearish"]},
                 "play": {"type": "string"},
@@ -918,7 +927,7 @@ TOOLS = [
                 "objective": {"type": ["string", "null"]},
                 "thesis_invalidation": {"type": ["string", "null"]},
             },
-            "required": [
+            "required": ["trade_id",
                 "asset",
                 "direction",
                 "play",
@@ -1002,7 +1011,8 @@ for _recall_tool in TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
         _recall_tool['description'] = 'Read this member\'s saved journals, all-trade counts and next page. Empty OPEN trades does not mean no saved trades.'
         _recall_tool['parameters']['properties']['offset'] = {'type': ['integer', 'null']}
-        _recall_tool['parameters']['required'].append('offset')
+        if 'offset' not in _recall_tool['parameters']['required']:
+            _recall_tool['parameters']['required'].append('offset')
 
 
 
@@ -1069,7 +1079,7 @@ If the user cancels or changes subject, do not delete. Deletion removes
 the journal and its linked trade, executions, events, risk flags, and journals. Report success
 only when the tool returns deleted=true.
 
-Journal numbering: speak/display journal_number, never internal journal_id. Resolve displayed numbers using current journal history and pass the matching internal journal_id to tools.
+Journal identity: use one member-facing Trade # for the trade and its canonical journal. Append or correct it with trade_number. Old unlinked journals use explicit legacy_journal_number from current history; clarify ambiguous aliases. Never speak internal journal_id, fabricate risk, or create an execution to save a journal.
 
 GTOP protocol:
 - 9ate8 is written exactly 9ate8.

@@ -19,7 +19,9 @@ DELIVERY_ACTION = {'type': ['string', 'null'], 'enum': ['send_or_recover', 'rese
 TERMINAL = frozenset({'delivered', 'no_photos', 'partial', 'error', 'uncertain'})
 SAFE_FIELDS = frozenset({'ok', 'status', 'sent_count', 'attempted_count', 'notice_sent',
     'delivery_uncertain', 'has_more', 'next_offset', 'journal_count', 'trade_count',
-    'open_trade_count', 'closed_trade_count', 'journal_numbers', 'photo_count', 'error',
+    'open_trade_count', 'closed_trade_count', 'journal_numbers', 'legacy_journal_numbers',
+    'canonical_journal_count', 'legacy_journal_count', 'preserved_legacy_history_count',
+    'stored_journal_entry_count', 'matched_record_count', 'photo_count', 'error',
     'delivery', 'receipt_id', 'tool', 'started_at', 'updated_at', 'message_ids'})
 
 
@@ -27,6 +29,7 @@ def canonical_arguments(name, args):
     if name == 'send_journal_history':
         result = {'limit': max(1, min(int(args.get('limit') or 5), 20)),
                   'offset': max(0, int(args.get('offset') or 0))}
+        result.update({k: args[k] for k in ('trade_number','journal_number','legacy_journal_number') if args.get(k) is not None})
         if args.get('delivery_action') == 'resend':
             result['delivery_action'] = 'resend'
         return result

@@ -91,8 +91,38 @@ tool intent remains model-classified, with no added transcription service.
 RLS enabled and no anon/authenticated grants: only the trusted backend accesses
 them, enforcing the guild/user identity supplied by the authenticated session.
 Import retries use `(guild,user,photo,entry_index)` to update the same journal.
-Deleting a journal removes its metadata; its source image remains in the member's
-photo library. No new execution is created by a handwritten journal import.
+No execution is created by a handwritten journal import. Deletion uses an explicit
+confirmed preview of the entire linked record; a changed record needs a fresh preview.
+Trade-linked images follow existing deletion behavior; unrelated library images remain.
+
+## One trade, one journal
+
+A member's displayed Trade # identifies the thesis and its journal together.
+Opening a trade creates its canonical journal in the same guarded transaction;
+closing it updates that journal. Reflections, corrections, execution records and
+any number of images remain associated with that thesis. Source imports use the
+exact photo ID and page entry index for idempotent retries. Journal photo recall
+combines direct page attachments, additional saved source associations and photos
+linked to the same owned thesis, then applies the remaining filters together.
+
+A standalone journal creates an IDEA or JOURNALED identity with no executions and
+no assigned risk budget. Unknown actual risk and R remain unknown. When a member
+explicitly supplies a journal-only Trade # to open_trade, the first real execution
+uses that same thesis. An already OPEN trade uses add_entry instead.
+
+Existing duplicate linked journals are shown as one read-only trade view with
+preserved historical entries. Conflicting historical outcomes remain unknown.
+An explicit update creates/adopts one canonical record and retains full original
+rows plus immutable before/after audit in existing thesis events. Existing unlinked
+journals stay separately addressable as Legacy journal #; ambiguous old Journal #
+aliases require clarification. No automatic merge, deletion, backfill or guessed
+reassignment runs at startup. No schema, grants or RLS change is required.
+
+Member ownership and current authorization are checked inside serialized write
+transactions. Conversation-generation guards prevent canceled or stale requests
+from saving. Full private recall retains the update timeline; ordinary model
+responses are bounded previews and mark omitted history rather than claiming it
+is absent. Photo and text delivery still have separate verified receipts.
 
 ## Private journal and photo delivery receipts
 

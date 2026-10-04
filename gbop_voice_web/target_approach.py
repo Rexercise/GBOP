@@ -91,3 +91,17 @@ def owner_inducement_example(asset, anchor, direction, fact):
             return {'label': 'inducement', 'basis': 'explicit_owner_characterization',
                     'target': 'midpoint', 'general_numeric_threshold': None}
     return None
+
+
+def inducement_clause(fact, direction):
+    """Short presentation of an attributed, measured non-touch; no glossary."""
+    if not fact.get('gtop_context') or direction not in ('bullish', 'bearish'):
+        return ''
+    gap = fact.get('distance_price_points')
+    reference = fact.get('boundary_to_target_reference') or {}
+    progress = reference.get('progress_percent')
+    if gap is None or gap <= 0 or progress is None:
+        return ''
+    boundary = 'low' if direction == 'bullish' else 'high'
+    return (f'BUT induced 50%: {gap:.2f} points short '
+            f'(~{progress:.0f}% of the {boundary}-to-50% path)')

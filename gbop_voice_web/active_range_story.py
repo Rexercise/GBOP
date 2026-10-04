@@ -8,7 +8,7 @@ from datetime import datetime
 
 from gbop_voice_web.candle_evidence import parse_time, stamp
 from gbop_voice_web.candle_naming import candle_label, source_timeframe
-from gbop_voice_web.target_approach import owner_inducement_example
+from gbop_voice_web.target_approach import owner_inducement_example, inducement_clause
 
 
 def _clock(value):
@@ -23,7 +23,7 @@ def _event_label(event):
     return candle_label(event['bar_open_ny'], source_timeframe(event.get('precision_seconds')))
 
 
-def _double_context(row, asset=None):
+def _double_context(row, asset=None, story=None):
     evidence = row.get('double_purge', {})
     if not evidence.get('observed'):
         return None
@@ -35,6 +35,18 @@ def _double_context(row, asset=None):
         'source_return_inside': deepcopy(evidence['sequence']['source_return_inside']),
         'assigned_return_inside': deepcopy(evidence['sequence']['assigned_return_inside']),
         'objectives': {}}
+    # The engine's cutoff-relative status is unchanged. Only a fully observed
+    # completed shift can turn a still-valid pending reversal into a historical
+    # non-delivery verdict; missing/live evidence must stay pending/unverified.
+    shift_complete = bool(story and story.get('coverage', {}).get('complete')
+                          and story.get('progression_complete'))
+    value['invalidated_at_ny'] = row.get('invalidated_at_ny')
+    value['presentation_outcome'] = ('failed_to_deliver_objectives_by_shift_end'
+        if shift_complete and reversal['status'] == 'pending_at_review_cutoff'
+        and reversal['coverage'].get('complete')
+        and all(t['status'] == 'not_observed_by_review_cutoff'
+                for t in reversal['objectives'].values())
+        else reversal['status'])
     for name, target in reversal['objectives'].items():
         result = {k: deepcopy(target[k]) for k in ('status', 'level', 'distance_price_points',
             'observed_distance_price_points', 'closest_observed_price', 'closest_source_interval') if k in target}
@@ -54,19 +66,24 @@ def _double_sentence(value, short=False):
     if not value:
         return ''
     side, direction = value['full_objective_side'], value['reversal_direction']
-    outcome = value['reversal_outcome']
+    outcome = value.get('presentation_outcome', value['reversal_outcome'])
     state = {'original_side_delivered': 'delivered the original ' + side + '-side',
         'midpoint_only': 'delivered 50% only', 'unverified': 'has an unverified outcome',
-        'failed_before_objectives': 'failed before its objectives',
+        'failed_before_objectives': 'failed before its objectives on structural invalidation',
+        'failed_to_deliver_objectives_by_shift_end': 'failed to deliver objectives by shift end',
         'pending_at_review_cutoff': 'remained pending at the cutoff'}[outcome]
-    text = f'The same-range double-purge {direction} reversal {state}.'
+    text = f'The same-range double-purge {direction} reversal {state}'
+    midpoint = value['objectives'].get('midpoint', {})
+    induced = inducement_clause(midpoint, direction)
+    if induced:
+        text += '; ' + induced
+    text += '.'
     if not short:
         returned = value['source_return_inside']
         text += (' Its return inside was in ' + candle_label(returned['bar_open_ny'], returned['timeframe'])
                  + f'; its full objective is the original {side}-side, with 50% only halfway.')
-        midpoint = value['objectives'].get('midpoint', {})
-        if midpoint.get('gtop_context'):
-            text += ' Its non-touch 50% rebound was inducement in GTOP terms.'
+        if outcome == 'failed_to_deliver_objectives_by_shift_end':
+            text += ' Neither 50% nor the original boundary was reached; the range was not structurally invalidated.'
     return text
 
 
@@ -175,7 +192,7 @@ def selected_range_story(story, row, fact, asset=None):
         text += ' No later selected-range transition occurred before the cutoff.'
     else:
         text += ' A later selected-range transition is unverified.'
-    double = _double_context(row, asset)
+    double = _double_context(row, asset, story)
     if double:
         text += ' ' + _double_sentence(double)
     verified_through = next((h['candle_end_ny'] for h in reversed(development) if h.get('candle_science')), selection_start)

@@ -29,6 +29,10 @@ which trade. Later corrections may update the photo tags and link. Photos linked
 to a trade also belong to its journal. Do not overwrite execution facts from images.
 When asked to send/show pictures, use send_trade_photos with matching filters;
 this DMs the requesting member only. Never claim delivery until sent_count > 0.
+Trade #N and its canonical Journal #N are one record. Old unlinked entries use
+legacy_journal_number, never a guessed trade. If a journal number is ambiguous,
+ask whether the member means Trade #N or Legacy journal #N. Photos linked by
+a shared owned trade, a direct source, or later source attachments remain available.
 Filters combine with AND; omit unrelated filters. Use offset for more results.
 """
 
@@ -81,8 +85,16 @@ def owned_trades(conn, guild_id, user_id):
 
 
 def annotate(db, guild_id, user_id, args):
+    try:
+        return _annotate(db,guild_id,user_id,args)
+    except (ValueError, TypeError) as exc:
+        return {'ok':False,'error':str(exc)}
+
+
+def _annotate(db, guild_id, user_id, args):
     init_photos(db)
-    with db() as conn:
+    from gbop_voice_web.journal_context import journal_transaction
+    with journal_transaction(db,args,guild_id,user_id,serialize=True) as conn:
         photo = conn.execute('SELECT id FROM trade_photos WHERE id=? AND guild_id=? AND user_id=?',
                              (args['photo_id'],guild_id,user_id)).fetchone()
         if photo is None:
@@ -91,7 +103,7 @@ def annotate(db, guild_id, user_id, args):
         trade = None
         if number is not None:
             trades = owned_trades(conn,guild_id,user_id)
-            if not 1 <= number <= len(trades):
+            if type(number) is not int or not 1 <= number <= len(trades):
                 return {'ok': False, 'error': 'Trade number not found in your account.'}
             trade = trades[number-1]
         tier = args.get('tier')
@@ -106,28 +118,107 @@ def annotate(db, guild_id, user_id, args):
     return {'ok': True,'photo_id':args['photo_id'],'trade_number':number,'saved':True}
 
 
+def _metadata(value):
+    """Malformed old metadata must not hide otherwise accessible owner photos."""
+    try:
+        parsed = json.loads(value or '{}') if isinstance(value, str) else value
+        return parsed if isinstance(parsed, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _journal_photo_associations(conn, guild_id, user_id, owned_thesis_ids):
+    """Read all durable sources, retaining the original single-pointer schema.
+
+    Every journal and detail is owner-scoped independently. Event associations
+    additionally need an owned thesis and a journal belonging to that thesis.
+    The final photo query independently enforces photo ownership.
+    """
+    rows = conn.execute('''SELECT j.*,d.photo_id,d.metadata FROM journals j
+        LEFT JOIN journal_details d ON d.journal_id=j.id
+            AND d.guild_id=j.guild_id AND d.user_id=j.user_id
+        WHERE j.guild_id=? AND j.user_id=? ORDER BY j.id''',
+        (guild_id, user_id)).fetchall()
+    journals, sources = {}, {}
+    for row in rows:
+        record = dict(row)
+        record['metadata'] = _metadata(record.get('metadata'))
+        journals[record['id']] = record
+        linked = set()
+        if record.get('photo_id'):
+            linked.add(record['photo_id'])
+        for item in record['metadata'].get('source_attachments') or []:
+            if isinstance(item, dict) and isinstance(item.get('photo_id'), str):
+                linked.add(item['photo_id'])
+        sources[record['id']] = linked
+    event_columns = {r['name'] for r in conn.execute('PRAGMA table_info(thesis_events)').fetchall()}
+    if {'thesis_id','guild_id','user_id','event','details'}.issubset(event_columns):
+        events = conn.execute('''SELECT thesis_id,details FROM thesis_events
+            WHERE guild_id=? AND user_id=? AND event=? ORDER BY id''',
+            (guild_id, user_id, 'journal_source_v1')).fetchall()
+    else:
+        # Older schemas can lack events; direct and metadata sources remain.
+        events = []
+    for event in events:
+        source = _metadata(event['details'])
+        record = journals.get(source.get('journal_id'))
+        if (record and event['thesis_id'] in owned_thesis_ids
+                and record.get('thesis_id') == event['thesis_id']
+                and isinstance(source.get('photo_id'), str)):
+            sources[record['id']].add(source['photo_id'])
+    return journals, sources
+
+
 def search(db,guild_id,user_id,args,include_bytes=False):
     from gbop_voice_web.photo_recall import normalized_filters
+    from gbop_voice_web.journal_numbers import resolve_journal_selector
     args = normalized_filters(args)
     from gbop_voice_web.journal_coach import init_coach
     init_coach(db)
     with db() as conn:
         trades = owned_trades(conn,guild_id,user_id)
+        by_thesis = {t['id']: dict(t) for t in trades}
         numbers = {t['id']:i+1 for i,t in enumerate(trades)}
+        journals, sources = _journal_photo_associations(conn,guild_id,user_id,set(by_thesis))
         clauses = ['p.guild_id=?','p.user_id=?']
         params = [guild_id,user_id]
+
+        def association_clause(thesis_id=None, journal_id=None):
+            ids = set()
+            for jid, journal in journals.items():
+                if jid == journal_id or (thesis_id is not None and journal.get('thesis_id') == thesis_id):
+                    ids.update(sources[jid])
+            parts, values = [], []
+            if thesis_id in by_thesis:
+                parts.append('p.thesis_id=?')
+                values.append(thesis_id)
+            if ids:
+                parts.append('p.id IN (' + ','.join('?' for _ in ids) + ')')
+                values.extend(sorted(ids))
+            return '(' + ' OR '.join(parts) + ')' if parts else '(1=0)', values
+
         number = args.get('trade_number')
+        selected_thesis_id = None
         if number is not None:
-            if not 1 <= number <= len(trades):
+            if type(number) is not int or not 1 <= number <= len(trades):
                 return {'ok':False,'error':'Trade number not found in your account.'}
-            clauses.append('p.thesis_id=?'); params.append(trades[number-1]['id'])
-        if args.get('journal_number') is not None:
-            from gbop_voice_web.journal_numbers import journal_record_id
-            jid = journal_record_id(db,guild_id,user_id,args['journal_number'])
-            if jid is None:
-                return {'ok':False,'error':'Journal number not found in your account.'}
-            clauses.append('p.id IN (SELECT photo_id FROM journal_details WHERE journal_id=? AND guild_id=? AND user_id=?)')
-            params.extend([jid,guild_id,user_id])
+            selected_thesis_id = trades[number-1]['id']
+            sql, values = association_clause(thesis_id=selected_thesis_id)
+            clauses.append(sql); params.extend(values)
+        if any(args.get(k) is not None for k in ('journal_number','legacy_journal_number')):
+            selected = resolve_journal_selector(conn,guild_id,user_id,
+                trade_number=number if number == args.get('journal_number') else None,
+                journal_number=args.get('journal_number'),
+                legacy_journal_number=args.get('legacy_journal_number'),allow_group=True)
+            if not selected.get('ok'):
+                return selected
+            thesis_id = selected.get('thesis_id')
+            if thesis_id not in by_thesis:
+                thesis_id = None
+            if selected_thesis_id is None:
+                selected_thesis_id = thesis_id
+            sql, values = association_clause(thesis_id=thesis_id, journal_id=selected.get('record_id'))
+            clauses.append(sql); params.extend(values)
         tag_clauses, tag_params = [], []
         if args.get('tier') is not None:
             tag_clauses.append('p.tier=?'); tag_params.append(args['tier'])
@@ -135,21 +226,30 @@ def search(db,guild_id,user_id,args,include_bytes=False):
             if args.get(field):
                 tag_clauses.append(f'LOWER(p.{field})=LOWER(?)'); tag_params.append(args[field].strip())
         if tag_clauses:
-            tagged = conn.execute('SELECT photo_id,metadata FROM journal_details WHERE guild_id=? AND user_id=? AND photo_id IS NOT NULL',
-                                  (guild_id,user_id)).fetchall()
             ids = set()
-            for row in tagged:
-                meta = json.loads(row['metadata'])
+            for jid, journal in journals.items():
+                meta = journal['metadata']
                 if all(str(meta.get(k) or '').casefold()==str(args[k]).strip().casefold()
                        for k in ('tier','entry_model','play','asset') if args.get(k) is not None):
-                    ids.add(row['photo_id'])
+                    ids.update(sources[jid])
             tag_sql = '('+' AND '.join(tag_clauses)+')'
             if ids:
                 tag_sql += ' OR p.id IN ('+','.join('?' for _ in ids)+')'
                 tag_params.extend(sorted(ids))
             clauses.append('('+tag_sql+')'); params.extend(tag_params)
         if args.get('unlinked_only'):
-            clauses.append('p.thesis_id IS NULL')
+            if by_thesis:
+                clauses.append('(p.thesis_id IS NULL OR p.thesis_id NOT IN (' + ','.join('?' for _ in by_thesis) + '))')
+                params.extend(by_thesis)
+            else:
+                clauses.append('(1=1)')
+            associated_ids = set()
+            for jid, journal in journals.items():
+                if journal.get('thesis_id') in by_thesis:
+                    associated_ids.update(sources[jid])
+            if associated_ids:
+                clauses.append('p.id NOT IN (' + ','.join('?' for _ in associated_ids) + ')')
+                params.extend(sorted(associated_ids))
         offset = max(0,int(args.get('offset') or 0))
         fields = 'p.*' if include_bytes else 'p.id,p.thesis_id,p.analysis,p.tier,p.entry_model,p.play,p.asset,p.created_at'
         rows = conn.execute(f"SELECT {fields} FROM trade_photos p WHERE {' AND '.join(clauses)} ORDER BY p.created_at DESC,p.id LIMIT 6 OFFSET ?",params+[offset]).fetchall()
@@ -157,21 +257,39 @@ def search(db,guild_id,user_id,args,include_bytes=False):
         for row in rows[:5]:
             p = dict(row)
             thesis_id = p.pop('thesis_id')
+            associated = {j.get('thesis_id') for jid,j in journals.items()
+                          if p['id'] in sources[jid] and j.get('thesis_id') in by_thesis}
+            if thesis_id in by_thesis:
+                associated.add(thesis_id)
+            if selected_thesis_id is not None and selected_thesis_id in associated:
+                thesis_id = selected_thesis_id
+            if thesis_id not in by_thesis and len(associated) == 1:
+                thesis_id = next(iter(associated))
             p['trade_number'] = numbers.get(thesis_id)
+            p['associated_trade_numbers'] = sorted(numbers[tid] for tid in associated)
             p['trade_details'] = {}
-            if thesis_id is not None:
-                trade = dict(next(t for t in trades if t['id'] == thesis_id))
+            p['journal'] = None
+            trade = by_thesis.get(thesis_id)
+            if trade is not None:
                 p['trade_details'] = {k:trade.get(k) for k in ('asset','direction','play','status','objective','thesis_invalidation')}
-                journals = conn.execute('SELECT description,rule_adherence,result_r,study_note FROM journals WHERE thesis_id=? AND guild_id=? AND user_id=? ORDER BY id DESC LIMIT 1',
-                    (thesis_id,guild_id,user_id)).fetchall()
-                p['journal'] = dict(journals[0]) if journals else None
-            linked = conn.execute('''SELECT j.description,j.rule_adherence,j.result_r,j.study_note,d.metadata
-                FROM journal_details d JOIN journals j ON j.id=d.journal_id
-                WHERE d.photo_id=? AND d.guild_id=? AND d.user_id=? AND j.guild_id=? AND j.user_id=?
-                ORDER BY d.entry_index''',(p['id'],guild_id,user_id,guild_id,user_id)).fetchall()
-            p['handwritten_journals'] = [dict(j) for j in linked]
+                linked_journals = [j for j in journals.values() if j.get('thesis_id') == thesis_id]
+                if linked_journals:
+                    from gbop_voice_web.unified_journal import canonical_journal_id
+                    canonical = canonical_journal_id(conn,guild_id,user_id,thesis_id)
+                    chosen = journals.get(canonical) or linked_journals[0]
+                    p['journal'] = {k:chosen.get(k) for k in ('description','rule_adherence','result_r','study_note')}
+                    if canonical is None:
+                        for key in tuple(p['journal']):
+                            if any(j.get(key) != chosen.get(key) for j in linked_journals):
+                                p['journal'][key] = None if key == 'result_r' else ''
+                    p['journal']['historical_projection'] = canonical is None
+            # Never dereference an unowned or dangling thesis. The owner still
+            # has access to their image and their independently owned notes.
+            linked = [j for jid,j in journals.items() if p['id'] in sources[jid]]
+            p['handwritten_journals'] = [{k:j.get(k) for k in
+                ('description','rule_adherence','result_r','study_note','metadata')} for j in linked]
             photos.append(p)
-        details = [{'trade_number':i+1,'asset':t['asset'],'play':t['play'],'status':t['status']} for i,t in enumerate(trades)]
+        details = [{'trade_number':i+1,'asset':dict(t).get('asset'),'play':dict(t).get('play'),'status':t['status']} for i,t in enumerate(trades)]
     return {'ok':True,'photos':photos,'has_more':len(rows)>5,'next_offset':offset+5,'trades':details}
 
 
@@ -202,7 +320,7 @@ def schema(name,description,properties):
 
 STR = {'type':['string','null']}
 NUM = {'type':['integer','null']}
-FILTERS = {'journal_number':NUM,'trade_number':NUM,'tier':NUM,'entry_model':STR,'play':STR,'asset':STR,
+FILTERS = {'journal_number':NUM,'legacy_journal_number':NUM,'trade_number':NUM,'tier':NUM,'entry_model':STR,'play':STR,'asset':STR,
            'unlinked_only':{'type':['boolean','null']},'offset':NUM}
 PHOTO_TOOLS = [
     schema('annotate_trade_photo','Save image analysis and tags; link to a member-visible trade number. Null tags mean unknown.',
