@@ -450,7 +450,7 @@ def _ss_source_key(row):
     return f"ss:{row['week_start']}:{row['asset']}:execution"
 
 
-def _sync_ss_observations(db, guild, user, row):
+def _sync_ss_observations(db, guild, user, row, *, connection=None):
     source_key = _ss_source_key(row)
     observed_at = row.get("updated_at") or stamp()
     mappings = [
@@ -461,7 +461,8 @@ def _sync_ss_observations(db, guild, user, row):
         ("exited_too_late", "exit_timing_late"),
     ]
 
-    with db() as conn:
+    from contextlib import nullcontext
+    with nullcontext(connection) if connection is not None else db() as conn:
         conn.execute(
             "DELETE FROM gbop_coaching_observations WHERE guild_id=? AND user_id=? AND source_key=?",
             (guild, user, source_key),
@@ -504,8 +505,10 @@ def _rowdict(row):
 
 def save_ss_review(db, guild, user, args):
     init_intelligence(db)
-    week_start = args.get("week_start") or default_ss_week_start()
-    week_start = date.fromisoformat(str(week_start)).isoformat()
+    if not args.get('asset') or not args.get('week_start'):
+        raise ValueError('Saving SS requires the exact asset and week_start of the retrieved report.')
+    from gbop_voice_web.weekly_structure import week_window
+    week_start = week_window(args['week_start'])['week_start']
     asset = _clean_asset(args.get("asset"))
 
     editable = [
@@ -518,7 +521,31 @@ def save_ss_review(db, guild, user, args):
         "prediction_miss_reason",
     ]
 
-    with db() as conn:
+    supplied = {key: value for key, value in args.items() if key in editable
+                and value is not None and (not isinstance(value, str) or value.strip())}
+    if not supplied:
+        return {"ok": False, "saved": False, "error": "No member answers supplied. Blank or skipped answers stay unknown."}
+    boolean_fields = {'over_leverage', 'trade_limit_exceeded', 'boredom_trades',
+                      'closed_too_early', 'exited_too_late', 'prediction_correct'}
+    for key, value in supplied.items():
+        if key in boolean_fields:
+            if not isinstance(value, bool):
+                raise ValueError(f'{key} must be the member-supplied true/false answer, or null.')
+        elif not isinstance(value, str):
+            raise ValueError(f'{key} must be member-supplied text, or null.')
+        else:
+            supplied[key] = value.strip()[:12000]
+    from gbop_voice_web.journal_context import journal_transaction
+    from gbop_voice_web.weekly_structure import read_report
+    report_version = args.get('report_version')
+    if not isinstance(report_version, str) or not report_version.strip():
+        raise ValueError('Read the exact completed SS report first; saving requires its asset, week_start and report_version.')
+    if report_version:
+        from gbop_voice_web.market_data import asset_name
+        asset = asset_name(asset)
+    with journal_transaction(db, args, guild, user, serialize=True) as conn:
+        if report_version and not read_report(conn, asset, week_start, report_version):
+            raise ValueError('The selected SS report does not match this asset, week and report version.')
         conn.execute(
             """INSERT INTO gbop_ss_weekly_reviews
             (guild_id,user_id,week_start,asset,created_at,updated_at)
@@ -530,9 +557,9 @@ def save_ss_review(db, guild, user, args):
         updates = []
         values = []
         for key in editable:
-            if args.get(key) is not None:
+            if key in supplied:
                 updates.append(f"{key}=?")
-                value = args[key]
+                value = supplied[key]
                 if isinstance(value, str):
                     value = value.strip()[:12000]
                 values.append(value)
@@ -586,14 +613,49 @@ def save_ss_review(db, guild, user, args):
             (guild, user, week_start, asset),
         ).fetchone()
 
-    saved = _rowdict(row)
-    _sync_ss_observations(db, guild, user, saved)
+        if report_version:
+            import json
+            latest = conn.execute("""SELECT revision,answers FROM gbop_ss_contributions
+                WHERE guild_id=? AND user_id=? AND asset=? AND week_start=? AND report_version=?
+                ORDER BY revision DESC LIMIT 1""", (guild,user,asset,week_start,report_version)).fetchone()
+            version_answers = json.loads(latest['answers']).get('answers', {}) if latest else {}
+            version_answers.update(supplied)
+            answers = json.dumps({'answers': version_answers, 'supplied_fields': sorted(supplied),
+                                  'source': 'member_reported'}, sort_keys=True, separators=(',', ':'))
+            if len(answers.encode('utf-8')) > 262144:
+                raise ValueError('These SS answers exceed the saved-report size limit; shorten this reflection before saving.')
+            # Repeating identical supplied answers is idempotent; changes append.
+            if not latest or latest['answers'] != answers:
+                revision = int(latest['revision']) + 1 if latest else 1
+                conn.execute("""INSERT INTO gbop_ss_contributions
+                    (guild_id,user_id,asset,week_start,report_version,revision,answers,created_at)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                    (guild,user,asset,week_start,report_version,revision,answers,stamp()))
+
+        saved = _rowdict(row)
+        _sync_ss_observations(db, guild, user, saved, connection=conn)
     return {
         "ok": True,
         "saved": True,
-        "review": saved,
-        "next_step": _next_ss_step(saved),
+        "review": _versioned_ss_review(version_answers, week_start, asset, report_version),
+        "review_scope": "exact_report_version",
+        "report_version": report_version,
+        "next_step": _next_ss_step(_versioned_ss_review(version_answers, week_start, asset, report_version)),
     }
+
+
+def _versioned_ss_review(answers, week_start, asset, report_version):
+    """Exact-version member view; never carry older report answers implicitly."""
+    structure = ['weekly_candle', 'closure_vs_previous', 'high_day', 'high_launchpad',
+                 'low_day', 'low_launchpad', 'structural_summary', 'next_week_hypothesis']
+    execution = ['over_leverage', 'trade_limit_exceeded', 'boredom_trades',
+                 'closed_too_early', 'exited_too_late', 'prediction_correct']
+    complete = all(answers.get(key) is not None for key in execution)
+    if complete and not answers.get('prediction_correct'):
+        complete = bool((answers.get('prediction_miss_reason') or '').strip())
+    return {**answers, 'week_start': week_start, 'asset': asset, 'report_version': report_version,
+            'structure_complete': all((answers.get(key) or '').strip() for key in structure),
+            'execution_review_complete': complete}
 
 
 def _next_ss_step(row):
@@ -607,7 +669,7 @@ def _next_ss_step(row):
         ("structural_summary", "Summarize how the week structurally formed."),
         ("next_week_hypothesis", "State the conditional next-week hypothesis."),
         ("over_leverage", "Did you over-leverage?"),
-        ("trade_limit_exceeded", "Did you exceed your permitted number of trades?"),
+        ("trade_limit_exceeded", "Did you exceed the number of permitted trades?"),
         ("boredom_trades", "Did you take any boredom trades?"),
         ("closed_too_early", "Did you close too early?"),
         ("exited_too_late", "Did you exit too late?"),
@@ -626,6 +688,27 @@ def get_ss_review(db, guild, user, args=None):
     args = args or {}
     week_start = args.get("week_start")
     asset = args.get("asset")
+
+    report_version = args.get('report_version')
+    if report_version:
+        if not asset or not week_start:
+            raise ValueError('A versioned SS read requires its exact asset and week_start.')
+        from gbop_voice_web.weekly_structure import read_report, week_window
+        from gbop_voice_web.market_data import asset_name
+        import json
+        asset = asset_name(asset)
+        week_start = week_window(week_start)['week_start']
+        with db() as conn:
+            if not read_report(conn, asset, week_start, report_version):
+                raise ValueError('No SS report matches that asset, week and report version.')
+            contribution = conn.execute("""SELECT answers FROM gbop_ss_contributions
+                WHERE guild_id=? AND user_id=? AND asset=? AND week_start=? AND report_version=?
+                ORDER BY revision DESC LIMIT 1""", (guild,user,asset,week_start,report_version)).fetchone()
+        review = (_versioned_ss_review(json.loads(contribution['answers']).get('answers', {}),
+                  week_start, asset, report_version) if contribution else None)
+        return {'ok': True, 'review': review, 'review_scope': 'exact_report_version',
+                'report_version': report_version, 'target_week_start': week_start,
+                'next_step': _next_ss_step(review) if review else 'Start with the completed weekly candle.'}
 
     with db() as conn:
         if week_start and asset:
@@ -673,6 +756,8 @@ def get_ss_review(db, guild, user, args=None):
     return {
         "ok": True,
         "review": review,
+        "review_scope": "latest_asset_week_view",
+        "version_scope_warning": "This latest asset/week view can include answers from earlier report versions. Pass report_version to assess the current report's answers and completion.",
         "target_week_start": target_week or review.get("week_start"),
         "next_step": _next_ss_step(review),
     }
@@ -1104,12 +1189,22 @@ INTELLIGENCE_PROMPT = """
 GBOP has persistent tools for Weekly Structure Study (SS) and member-specific
 coaching. SS is price-structure work, not a statistics report.
 
-When a member says "let's do SS" or "do SS":
-1. Use get_ss_review first so you resume any saved review instead of restarting.
+When a member says "tell me SS", "let's do SS", or "do SS":
+1. Use get_weekly_structure_study to read the completed quantitative report for
+   the requested asset/week, then get_ss_review with that exact asset/week/report_version
+   to resume their private reflection. The unversioned latest view may span versions.
+   If asset is missing, offer the returned asset choices. Never silently reuse a
+   different asset/week or claim incomplete observed extremes are definitive.
+   SS combines quantitative facts and the member's human launchpad/PDA/structural
+   analysis in ONE report. A missing report is not permission to invent candles.
 2. Guide the canonical SS sequence conversationally and ask only for the next
    missing fact. Use chart/image evidence when available.
-3. Call save_ss_review as facts are established so the review survives restarts.
-   Null fields mean "unchanged / not supplied this call." Never invent chart facts.
+3. Offer optional recording of the member's answers in their SS journal. Only
+   call save_ss_review when they want their supplied answers saved; pass the exact
+   report_version, asset and week_start returned by get_weekly_structure_study.
+   Null/blank means unchanged. Never auto-complete unanswered reflection fields,
+   turn SS into a trade record, or capture an unrelated DM as an SS answer.
+   Automated market facts stay in the versioned report, separate from human input.
 4. Finish the weekly candle, closure, High of Week, Low of Week, launching-pad
    levels, structural synthesis, and conditional hypothesis BEFORE the execution
    review.
@@ -1139,16 +1234,22 @@ to restore a theme. Do not permanently label or diagnose a member.
 
 INTELLIGENCE_TOOLS = [
     schema(
+        "get_weekly_structure_study",
+        "Read the versioned completed SS quantitative report and this member's optional contributions. No market or member facts are invented.",
+        {"week_start": TEXT_NULL, "asset": TEXT_NULL, "report_version": TEXT_NULL},
+    ),
+    schema(
         "get_ss_review",
-        "Read the member's latest or specified persistent Weekly Structure Study review.",
-        {"week_start": TEXT_NULL, "asset": TEXT_NULL},
+        "Read the member's SS answers. Pass asset/week/report_version for exact-version completion; omit version only for the explicitly labeled latest asset/week view.",
+        {"week_start": TEXT_NULL, "asset": TEXT_NULL, "report_version": TEXT_NULL},
     ),
     schema(
         "save_ss_review",
-        "Create/update the member's persistent SS review. Null fields leave the saved value unchanged.",
+        "Optionally save only the member-supplied SS answers for the exact asset/week/report version. Null and blank fields remain unchanged.",
         {
             "week_start": TEXT_NULL,
             "asset": TEXT_NULL,
+            "report_version": TEXT_NULL,
             "weekly_candle": TEXT_NULL,
             "closure_vs_previous": TEXT_NULL,
             "high_day": TEXT_NULL,
@@ -1196,7 +1297,9 @@ INTELLIGENCE_NAMES = {tool["name"] for tool in INTELLIGENCE_TOOLS}
 
 
 def intelligence_tool(db, guild, user, name, args):
+    from gbop_voice_web.weekly_structure import get_weekly_structure_study
     handlers = {
+        "get_weekly_structure_study": get_weekly_structure_study,
         "get_ss_review": get_ss_review,
         "save_ss_review": save_ss_review,
         "get_member_plan": get_member_plan,

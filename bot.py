@@ -66,6 +66,11 @@ from gbop_voice_web.snapshots import (
     collect_snapshot,
     daily_period,
     weekly_period,
+    shift_period,
+    format_reflections,
+    format_market_context,
+    format_coverage,
+    format_comparison,
     format_profit_factor as snapshot_profit_factor,
     format_percent as snapshot_percent,
     format_r as snapshot_r,
@@ -3400,6 +3405,23 @@ def _gbop_role_members():
     ]
 
 
+async def _authorized_scheduled_member(user_id):
+    """Refresh Discord eligibility and consent, including immediately before DM."""
+    guild = client.get_guild(GTOP_GUILD_ID)
+    if guild is None:
+        return None
+    try:
+        member = await guild.fetch_member(user_id)
+        if member.bot or not (has_member_role(member) or is_owner(member)):
+            return None
+        if await asyncio.to_thread(member_access_error, db, GTOP_GUILD_ID, user_id, GTOP_OWNER_USER_ID):
+            return None
+        return member
+    except Exception:
+        logger.warning("GBOP scheduled DM authorization unavailable user=%s", user_id)
+        return None
+
+
 async def _broadcast_gbop_dm(
     text,
     *,
@@ -3427,8 +3449,22 @@ async def _broadcast_gbop_dm(
             if delivered is not None:
                 continue
 
+        member = await _authorized_scheduled_member(member.id)
+        if member is None:
+            continue
         try:
             member_text = text
+            review_embed = None
+            if checkin_shift and shift_date:
+                try:
+                    stats = await asyncio.to_thread(
+                        collect_snapshot, db, GTOP_GUILD_ID, member.id,
+                        shift_period(shift_date, checkin_shift, GBOP_EASTERN_TZ),
+                    )
+                    review_embed = _snapshot_embed(stats)
+                except Exception:
+                    logger.exception("GBOP shift review unavailable user=%s shift=%s", member.id, checkin_shift)
+                    member_text += "\n\nYour recorded-data review is unavailable right now; no performance or adherence conclusion was made."
             if personalized_shift:
                 try:
                     member_text = await asyncio.to_thread(
@@ -3449,7 +3485,12 @@ async def _broadcast_gbop_dm(
             if news_summary:
                 member_text = (member_text + "\n\n" + news_summary)[:1900]
 
-            dm_message = await member.send(member_text)
+            member = await _authorized_scheduled_member(member.id)
+            if member is None:
+                continue
+            # The review accompanies the existing formation prompt in one DM;
+            # its original per-member delivery key also deduplicates this embed.
+            dm_message = await member.send(member_text, embed=review_embed)
             sent += 1
 
             with db() as conn:
@@ -3519,130 +3560,55 @@ async def _broadcast_gbop_dm(
 
 
 def _snapshot_embed(stats):
-    performance = stats["performance"]
-    execution = stats["execution"]
-    process = stats["process"]
-    period = stats["period"]
-
-    title = (
-        "📊 GBOP Weekly Snapshot"
-        if period["kind"] == "weekly"
-        else "📊 GBOP Daily Snapshot"
-    )
-
+    performance, execution, process, period = (stats[k] for k in ("performance", "execution", "process", "period"))
+    name = {"weekly": "Weekly Review", "daily": "Daily Snapshot", "shift": "Shift Review"}[period["kind"]]
     embed = discord.Embed(
-        title=title,
-        description=(
-            f"**{period['label']}**\n"
-            f"Net: **{snapshot_r(performance['net_r'])}** • "
-            f"Win Rate: **{snapshot_percent(performance['win_rate'])}** • "
-            f"Closed: **{performance['closed_trades']}**"
-        ),
+        title="📊 GBOP Personal " + name,
+        description=(f"**{period['label']}**\nNet recorded R: **{snapshot_r(performance['net_r'])}** • "
+                     f"Win rate: **{snapshot_percent(performance['win_rate'])}** • "
+                     f"Known R: **{performance['scored_trades']}/{performance['closed_trades']} trades**"),
         color=discord.Color.blurple(),
     )
 
-    embed.add_field(
-        name="Performance",
-        value=(
-            f"Opened: **{performance['opened_trades']}**\n"
-            f"Closed: **{performance['closed_trades']}** "
-            f"(scored {performance['scored_trades']})\n"
-            f"W / L / BE: **{performance['wins']} / "
-            f"{performance['losses']} / {performance['breakeven']}**\n"
-            f"Net R: **{snapshot_r(performance['net_r'])}**\n"
-            f"Avg Trade: **{snapshot_r(performance['avg_r'])}**\n"
-            f"Avg Win: **{snapshot_r(performance['avg_win_r'])}**\n"
-            f"Avg Loss: **{snapshot_r(performance['avg_loss_r'])}**\n"
-            f"Profit Factor: **"
-            f"{snapshot_profit_factor(performance['profit_factor'])}**\n"
-            f"Best / Worst: **{snapshot_r(performance['best_r'])} / "
-            f"{snapshot_r(performance['worst_r'])}**\n"
-            f"Max W/L Streak: **{performance['max_win_streak']} / "
-            f"{performance['max_loss_streak']}**"
-        ),
-        inline=True,
-    )
+    def field(name, value, inline=False, limit=550):
+        text = str(value)
+        embed.add_field(name=name, value=text if len(text) <= limit else text[:limit-1] + "…", inline=inline)
 
-    tier_lines = (
-        "\n".join(
-            f"• Tier {item['name']}: {item['count']} execution(s), "
-            f"{item['risk_r']:.2f}R risk"
-            for item in execution["by_tier"][:3]
-        )
-        or "No tier activity"
-    )
-
-    embed.add_field(
-        name="Risk & Execution",
-        value=(
-            f"Executions: **{execution['count']}**\n"
-            f"Risk Logged: **{execution['risk_r']:.2f}R**\n"
-            f"Avg Risk / Entry: **{snapshot_r(execution['avg_risk_r'])}**\n"
-            f"Risk Flags: **{process['risk_flags']}**\n"
-            f"Open Trades Now: **{performance['open_now']}**\n\n"
-            f"{tier_lines}"
-        ),
-        inline=True,
-    )
-
-    embed.add_field(
-        name="Process",
-        value=(
-            f"Journals: **{process['journals']}**\n"
-            f"Full Adherence: **"
-            f"{snapshot_percent(process['full_adherence_rate'])}**\n"
-            f"Followed / Partial / Violated: **"
-            f"{process['followed']} / {process['partial']} / "
-            f"{process['violated']}**\n"
-            f"Check-ins: **{process['checkins_completed']} / "
-            f"{process['checkins_expected']} completed**"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="By Session",
-        value=format_trade_breakdown(stats["by_session"], limit=4),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="By Play",
-        value=format_trade_breakdown(stats["by_play"], limit=4),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="By Asset",
-        value=format_trade_breakdown(stats["by_asset"], limit=4),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="Entry Models",
-        value=format_execution_breakdown(
-            execution["by_model"],
-            limit=4,
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name=(
-            "Next Week Focus"
-            if period["kind"] == "weekly"
-            else "Next Shift Focus"
-        ),
-        value=stats["recommendation"],
-        inline=False,
-    )
-
-    embed.set_footer(
-        text=(
-            "GBOP stats use completed trades, logged executions, journals, "
-            "risk flags, and post-shift check-ins."
-        )
-    )
+    field("Recorded Outcomes", (
+        f"W / L / BE: **{performance['wins']} / {performance['losses']} / {performance['breakeven']}**\n"
+        f"Average: **{snapshot_r(performance['avg_r'])}** • Profit factor: **{snapshot_profit_factor(performance['profit_factor'])}**\n"
+        f"Best / worst: **{snapshot_r(performance['best_r'])} / {snapshot_r(performance['worst_r'])}**\n"
+        f"Open trades now: **{performance['open_now']}** • New trade logs: **{performance['opened_trades']}**"), True)
+    field("Risk & Process", (
+        f"Execution logs: **{execution['count']}** • Known logged risk: **{snapshot_r(execution['risk_r'])}**\n"
+        f"Missing entry risk: **{execution['unknown_risk_count']}** • Recorded risk flags: **{process['risk_flags']}**\n"
+        f"Reported full adherence: **{snapshot_percent(process['full_adherence_rate'])}** "
+        f"({process['unknown']} unknown)\n"
+        f"Check-in replies: **{process['checkins_completed']}/{process['checkins_expected']} sent prompts**; "
+        "missing replies are not nonadherence."), True)
+    field("Patterns in Your Records", "\n".join(stats["patterns"]))
+    field("Feelings & Optional Self-Grades", format_reflections(stats["reflections"]), limit=950)
+    comparison = format_comparison(stats)
+    if comparison:
+        field("Prior Week • Descriptive Comparison", comparison, limit=450)
+    if period["kind"] != "shift":
+        field("By Session", format_trade_breakdown(stats["by_session"], limit=3), True, 350)
+        field("By Play", format_trade_breakdown(stats["by_play"], limit=3), True, 350)
+        field("By Asset", format_trade_breakdown(stats["by_asset"], limit=3), True, 350)
+        field("Entry Models • Logged Risk", format_execution_breakdown(execution["by_model"], limit=3), limit=350)
+    if stats["plans"]:
+        plan = stats["plans"][-1]
+        field("Your Saved Plan • Reference", f"{plan['session_date']} {plan['shift']}: {plan['plan']}\n"
+              "Plan availability alone does not prove adherence.", limit=400)
+    field("Market Context • Retained Candles", format_market_context(stats["market_context"]), limit=950)
+    field("Next Week Adjustment" if period["kind"] == "weekly" else "Next Shift Adjustment", stats["recommendation"], limit=450)
+    field("Coverage & Limits", format_coverage(stats), limit=700)
+    embed.set_footer(text="Private recorded evidence only. Unknown R, feelings and grades are not inferred; market movement is not a personal fill.")
+    # Defensive Discord total cap for exceptionally long member labels/plans.
+    while len(embed) > 5900:
+        index = max(range(len(embed.fields)), key=lambda i: len(embed.fields[i].value))
+        item = embed.fields[index]
+        embed.set_field_at(index, name=item.name, value=item.value[:max(100, len(item.value)-250)] + "…", inline=item.inline)
     return embed
 
 
@@ -3728,6 +3694,9 @@ async def _send_snapshot_event(event_key, period):
         if _snapshot_delivery_exists(event_key, member.id):
             continue
 
+        member = await _authorized_scheduled_member(member.id)
+        if member is None:
+            continue
         try:
             stats = await asyncio.to_thread(
                 collect_snapshot,
@@ -3736,6 +3705,9 @@ async def _send_snapshot_event(event_key, period):
                 member.id,
                 period,
             )
+            member = await _authorized_scheduled_member(member.id)
+            if member is None:
+                continue
             message = await member.send(
                 embed=_snapshot_embed(stats)
             )

@@ -33,7 +33,7 @@ def contextual_tools(tools):
     """Copy schemas so global market/watch tools and nonconversation users stay intact."""
     result = deepcopy(tools)
     for tool in result:
-        if tool.get('name') in WRITE_TOOLS:
+        if tool.get('name') in WRITE_TOOLS and tool.get('name') != 'save_ss_review':
             params = tool['parameters']
             params['properties']['market_reference'] = {'type': ['string', 'null'], 'enum': ['selected_review', 'selected_candle', 'none', None]}
             params['required'].append('market_reference')
@@ -653,6 +653,7 @@ class MarketConversation:
             if client_turn is not None:
                 self.client_turn = client_turn
             self.generation += 1
+            self._feeling_prompt = None
             self.pending = None
             self.intent = None
             self._required_detail = None
@@ -920,7 +921,7 @@ class MarketConversation:
                 if not self.current(ticket):
                     return self._stale()
                 wants_review = self._journal_reference is True or (reference in {'selected_review', 'selected_candle'} and self._journal_reference is None)
-                existing_journal = (name == 'edit_journal' or name == 'save_journal_entry' and
+                existing_journal = (name in {'edit_journal', 'record_trade_feeling', 'record_trade_self_grade', 'save_ss_review'} or name == 'save_journal_entry' and
                     any(args.get(key) is not None for key in ('journal_number', 'trade_number', 'legacy_journal_number'))
                     or name == 'open_trade' and args.get('trade_id') is not None)
                 if existing_journal:
@@ -944,6 +945,16 @@ class MarketConversation:
                 self._journal_results[key] = {'ok': False, 'status': 'journal_outcome_uncertain',
                     'error': 'This write was already started. Check saved journal/trade state before retrying; do not create a duplicate.'}
             result = runner(name, args)
+            if result.get('ok') and self.auth_provider:
+                from gbop_voice_web.trade_feelings import optional_prompt
+                try:
+                    prompt = optional_prompt(*self.auth_provider, name, args, result)
+                    if prompt:
+                        result = {**result, 'optional_feeling_prompt': prompt}
+                except Exception:
+                    # The requested trade save already succeeded. An optional
+                    # reflection must never induce an unsafe repeat execution.
+                    result = {**result, 'optional_feeling_prompt_unavailable': True}
             with self._lock:
                 if result.get('ok') and ticket == self.generation:
                     self._journal_results[key] = deepcopy(result)

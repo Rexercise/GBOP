@@ -56,8 +56,8 @@ Statistics use one journal outcome per linked trade, exclude study/reflection
 entries and unknown outcomes from win-rate denominators, and label mixed-entry
 trades instead of crediting every model with the full result. Undated handwritten
 trades are excluded from date-window reports. Dates use UTC for existing records;
-handwritten dates are preserved as recorded. Weekly reviews are on request, not
-scheduled broadcasts. The model asks only for missing or ambiguous details.
+handwritten dates are preserved as recorded. Weekly reviews are available on request and through the existing eligible-member
+private schedule described below. The model asks only for missing or ambiguous details.
 
 Conversational journals can retain the exact authenticated market review and
 selected candle when the member identifies it as their trade. Reported entry and
@@ -145,3 +145,110 @@ still mean Discord accepted the last message; that uncertainty is preserved.
 Per-transaction SQL has a 15-second statement timeout. Connection establishment
 has a 10-second connection timeout; pending receipts older than two
 minutes are reported as uncertain rather than promised as still progressing.
+
+## Weekly Structure Study and optional private reflection
+
+`get_weekly_structure_study` retrieves one versioned SS report combining closed
+market observations and the member's optional SS contribution. The existing
+leased watcher prepares one asset per cycle, starting one hour after Friday's
+nominal 5 PM New York close, and rechecks hourly for late retained candles. It
+stores reports without sending a new weekly SS DM. All nine assets are listed;
+BTCUSD/ETHUSD use only actual completed broker W1 intervals supplied by the
+collector. They remain explicitly unavailable until those source boundaries are
+received; no Monday/UTC or New York cutoff is guessed. The Monday week_start is
+only a reporting key around the observed interval midpoint, never an anchor.
+
+The noncrypto window is Sunday 5 PM–Friday 5 PM New York, a nominal envelope,
+not a verified broker holiday/session calendar. A later actual metals/oil reopen
+is not labeled a missing trading session. Reports disclose unobserved intervals,
+coverage and final-bar status; weekly extrema remain observed rather than
+certified full-broker-week extrema. Equal highs/lows retain ties and M1/M5 candle
+interval precision, never exact tick timing. The collector reads MT5 position 0
+then filters by proven bar-close timestamp, retaining the final already-closed
+bar across weekends while excluding any forming bar.
+
+Market OHLC/extreme facts are immutable and versioned. Launchpad/PDA explanations,
+structural synthesis and conditional next-week hypotheses remain human inputs.
+Execution reflection retains the canonical seven questions. Saving is optional,
+requires supplied answers in an authenticated member context, and binds them to
+the exact asset/week/report version; blank fields stay unknown. Corrections append
+member-only revision history and update the existing SS review. No SS save creates
+a trade, execution, risk allocation or arbitrary DM capture.
+
+Deployment requires the additive `weekly_structure_reports` migration first.
+There is no startup auto-DDL for these two tables. Both are RLS-enabled, with all
+PUBLIC/anon/authenticated privileges revoked and no browser policies. The existing
+trusted backend role receives only SELECT/INSERT. No existing security settings,
+member eligibility or tables are expanded. Roll back application code if needed;
+leave durable reports/contributions intact, rather than dropping private records.
+The migration is idempotent and uses composite primary/foreign keys and scoped
+recent-read indexes. Verify production schema, grants and advisors before release;
+local SQLite regressions do not prove PostgreSQL RLS enforcement.
+
+## Optional trade feelings
+
+In the existing private trade conversation, GBOP may briefly ask how the member
+felt after a real trade action. Answers are optional: ignoring the question does
+not divert the next message, and an explicit skip suppresses further feeling
+questions for that trade. The first prompt is offered at most once per trade;
+a later close prompt is also at most once and is suppressed within 30 minutes of
+an earlier prompt/report. It is combined with the optional SELF-grade invitation
+when that feature is present and a grade has not been supplied. No scheduled DM,
+new transcription/model call, schema, or security-permission change is added.
+
+`record_trade_feeling` appends exact member words to the canonical Trade # journal
+metadata. Each report retains its open/add/mid/close stage, member-reported time
+(or null when unknown), distinct server logging time, and source. Corrections
+append a reference to the earlier report; originals remain intact. The existing
+legacy `emotion` field is preserved rather than copied into the history. Limits
+are 500 characters per report, 32 reports per trade and the existing journal
+metadata budget; reaching a limit rejects the new report without pruning history.
+
+Text report grounding uses the current authenticated utterance; brief bare feeling
+answers require this exact conversation's immediately preceding prompt. Other
+requests, including watches, retain their ordinary route. Audio-only classification
+still relies on the existing model and does not claim an added transcript check.
+Trade identity, member access, revocation, cancellation and connection lifetime are
+checked by the existing guarded journal transaction. The model must clarify an
+uncertain trade/stage and must not infer emotion from a loss, risk or tone.
+
+Private recall/delivery includes full history. Default model-facing previews are
+bounded and label omissions. Performance reviews group exact self-reported phrases
+by stage, count one outcome per trade/group, show missing outcomes/feelings and
+label overlapping groups. These are descriptive associations, not causal claims,
+predictions, diagnoses or advice to increase risk. Synthetic tests exercise the
+production Discord/browser handlers and in-memory data, never live member records.
+## Scheduled private performance reviews
+
+Existing eligible-member daily snapshots remain at 00:15 America/New_York and
+weekly reviews at Saturday 00:20, covering Monday–Friday. Their existing retry
+windows and per-member delivery keys are unchanged. Personalized Day (09:00–12:00)
+and Night (21:00–00:00) shift reviews accompany the existing 13:00/midnight
+formation question as one DM, without another scheduled message. Fresh Discord
+membership/role and GBOP activation/revocation checks run before collecting private
+records and again immediately before sending. This adds no access or eligibility.
+
+Reviews are deterministic and read-only: one canonical outcome per Trade #;
+conflicting uncanonicalized history stays unknown; studies/reflections are excluded.
+Known R outcomes alone enter win rate and averages. Reported exit time, trade date
+(and session for shift reports), or reported entry time take precedence over
+logging time. Legacy CLOSED thesis close logs can be included as explicitly labeled
+logging activity; undated journal-only imports cannot. Logged executions/risk stay
+separate from reported fill times. Missing replies, risk flags, outcomes, feelings,
+or self-grades do not establish inactivity, adherence, psychology, or process success.
+
+Optional exact self-reported feelings and supported SELF grades appear alongside
+outcomes, with sample/missing counts and no inferred grades. Weekly comparisons
+use the prior Monday–Friday sample when there is evidence in both periods, with
+uneven coverage caveats. A saved personal plan is shown as a reference, never
+proof of adherence or a universal rule. The next adjustment uses recorded risk
+flags, explicit off-plan reports, or specific missing evidence.
+
+Market context uses retained broker candles for attributable recorded
+asset/date/shift scopes, reports closed-bar counts and full/partial/unverified
+coverage, and never equates market movement with a personal fill or profit.
+Compact reviews bound retrieval/display and explicitly count omitted windows.
+There are no paid model calls, new tables, migrations, or security changes in this
+review path. Synthetic tests: `python -m unittest tests.test_personal_reviews`;
+aggregate checks: `python -m unittest discover -s tests` and the existing CI compile
+command in `.github/workflows/gbop-tests.yml`.

@@ -10,7 +10,7 @@ import math
 
 JOURNAL_PRESENTATION_MAX_CHARS = 28000
 JOURNAL_PRESENTATION_TOOLS = {
-    'save_journal_entry', 'edit_journal', 'get_journal_history', 'find_journal_setups',
+    'record_trade_feeling', 'save_journal_entry', 'edit_journal', 'get_journal_history', 'find_journal_setups',
 }
 
 
@@ -85,7 +85,7 @@ def _review(value):
     return result
 
 
-def metadata_summary(value):
+def metadata_summary(value, result_r=None):
     """Return core reported facts and a bounded, explicitly partial audit view."""
     if not isinstance(value, dict):
         return value
@@ -95,6 +95,16 @@ def metadata_summary(value):
         'trade_date', 'reported_entry_at', 'reported_exit_at', 'reported_outcome',
         'entry_price', 'exit_price', 'stop_price', 'target_price', 'pnl', 'risk',
         'exit_reason', 'kind', 'adherence', 'emotion'))
+    feelings = value.get('feeling_history')
+    if isinstance(feelings, list):
+        result['feeling_history'] = [_exact(report, ('id', 'stage', 'feeling', 'reported_at',
+            'recorded_at', 'source', 'correction_of')) for report in feelings[-6:] if isinstance(report, dict)]
+        result['feeling_history_count'] = len(feelings)
+        result['feeling_history_details_omitted'] = len(feelings) > 6
+        result['feeling_history_note'] = 'Member reports only. Full append-only history, including corrections, remains available through send_journal_history. Unknown reported time is not logging time.'
+    if 'self_grade' in value:
+        from gbop_voice_web.trade_self_grades import self_grade_summary
+        result['self_grade'] = self_grade_summary(value, result_r)
     sources = value.get('source_attachments')
     if isinstance(sources, list):
         result['source_attachment_count'] = len(sources)
@@ -175,7 +185,7 @@ def _record(value, preview_chars=600):
             result[field] = result[field][:preview_chars]
             previews.append(field)
     if isinstance(result.get('metadata'), dict):
-        result['metadata'] = metadata_summary(result['metadata'])
+        result['metadata'] = metadata_summary(result['metadata'], result.get('result_r'))
     updates = result.get('updates')
     if isinstance(updates, list):
         result['updates'] = [_update_preview(update) for update in updates[-3:]]
