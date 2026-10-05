@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from gbop_voice_web.trade_photos import schema, STR
 from gbop_voice_web.risk_profiles import get_profile
+from gbop_voice_web.adherence import adherence_bucket as _adherence_bucket
 
 EASTERN = ZoneInfo("America/New_York")
 HALF_LIFE_DAYS = 14.0
@@ -408,18 +409,14 @@ def refresh_coaching_sources(db, guild, user, *, now_utc=None):
 
         for row in journals:
             source = f"journal:{row['id']}"
-            adherence = (row["rule_adherence"] or "").strip().lower()
-            if adherence:
-                if any(x in adherence for x in ("follow", "adher", "clean", "yes")):
-                    _upsert_observation(
-                        conn, guild, user, source, "plan_adherence", +1, 0.9,
-                        row["rule_adherence"], row["created_at"],
-                    )
-                elif any(x in adherence for x in ("partial", "deviat", "violat", "broke", "no")):
-                    _upsert_observation(
-                        conn, guild, user, source, "plan_adherence", -1, 1.0,
-                        row["rule_adherence"], row["created_at"],
-                    )
+            adherence = _adherence_bucket(row["rule_adherence"])
+            if adherence != "unknown":
+                followed = adherence == "followed"
+                _upsert_observation(
+                    conn, guild, user, source, "plan_adherence",
+                    +1 if followed else -1, 0.9 if followed else 1.0,
+                    row["rule_adherence"], row["created_at"],
+                )
             combined = " ".join(
                 x for x in (
                     row["description"] or "",
@@ -926,19 +923,6 @@ def get_member_plan(db, guild, user, args=None):
         "last_checkin": _rowdict(last_checkin),
     }
 
-
-
-def _adherence_bucket(value):
-    text = (value or "").strip().lower()
-    if not text:
-        return "unknown"
-    if "partial" in text:
-        return "partial"
-    if text in {"yes", "y", "followed", "full", "true"} or "followed" in text:
-        return "followed"
-    if text in {"no", "n", "violated", "false"} or "violat" in text:
-        return "violated"
-    return "unknown"
 
 
 def get_member_dashboard(db, guild, user, args=None):

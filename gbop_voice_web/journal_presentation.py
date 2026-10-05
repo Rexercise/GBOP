@@ -207,6 +207,12 @@ def _record(value, preview_chars=600):
             result['legacy_history_details_omitted'] = True
             result['legacy_history_note'] = ('Full original history remains saved and is available '
                 'through send_journal_history; these are only the first historical previews.')
+    photos = result.get('photos')
+    if isinstance(photos, list):
+        result['photos'] = [{**_exact(photo, ('id','asset','play','entry_model','tier','created_at')),
+                            'analysis': str(photo.get('analysis') or '')[:350]} for photo in photos[:5]]
+        result['photo_count'] = len(photos)
+        result['photo_details_omitted'] = (len(photos) > 5 or any(len(str(p.get('analysis') or '')) > 350 for p in photos))
     if previews:
         result['text_previews'] = previews
         result['text_preview_note'] = ('These fields are partial previews. Full saved journal text '
@@ -233,6 +239,16 @@ def journal_tool_payload(name, result):
         'note': 'Core member reports and market provenance only. Omitted source details are not absent.'}
     if _size(out) <= JOURNAL_PRESENTATION_MAX_CHARS:
         return out
+    if name == 'get_journal_history' and 'context_text' in result:
+        # Exact-record reads have a separate, complete text cursor. Preserve it
+        # even if the redundant structured previews exceed the model budget.
+        for key in ('journals',):
+            out[key] = [_exact(row, ('journal_number','trade_number','legacy_journal_number',
+                'record_key','is_legacy','record_kind','saved_at','reported_trade_date',
+                'photo_count','photos_available','update_count','legacy_history_count'))
+                for row in result.get(key) or []]
+        if _size(out) <= JOURNAL_PRESENTATION_MAX_CHARS:
+            return out
     # History supplies an exact cursor; find_setups has a fixed ten-result page.
     # Retain a prefix and place the next cursor at the first unsupplied record.
     next_offset = result.get('next_offset')

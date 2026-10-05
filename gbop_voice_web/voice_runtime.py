@@ -5,6 +5,7 @@ import re
 import json
 import math
 import random
+import time
 
 READ_ONLY_RECOVERY_NAMES = frozenset({
     'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_midpoint_preference', 'get_member_plan',
@@ -25,7 +26,32 @@ def recovery_options(session):
     return {'tools': tools, 'tool_choice': 'auto'} if tools else {'tool_choice': 'none'}
 
 
-async def guarded_voice_tool(session, name, args, call_id, runner, is_current=None):
+def delivery_identity(session):
+    """Identity is server-owned; tool arguments never select a receipt owner."""
+    context = getattr(session, 'market_context', None)
+    return (getattr(getattr(session, 'member', None), 'id', None),
+            tuple(getattr(context, 'owner', ()) or ()), getattr(context, 'session_id', None))
+
+
+def delivery_receipt_fingerprint(receipt):
+    from gbop_voice_web.delivery_receipts import SAFE_FIELDS
+    return json.dumps({k: v for k, v in receipt.items() if k in SAFE_FIELDS},
+                      sort_keys=True, separators=(',', ':'))
+
+
+def delivery_result_reported(session, result):
+    """A successful function output already grounds subsequent status questions."""
+    from gbop_voice_web.delivery_receipts import TERMINAL
+    entry = getattr(session, '_delivery_recovery', None)
+    if (entry and entry.get('receipt') and isinstance(result, dict)
+            and entry['identity'] == delivery_identity(session)
+            and result.get('receipt_id') == entry['receipt'].get('receipt_id')):
+        entry['published'] = delivery_receipt_fingerprint(result)
+        entry['reported_terminal'] = result.get('status') in TERMINAL
+
+
+async def guarded_voice_tool(session, name, args, call_id, runner, is_current=None,
+                             receipt_reader=None):
     """At-most-once per call ID; private deliveries once per turn/arguments.
 
     Reads and deliveries retain the normal fresh member-access check in runner.
@@ -40,9 +66,7 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
     if (turn != getattr(session, '_voice_turn_count', 0)
             or (is_current is not None and not is_current())):
         return {'ok': False, 'error': 'This voice request is no longer current.'}
-    context = getattr(session, 'market_context', None)
-    identity = (getattr(getattr(session, 'member', None), 'id', None),
-                tuple(getattr(context, 'owner', ()) or ()), getattr(context, 'session_id', None))
+    identity = delivery_identity(session)
     previous_identity = getattr(session, '_tool_identity', identity)
     if previous_identity != identity:
         return {'ok': False, 'error': 'This tool cache belongs to an earlier authenticated session. Reconnect before continuing.'}
@@ -68,8 +92,15 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
     else:
         # Mark delivery uncertain before starting network I/O; never blindly repeat
         # a timed-out DM, including when the response itself is retried.
+        recovery = None
         if name in PRIVATE_DELIVERY_NAMES:
             deliveries[key] = {'ok': False, 'sent_count': 0, 'error': 'Prior delivery outcome is uncertain; it was not automatically repeated.'}
+            recovery = dict(identity=identity, turn=turn, websocket=getattr(session, 'websocket', None),
+                            started=time.monotonic(), tool=name, receipt=None, reader=receipt_reader,
+                            published=None, reported_terminal=False)
+            # Only the latest requested operation is relevant for implicit voice
+            # recovery. Explicit status lookups can retrieve older receipts.
+            session._delivery_recovery = recovery
         cache[call_id] = {'ok': False, 'error': 'The earlier action outcome is uncertain. Check saved state before retrying.'}
         result = await runner()
         if name in PRIVATE_DELIVERY_NAMES:
@@ -80,6 +111,12 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
             receipt_key = result.get('receipt_id') or str(key)
             receipts[receipt_key] = {k: v for k, v in result.items() if k in SAFE_FIELDS}
             session._delivery_receipts = dict(list(receipts.items())[-20:])
+            recovery['receipt'] = receipts[receipt_key]
+            work = getattr(session, 'tool_work', None)
+            if work is not None:
+                # Queue context only. The interrupted function output and audio
+                # remain fenced; this never requests another response or send.
+                work.recover_delivery()
             print('[GBOP-DELIVERY]', name, 'status=', result.get('status', 'unknown'),
                   'sent_count=', result.get('sent_count', 0),
                   'uncertain=', bool(result.get('delivery_uncertain')))

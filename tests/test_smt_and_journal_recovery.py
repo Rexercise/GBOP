@@ -236,11 +236,14 @@ class JournalRecallTests(unittest.TestCase):
         self.assertIsNone(next(r for r in rows if r.get('journal_id') == 9)['trade_id'])
 
     def test_private_delivery_uses_authenticated_recipient_and_disables_mentions(self):
-        client=Mock(); client.post.side_effect=[NS(status_code=200,json=lambda:{'id':'dm'}),NS(status_code=200),NS(status_code=200)]
+        # This legacy schema cannot retrieve metadata/photos; delivery must
+        # report a partial bundle rather than claim missing context was sent.
+        client=Mock(); client.post.return_value=NS(status_code=200,json=lambda:{'id':'dm'})
         with patch.dict(os.environ,{'DISCORD_TOKEN':'test-only'}), patch('httpx.Client') as factory:
             factory.return_value.__enter__.return_value=client
             r=send_history(self.db,1,200,{'user_id':100,'recipient_id':100})
-        self.assertTrue(r['ok']); self.assertEqual(r['sent_count'],2)
+        self.assertFalse(r['ok']); self.assertEqual(r['status'],'partial')
+        self.assertGreater(r['text_sent_count'],0); self.assertEqual(r['photo_sent_count'],0)
         self.assertEqual(client.post.call_args_list[0].kwargs['json']['recipient_id'],'200')
         for call in client.post.call_args_list[1:]:
             self.assertEqual(call.kwargs['json']['allowed_mentions'],{'parse':[]})
@@ -272,7 +275,8 @@ class JournalRecallTests(unittest.TestCase):
 
     def test_new_tool_has_no_recipient_or_owner_override(self):
         props=JOURNAL_RECALL_TOOLS[0]['parameters']['properties']
-        self.assertEqual(set(props),{'limit','offset','trade_number','journal_number','legacy_journal_number','delivery_action'})
+        self.assertEqual(set(props),{'limit','offset','trade_number','journal_number','legacy_journal_number','delivery_action',
+                                    'latest','date_basis','detail_offset','include_photos'})
 
     def test_both_platforms_use_shared_member_scoped_recall(self):
         for path,name in [('bot.py','ai_get_journal_history'),('gbop_voice_web/server.py','tool_get_journal_history')]:
