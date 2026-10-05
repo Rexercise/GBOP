@@ -95,6 +95,22 @@ No execution is created by a handwritten journal import. Deletion uses an explic
 confirmed preview of the entire linked record; a changed record needs a fresh preview.
 Trade-linked images follow existing deletion behavior; unrelated library images remain.
 
+## Young Lefty across markets
+
+“See any Young Leftys anywhere?” runs `scan_young_lefty` once across all nine
+supported instruments. “Any other pair with a Young Lefty?” excludes the selected
+instrument. “Whatever is applicable” continues an immediately preceding scan.
+Text turns prefetch the evidence; audio-only intent still depends on the model
+calling the same tool. This is an on-request scan, not a subscription.
+
+The scan retains the reviewed New York date, shift and cutoff, or uses the
+current New York window if none is selected. Explicit today/tonight/now requests
+refresh the cutoff. Each instrument uses its own 7 AM/PM H1 reference and source
+coverage. Missing/forming evidence is separate from verified absence; invalidated
+ranges retain their earlier delivery facts. Results do not establish pre-9 entry
+permission, a fill or a member result. Choose a named result before linking a
+journal; the scan never assigns an arbitrary market to a trade.
+
 ## One trade, one journal
 
 A member's displayed Trade # identifies the thesis and its journal together.

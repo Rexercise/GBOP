@@ -337,6 +337,11 @@ FRACTAL_ARGS = {
 }
 
 MARKET_TOOLS = [
+    schema('scan_young_lefty', 'On explicit anywhere/any other pair/whatever applicable Young Lefty requests, scan all supported instruments once. Preserve the reviewed NY date/shift/cutoff; null scope uses current NY day/window, never latest completed data. exclude_asset omits the already-reviewed market for other-pair requests. Missing evidence is not absence. Read-only, no alerts or trades.', {
+        'date_ny': {'type': ['string', 'null']},
+        'shift': {'type': ['string', 'null'], 'enum': ['day', 'night', None]},
+        'through_ny': {'type': ['string', 'null']},
+        'exclude_asset': {'type': ['string', 'null']}}),
     schema('review_current_market', 'On demand for what do you see/now/current market questions. Uses actual NY time and latest received evidence, including pre-shift/forming/off-shift ranges; never substitutes a completed shift. Null anchor/timeframe uses current session references. For custom/higher timeframes provide both verified chart anchor and timeframe. No automatic fractal scan. Follow-up detail/journals retain returned cutoff; refresh only for a new current request.', {
         'asset': {'type': 'string'}, 'anchor_start_ny': {'type': ['string', 'null']},
         'anchor_timeframe': {'type': ['string', 'null']}, 'confirmation_timeframe': {'type': ['string', 'null']}}),
@@ -663,6 +668,9 @@ def market_tool(db, name, args, now=None):
     try:
         if name not in MARKET_NAMES:
             return {'ok': False, 'error': 'Unknown market tool.'}
+        if name == 'scan_young_lefty':
+            from gbop_voice_web.market_scan import scan_young_lefty
+            return scan_young_lefty(db, args, now)
         if name == 'review_market_smt':
             return paired_market_review(db, args['asset'], args['comparison_asset'],
                 parse_time(args['anchor_start_ny']), parse_time(args['through_ny']), args['anchor_timeframe'])

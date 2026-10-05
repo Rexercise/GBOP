@@ -438,6 +438,9 @@ class MarketConversation:
         self.detail_focus = None
         self._required_detail = None
         self._required_current = False
+        self._scan_request = None
+        self._scan_result = None
+        self._previous_scan = None
         self._current_result = None
         self._current_result_generation = -1
         self._turn_now = None
@@ -499,10 +502,36 @@ class MarketConversation:
                            _text_intent(text, self.requested or self.selected, self._turn_now)
                            if text is not None else None)
             self._required_current = not correction and is_current_request(text)
+            from gbop_voice_web.market_scan import scan_intent, scan_args
+            previous_scan = self._previous_scan
+            previous_scan_result = self._scan_result
+            self._scan_request = (scan_args(text, (self.intent or {}).get('fields', {}),
+                self.selected, self._turn_now, previous_scan)
+                if not correction and scan_intent(text, bool(previous_scan)) else None)
+            self._scan_result = None
+            self._previous_scan = self._scan_request if text is not None else previous_scan
+            if self._scan_request is not None:
+                self._required_current = False
+            elif (previous_scan_result and not correction and not self._required_current
+                    and (self.intent or {}).get('fields', {}).get('asset')
+                    and re.search(r'\b(?:what about|tell me|review|show|explain|inspect)\b', text or '', re.I)):
+                fields = self.intent['fields']
+                if (not any(k in fields for k in ('anchor_start_ny', 'anchor_timeframe'))
+                        and all(k not in fields or fields[k] == previous_scan_result.get(k)
+                                for k in ('date_ny', 'shift'))):
+                    row = next((r for r in previous_scan_result.get('results', [])
+                                if r.get('asset') == fields['asset']), {})
+                    detail = row.get('evidence', {}).get('detail_request', {}).get('args')
+                    if detail:
+                        fields.update({k: detail[k] for k in DETAIL_SCOPE_KEYS})
+                        fields.update({k: previous_scan_result[k] for k in ('date_ny', 'shift')})
+                        self.intent['action'] = 'switch'
             self._required_other = (not correction and not self._required_current and _other_ranges_intent(text)
                                     and bool(self.selected or self.requested or (self.intent or {}).get('fields')))
             self._required_active = (not correction and not self._required_current
                                      and not self._required_other and _active_range_intent(text))
+            if self._scan_request is not None:
+                self._required_other = self._required_active = False
             if (not correction and text is not None and (self.selected or {}).get('review_mode') == 'current_market'
                     and re.search(r'\b(?:recap|(?:whole|entire|completed) shift)\b', text.lower())):
                 self.intent['action'] = 'switch'
@@ -522,6 +551,8 @@ class MarketConversation:
             self._required_detail = (_detail_intent(text, previous_focus)
                 if text is not None and not correction and not self._journal_reference and not self._required_current
                 and not self._required_other and not self._required_active else None)
+            if self._scan_request is not None:
+                self._required_detail = None
             if (self.intent or {}).get('action') == 'reset':
                 self.reset_discussion(self.requested or self.selected)
             if self._required_current:
@@ -539,6 +570,9 @@ class MarketConversation:
         # Audio begin_turn(None) has no transcript; its routing remains model-dependent.
         from gbop_voice_web.candle_evidence import parse_time
         with self._lock:
+            if not self.closed and self._scan_request is not None:
+                return {'tool': 'scan_young_lefty', 'query_purpose': 'cross_asset_scan',
+                        'args': deepcopy(self._scan_request), 'status': 'ready'}
             if not self.closed and self._required_current and self._current_result_generation != self.generation:
                 base = {'tool': 'review_current_market', 'query_purpose': 'current_market'}
                 try:
@@ -658,6 +692,7 @@ class MarketConversation:
             self.intent = None
             self._required_detail = None
             self._required_current = False
+            self._scan_request = self._scan_result = self._previous_scan = None
             self._required_other = False
             self._required_active = False
             self._other_result = None
@@ -1042,8 +1077,30 @@ class MarketConversation:
         from gbop_voice_web.delivery_receipts import PRIVATE_DELIVERY_NAMES, run_delivery
         if name in PRIVATE_DELIVERY_NAMES:
             return run_delivery(self, name, arguments, runner, generation=ticket)
+        if self._scan_request is not None and name in SCOPED_TOOLS:
+            return {'ok': False, 'status': 'cross_asset_scan_required',
+                    'next_tool': 'scan_young_lefty', 'next_arguments': deepcopy(self._scan_request),
+                    'error': 'Check all requested instruments before claiming only one market has a setup.'}
         if name == 'review_other_market_ranges':
             return self._run_other_ranges(arguments, runner, ticket)
+        if name == 'scan_young_lefty':
+            with self._lock:
+                if self._scan_result is not None:
+                    return deepcopy(self._scan_result)
+                args = deepcopy(self._scan_request)
+                if args is None:
+                    from gbop_voice_web.market_scan import scan_args
+                    args = scan_args('', {}, active, self._turn_now or time.time(), self._previous_scan)
+                    args.update({k: v for k, v in arguments.items()
+                                 if k in ('date_ny', 'shift', 'through_ny', 'exclude_asset') and v is not None})
+            result = runner(name, args)
+            with self._lock:
+                if not self.current(ticket):
+                    return self._stale()
+                self._scan_result = deepcopy(result)
+                self._previous_scan = {**args, 'through_ny': result.get('through_ny', args.get('through_ny'))}
+                self._journal_review = None  # A multi-market scan identifies no single member trade.
+            return result
         if (self._required_other or self._required_active) and name in SCOPED_TOOLS:
             request = self.required_evidence_request()
             return {'ok': False, 'status': 'market_active_range_required' if self._required_active else 'market_other_ranges_required',
