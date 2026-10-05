@@ -59,7 +59,11 @@ class CurrentMarketTests(unittest.TestCase):
         seven, eight = review['ranges']
         self.assertEqual(seven['setup_status'], 'initiated')
         self.assertIsNone(seven['invalidated_at_ny'])
-        self.assertEqual(seven['variant']['status'], 'pending')
+        # This synthetic purge also touches the opposing boundary in the same
+        # source bar; partial H1 evidence cannot resolve that first-touch order.
+        self.assertEqual(seven['opposing_liquidity']['status'], 'same_bar_order_unknown')
+        self.assertEqual(seven['variant']['status'], 'unverified')
+        self.assertEqual(seven['variant']['explanation']['status'], 'unverified')
         self.assertEqual(eight['setup_status'], 'pending_reference_close')
         self.assertTrue(eight['anchor']['forming'])
         self.assertFalse(eight['anchor']['complete'])

@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from gbop_voice_web.candle_naming import objective_identity
 from gbop_voice_web.candle_evidence import summarize, crt_review, stamp, parse_time
 from gbop_voice_web.shift_narrative import classify_structure, build_shift_recap
+from gbop_voice_web.variant_explanation import variant_explanation
 
 NY = ZoneInfo('America/New_York')
 
@@ -133,6 +134,7 @@ def review_shift(bars, day, shift, step=300):
                        'observation_coverage': range_coverage})
     for row in ranges:
         row['variant_evidence'] = classify_structure(row, bars, end, step)
+        row['variant_evidence']['explanation'] = variant_explanation(row, bars, end, step)
     story = {'start_ny': stamp(start), 'end_ny': stamp(end),
             'coverage': summarize(bars, start, end, step),
             'hourly_progression': ledger, 'range_transitions': transitions, 'ranges': ranges,

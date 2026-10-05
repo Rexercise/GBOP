@@ -9,20 +9,31 @@ Only the existing configured GBOP owner can use it, in the configured G.T.O.P gu
 Recipients see the heading **GBOP Message**, sent by the GBOP bot.
 
 - `audience:all` previews all currently eligible members.
-- `audience:selected members:@Alice,@Bob` previews only the selected members.
+- `audience:selected members:@Alice,@Bob` previews only those current human server members, even without GBOP access.
+- `audience:all_server_members` previews all current human server members, with or without GBOP access.
 - `audience:all_except members:@Alice,@Bob` previews all eligible members except those selected.
 
 The `members` option accepts exact user mentions or Discord user IDs separated by
 spaces or commas. It does not guess from names or accept role mentions. An invalid
-or ineligible selected ID blocks the preview instead of silently changing its scope.
-Current eligibility uses the existing role, activation, leadership acknowledgement,
-revocation, and owner rules. Stored profiles of former members are not recipients.
+or unverified selected ID blocks the preview instead of silently changing its scope.
+For `all` (the default) and `all_except`, current eligibility still uses the existing
+role, activation, leadership acknowledgement, revocation, and owner rules. Explicit
+`selected` and `all_server_members` recipients need only be verified current human members of G.T.O.P; they
+can receive the message without the GBOP role, activation, or unrevoked GBOP access.
+Receiving a message does not create or update their GBOP profile, activate them,
+grant a role, or change their access. Replies still use the existing GBOP access
+checks. Bots, external users, and stored profiles of former members are not recipients.
 
 The preview displays the exact outgoing message and names plus IDs for every
 recipient. Review all recipient pages, then press **Confirm send**, or **Cancel**.
 Previews expire after ten minutes. Messages above 1,800 characters are rejected
-rather than shortened. Newly eligible members are not added after preview; access
-is refreshed immediately before each DM and unverified recipients are skipped.
+rather than shortened. New recipients are not added after preview; current human
+guild membership is refreshed immediately before each `selected`/`all_server_members` DM, and full GBOP
+eligibility is refreshed for `all`/`all_except`. Unverified recipients are skipped.
+Discord DM privacy settings remain enforced; blocked DMs are not bypassed.
+Server-wide audiences require a fresh complete member list; an incomplete or failed
+lookup blocks the preview. All sends are sequential through Discord's rate-limit
+handling, not a simultaneous burst. Large audiences may take time to review and deliver.
 Repeated confirmation clicks cannot resend the same preview. Delivery errors are
 reported as unconfirmed; GBOP does not start a new attempt after an error. No database migration,
 new credential, or permission change is needed. Scheduled shift messages are unchanged.
@@ -314,3 +325,22 @@ There are no paid model calls, new tables, migrations, or security changes in th
 review path. Synthetic tests: `python -m unittest tests.test_personal_reviews`;
 aggregate checks: `python -m unittest discover -s tests` and the existing CI compile
 command in `.github/workflows/gbop-tests.yml`.
+
+
+### Range variant explanations
+
+Ordinary shift reviews name each supported completed variant and briefly explain
+its actual H1 sequence. During a developing range, shift and current-market facts
+carry only evidence-supported candidate paths, their observed reason, and the
+remaining close/delivery conditions. Multiple possibilities remain conditional;
+no purge, missing evidence, or unresolved source-bar order cannot establish a
+unique completion variant. A forming reference is not a valid range.
+
+The established classifier and selected-range transition rules are unchanged.
+V4/V5 inside-bar and V6 re-soup structures can be known before full delivery.
+Delivery time, structural confirmation, later invalidation, and member execution
+remain separate facts. V1/V2/V3 still require the classifier's complete H1 evidence;
+partial targets never become completed variants. Compact voice keeps the same
+scope, candidate evidence and existing response budgets; exact detail stays
+available through the range's detail request. No model, broker, or member writes
+are added by this presentation layer.

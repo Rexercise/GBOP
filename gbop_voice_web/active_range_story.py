@@ -8,6 +8,7 @@ from datetime import datetime
 
 from gbop_voice_web.candle_evidence import parse_time, stamp
 from gbop_voice_web.candle_naming import candle_label, source_timeframe
+from gbop_voice_web.variant_explanation import variant_clause
 from gbop_voice_web.target_approach import owner_inducement_example, inducement_clause
 
 
@@ -165,7 +166,9 @@ def selected_range_story(story, row, fact, asset=None):
     variant = row.get('variant_evidence', {})
     codes = [v['code'] for v in fact.get('variant', {}).get('labels', [])]
     distribution = variant.get('distribution_hour_ny')
-    variant_known = stamp(parse_time(distribution) + 3600) if distribution and codes else None
+    variant_known = fact.get('variant', {}).get('explanation', {}).get('known_at_ny')
+    if variant_known is None and distribution and codes:
+        variant_known = stamp(parse_time(distribution) + 3600)
     selection_start = row.get('selected_at_ny')
     if selection_start and parse_time(selection_start) >= parse_time(story['end_ny']):
         intro = f"The {name} became selected at the {_clock(story['end_ny'])} cutoff; no later setup or delivery evidence is available."
@@ -176,11 +179,9 @@ def selected_range_story(story, row, fact, asset=None):
         if not verified:
             intro = f"The {name} was selected; later progression has missing or unfinished evidence."
     text = ' '.join([intro] + clauses)
-    if codes:
-        text += ' The completed H1 sequence supports ' + '/'.join(codes)
-        text += f" at the {_clock(variant_known)} close." if variant_known else ' at this review cutoff.'
-    elif conclusion['status'] == 'pending_at_review_cutoff':
-        text += ' Its directional outcome and variant remain pending at the cutoff.'
+    text += ' ' + variant_clause(fact.get('variant', {}), include_known=True) + '.'
+    if conclusion['status'] == 'pending_at_review_cutoff':
+        text += ' Its directional outcome remains pending at the cutoff.'
     elif conclusion['status'] == 'unverified':
         text += ' Missing evidence leaves its outcome unverified.'
     if invalid:

@@ -1,7 +1,8 @@
 """Immutable owner-message previews; no storage, credentials, or transport.
 
-Only the explicitly previewed IDs may be delivered to. Discord/GBOP eligibility
-is resolved by the caller before building a draft and again before each send.
+Only the explicitly previewed IDs may be delivered to. The caller verifies
+current human guild membership for selected/all_server_members recipients and
+GBOP eligibility for all/all_except, before the draft and again before each send.
 """
 from dataclasses import dataclass
 import re
@@ -9,7 +10,8 @@ import re
 
 AUDIENCE_LABELS = {
     'all': 'All currently eligible members',
-    'selected': 'Selected members only',
+    'selected': 'Selected server members only',
+    'all_server_members': 'All current human server members (with or without GBOP access)',
     'all_except': 'All eligible members except selected members',
 }
 PREVIEW_SECONDS = 600
@@ -20,9 +22,9 @@ MESSAGE_HEADER = '📣 **GBOP Message**\n\n'
 def parse_selection(audience, raw):
     """Accept exact user mentions/IDs, never ambiguous names or role mentions."""
     if audience not in AUDIENCE_LABELS:
-        raise ValueError('Choose all, selected, or all_except for the audience.')
+        raise ValueError('Choose all, selected, all_server_members, or all_except for the audience.')
     raw = (raw or '').strip()
-    if audience == 'all':
+    if audience in ('all', 'all_server_members'):
         if raw:
             raise ValueError('Use selected or all_except when providing members.')
         return ()
@@ -82,14 +84,17 @@ def build_draft(owner_id, guild_id, text, audience, selected_ids, eligible):
         raise ValueError('Unknown audience.')
     available = {int(member.id): member for member in eligible}
     selected = set(selected_ids)
-    if (audience == 'all' and selected) or (audience != 'all' and not selected):
+    if (audience in ('all', 'all_server_members') and selected
+            or audience in ('selected', 'all_except') and not selected):
         raise ValueError('The audience and member selection do not match.')
     missing = selected - available.keys()
     if missing:
         labels = ', '.join(str(value) for value in sorted(missing)[:20])
         if len(missing) > 20:
             labels += f' (and {len(missing) - 20} more)'
-        raise ValueError('These selected IDs are not currently eligible or could not be verified: '
+        requirement = ('not verified current human members of G.T.O.P' if audience == 'selected'
+                       else 'not currently eligible or could not be verified')
+        raise ValueError(f'These selected IDs are {requirement}: '
                          + labels + '. Update the selection and preview again.')
     if audience == 'selected':
         recipient_ids = selected

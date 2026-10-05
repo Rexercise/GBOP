@@ -5,6 +5,7 @@ Distribution timing uses the opposing-liquidity objective; midpoint-only deliver
 is reported separately. Unordered source bars cannot prove a completed variant.
 """
 from datetime import datetime
+from gbop_voice_web.variant_explanation import variant_explanation, variant_clause
 from gbop_voice_web.candle_evidence import parse_time, summarize, interval
 from gbop_voice_web.smt_reference import closing_candle
 from gbop_voice_web.candle_naming import candle_label, source_timeframe, objective_identity, range_label
@@ -134,6 +135,8 @@ def attach_directional_outcome(review, bars, end, step):
         row = {**review, 'direction_observed': outcome['direction'],
                'invalidated_at_ny': review.get('invalidated_at_ny'), 'objectives': range_objectives(review)}
         review['variant_evidence'] = classify_structure(row, bars, end, step)
+        row['variant_evidence'] = review['variant_evidence']
+        review['variant_evidence']['explanation'] = variant_explanation(row, bars, end, step)
     if 'role' not in review:
         review.setdefault('recap', {}).update(headline=outcome['spoken_summary'],
             spoken_summary=outcome['spoken_summary'], evidence_precedence='local_directional_outcome_first')
@@ -298,8 +301,8 @@ def named_hourly_range_summary(row, cutoff, progression=()):
         parts.append(f"{name[0].upper() + name[1:]} was invalidated by {invalidating_label(row)}"
                      + ('; earlier delivery stays recorded.' if earlier else '.'))
     variants = row['variant_evidence']['labels']
-    if variants:
-        parts.append('Its verified H1 structure supports ' + ', '.join(f"{v['code']} {v['name']}" for v in variants) + '.')
+    if variants or row['variant_evidence'].get('explanation', {}).get('candidates'):
+        parts.append(variant_clause(row['variant_evidence'], include_known=True) + '.')
     return ' '.join(parts)
 
 
@@ -365,8 +368,8 @@ def build_shift_recap(story):
             else:
                 parts.append('Available candles do not establish a later purge or completed setup.')
             variants = row['variant_evidence']['labels']
-            if variants:
-                parts.append('The observed H1 structure supports ' + ', '.join(f"{v['code']} {v['name']}" for v in variants) + '.')
+            if variants or row['variant_evidence'].get('explanation', {}).get('candidates'):
+                parts.append(variant_clause(row['variant_evidence'], include_known=True) + '.')
             # Repeat excursions are observed hindrances, not an invented V6.
             repeats = [d for d in row['sweep_detail'] if d['excursions_in_available_bars'] > 1
                        and d['side'] == ('buy' if direction == 'bearish' else 'sell')]
@@ -389,8 +392,8 @@ def build_shift_recap(story):
         else:
             select_text += '; no directional setup is established in the available candles'
         labels = row['variant_evidence']['labels']
-        if labels:
-            select_text += ', supporting ' + ', '.join(f"{v['code']} {v['name']}" for v in labels)
+        if labels or row['variant_evidence'].get('explanation', {}).get('candidates'):
+            select_text += '. ' + variant_clause(row['variant_evidence'], include_known=True)
         brief.append(select_text + '.')
         returned = next((x for x in row['sweep_detail'] if x['side'] == ('buy' if row['direction_observed'] == 'bearish' else 'sell')
                          and x['first_source_close_back_inside_ny']), None)
