@@ -1009,7 +1009,7 @@ TOOLS.extend(DELIVERY_TOOLS)
 TOOLS.extend(MIDPOINT_TOOLS)
 for _recall_tool in TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
-        _recall_tool['description'] = 'Read complete connected journal context: executions, notes, feelings, SELF grade and photo notes. Use latest trade versus latest journal and explicit date basis. Follow read-only context_text pages before summarizing; never send a DM for a question.'
+        _recall_tool['description'] = 'List every owned trade/journal number with view=index, no identifiers needed; follow has_more/next_offset. Linked Trade # journals and standalone Legacy journals are distinct. view=detail reads executions, notes, feelings, SELF grade and photo notes. Latest trade differs from latest journal. Follow context_text pages; never send a DM for a question.'
         _recall_tool['parameters']['properties'].update(RECALL_SELECTORS)
         _recall_tool['parameters']['required'].extend(k for k in RECALL_SELECTORS if k not in _recall_tool['parameters']['required'])
         _recall_tool['parameters']['properties']['offset'] = {'type': ['integer', 'null']}

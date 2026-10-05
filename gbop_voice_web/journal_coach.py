@@ -14,7 +14,7 @@ from gbop_voice_web.trade_photos import init_photos, schema, STR, NUM
 from gbop_voice_web.journal_context import (REPORTED_KEYS, validate_reported, binding,
     merge_metadata, journal_transaction, JournalTarget)
 
-from gbop_voice_web.trade_self_grades import SELF_GRADE_PROMPT, SELF_GRADE_TOOLS, record_self_grade
+from gbop_voice_web.trade_self_grades import SELF_GRADE_PROMPT, SELF_GRADE_TOOLS, record_self_grade, self_grade_summary, self_grade_counts
 
 COACH_PROMPT = """
 You are GTOP's GBOP — Greatest Bot on the Planet.
@@ -44,6 +44,12 @@ Use save_shift_plan/get_shift_plans for pre-shift planning: range, thesis,
 invalidation, target, chosen risk budget, personal trade limit and stop time.
 Use get_performance_review for comparisons or weekly coaching (days=7). Report
 sample size, missing outcomes, total/average R and one evidence-based adjustment.
+The summary counts review entries, which may include standalone legacy journals.
+Use record_counts to separate linked trades from legacy entries; self_grades counts
+linked trades only, while legacy_self_grades is separate. Adherence is not a SELF
+grade. Types 1–4 and ungraded are explicit member assessments, never inferred.
+To enumerate all records, use get_journal_history view=index and its next_offset;
+do not ask the member to supply identifiers that this read-only index can retrieve.
 Warnings are prompts, not diagnoses: do not infer tilt from a losing trade. Separate
 member-reported FOMO/boredom from measured activity and recorded risk flags. Never
 recommend increasing risk to recover losses. Compare saved plans with journal facts;
@@ -374,6 +380,8 @@ def performance(db,guild,user,args):
             outcomes=[r['result_r'] for r in history]
             chosen['result_r']=outcomes[0] if all(v==outcomes[0] for v in outcomes) else None
             chosen['legacy_outcome_conflict']=len(set(outcomes))>1
+            chosen['metadata']=dict(chosen['metadata'])
+            chosen['metadata'].pop('self_grade',None)  # No canonical assessment among conflicting history.
         if chosen['metadata'].get('kind','trade' if chosen.get('thesis_id') else 'reflection')=='trade':
             unique[key]=chosen
     days=args.get('days')
@@ -388,17 +396,29 @@ def performance(db,guild,user,args):
             continue
         selected.append(r)
     group=args.get('group_by') or 'entry_model'
-    if group not in ('entry_model','tier','play','asset','session'):
-        return {'ok':False,'error':'Unsupported grouping.'}
+    if group not in ('entry_model','tier','play','asset','session','self_grade'):
+        return {'ok':False,'error':'Unsupported grouping. Use entry_model, tier, play, asset, session, or self_grade.'}
     groups=defaultdict(list)
     for r in selected:
-        groups[str(r['metadata'].get(group) or 'Unknown')].append(r)
-    adherence=Counter(r['metadata'].get('adherence') or 'unknown' for r in selected)
+        assessment=self_grade_summary(r['metadata'],r.get('result_r'))
+        label=((assessment or {}).get('type') or 'ungraded') if group=='self_grade' else str(r['metadata'].get(group) or 'Unknown')
+        groups[label].append(r)
+    # Only explicit structured adherence labels; no inference from prose or P/L.
+    adherence=Counter((r['metadata'].get('adherence') or r.get('rule_adherence'))
+        if (r['metadata'].get('adherence') or r.get('rule_adherence')) in ('yes','no','partial','unknown')
+        else 'unknown' for r in selected)
+    linked=[r for r in selected if r.get('thesis_id')]
+    legacy=[r for r in selected if not r.get('thesis_id')]
     with db() as conn:
         flags=conn.execute('SELECT rule_code,message,created_at FROM risk_flags WHERE guild_id=? AND user_id=? ORDER BY id DESC LIMIT 30',(guild,user)).fetchall()
     flags=[dict(r) for r in flags if not start or r['created_at'][:10]>=start]
     return {'ok':True,'period_start':start,'date_basis':'UTC dates; handwritten trade dates preserved as written',
-            'summary':summarize(selected),'group_by':group,'groups':{k:summarize(v) for k,v in groups.items()},
+            'summary':summarize(selected),'summary_basis':'Deduplicated trade-kind review entries, including separately identified standalone legacy journals.',
+            'record_counts':{'review_entries':len(selected),'linked_trades':len(linked),'standalone_legacy_journals':len(legacy)},
+            'linked_trade_summary':summarize(linked),'legacy_journal_summary':summarize(legacy),
+            'self_grades':self_grade_counts(linked),'legacy_self_grades':self_grade_counts(legacy),
+            'record_index_request':{'tool':'get_journal_history','args':{'view':'index','offset':0,'limit':10}},
+            'group_by':group,'groups':{k:summarize(v) for k,v in groups.items()},
             'adherence':dict(adherence),'undated_entries_excluded':unknown_dates,'recent_risk_flags':flags,
             'feeling_associations':reflection_summary(selected,summarize),
             'recent_reflections':[{'journal_number':r['journal_number'],'adherence':r['rule_adherence'],'study_note':r['study_note'],
@@ -461,8 +481,8 @@ COACH_TOOLS=[
             'result_r':{'type':['number','null']},'clear_result':{'type':['boolean','null']},'study_note':STR,'metadata_json':STR}),
     schema('find_journal_setups','Search private journal examples, handwritten transcripts and labels; returns up to ten.',
            {'asset':STR,'play':STR,'entry_model':STR,'tier':NUM,'label':STR,'query':STR,'offset':NUM}),
-    schema('get_performance_review','Compute private journal statistics and evidence for coaching. days=7 for weekly; null for all history.',
-           {'days':NUM,'group_by':STR}),
+    schema('get_performance_review','Read private performance, explicit SELF type1–type4/ungraded counts for linked trades, and separate legacy counts. Adherence is not a SELF grade. days=7 for weekly; null for all history. group_by supports self_grade. Retrieve all record numbers with get_journal_history view=index, no IDs needed.',
+           {'days':NUM,'group_by':{'type':['string','null'],'enum':['entry_model','tier','play','asset','session','self_grade',None]}}),
     schema('save_shift_plan','Save the member’s stated plan for a date and day/night shift. Does not open trades or change risk settings.',
            {'session_date':{'type':'string'},'shift':{'type':'string'},'plan':{'type':'string'}}),
     schema('get_shift_plans','Read saved pre-shift plans to compare with execution and reflections.',{'session_date':STR}),

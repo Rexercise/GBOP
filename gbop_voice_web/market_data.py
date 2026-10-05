@@ -23,7 +23,8 @@ NY = ZoneInfo('America/New_York')
 ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
 ALIASES = {'NAS': 'NAS100', 'USTEC': 'NAS100', 'NASDAQ': 'NAS100', 'DJI': 'US30',
            'GOLD': 'XAUUSD', 'SILVER': 'XAGUSD', 'OIL': 'WTI', 'USOIL': 'WTI',
-           'BTC': 'BTCUSD', 'ETH': 'ETHUSD', 'US500': 'SPX', 'SP500': 'SPX',
+           'BTC': 'BTCUSD', 'BITCOIN': 'BTCUSD', 'ETH': 'ETHUSD', 'ETHEREUM': 'ETHUSD',
+           'US500': 'SPX', 'SP500': 'SPX',
            'SPX500': 'SPX', 'S&P500': 'SPX', 'S&P 500': 'SPX'}
 MAX_BYTES = 4_000_000
 MIN_WEEK_SECONDS = 6 * 86400

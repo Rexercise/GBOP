@@ -240,6 +240,16 @@ content change. No schema changes or historical journal rewrites are involved.
 
 ## Weekly Structure Study and optional private reflection
 
+For the latest completed study, `get_weekly_structure_study` takes
+`week_start=null` and `report_version=null`. Bitcoin/BTC resolves to BTCUSD;
+Ethereum/ETH resolves to ETHUSD. An exact week is a Monday reporting label,
+not necessarily the source W1 opening date. Explicit week/version selections
+remain exact and never fall back to another report. A missing saved report is
+`report_not_prepared`; a missing version within an existing saved week is
+`report_version_not_found`. Neither lookup result establishes that broker W1
+boundaries are unavailable. Read-only SS diagnostics log only validated
+asset/week/version identities and status, never member answers or tool payloads.
+
 `get_weekly_structure_study` retrieves one versioned SS report combining closed
 market observations and the member's optional SS contribution. The existing
 leased watcher prepares one asset per cycle, starting one hour after Friday's
@@ -363,3 +373,26 @@ partial targets never become completed variants. Compact voice keeps the same
 scope, candidate evidence and existing response budgets; exact detail stays
 available through the range's detail request. No model, broker, or member writes
 are added by this presentation layer.
+
+
+### Personal review and journal index (2026-10-05)
+
+`get_performance_review` keeps the historical review-entry total, while
+`record_counts`, `linked_trade_summary`, and `legacy_journal_summary` separate
+linked trades from standalone legacy journals. `self_grades` counts only linked
+trade assessments; `legacy_self_grades` is separate. Both report all four types
+and ungraded counts. `group_by=self_grade` is supported, and grouping still
+covers the explicitly declared review-entry scope. No assessment is inferred
+from outcome, adherence, emotion, or prose. Stored adherence labels in journal
+columns remain available when metadata omits them.
+
+For all owned record numbers, call `get_journal_history` with `view=index`, no
+record selectors, and follow `has_more` / `next_offset`. The compact index keeps
+Trade numbers and standalone Legacy journal numbers separate, with exact
+`detail_request` selectors. It avoids timeline/photo retrieval. Normal detail
+reads and explicitly authorized sends still retrieve complete context.
+
+Read-only acceptance: request the full performance review, SELF type counts and
+ungraded trades, linked-versus-legacy totals, and all record numbers without
+providing IDs. Confirm unknown R remains unknown and no records are created or
+modified. Repeat the index with multiple pages and another authenticated member.

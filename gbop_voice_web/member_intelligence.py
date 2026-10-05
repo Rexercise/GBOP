@@ -1184,6 +1184,11 @@ When a member says "tell me SS", "let's do SS", or "do SS":
 1. Use get_weekly_structure_study to read the completed quantitative report for
    the requested asset/week, then get_ss_review with that exact asset/week/report_version
    to resume their private reflection. The unversioned latest view may span versions.
+   For the latest completed study, pass week_start=null and report_version=null.
+   Do not invent a week label or version, or use the string "latest" as a version.
+   Bitcoin/BTC is BTCUSD; Ethereum/ETH is ETHUSD. Only pass an exact week/version
+   when the member selected it or it came from a retrieved report. Preserve an
+   explicit selection on a miss; do not substitute another week or version.
    If asset is missing, offer the returned asset choices. Never silently reuse a
    different asset/week or claim incomplete observed extremes are definitive.
    SS combines quantitative facts and the member's human launchpad/PDA/structural
@@ -1226,8 +1231,10 @@ to restore a theme. Do not permanently label or diagnose a member.
 INTELLIGENCE_TOOLS = [
     schema(
         "get_weekly_structure_study",
-        "Read the versioned completed SS quantitative report and this member's optional contributions. No market or member facts are invented.",
-        {"week_start": TEXT_NULL, "asset": TEXT_NULL, "report_version": TEXT_NULL},
+        "Read the versioned completed SS quantitative report and this member's optional contributions. For latest completed, pass week_start=null and report_version=null. Never invent a week or version.",
+        {"week_start": {**TEXT_NULL, "description": "Exact Monday reporting key YYYY-MM-DD only when selected; null for latest completed. This label is not the broker W1 opening date."},
+         "asset": {**TEXT_NULL, "description": "Requested asset; Bitcoin/BTC maps to BTCUSD and Ethereum/ETH maps to ETHUSD. Null lists available assets."},
+         "report_version": {**TEXT_NULL, "description": "Exact version returned by a report or explicitly selected; null for the latest revision. Never use the string latest."}},
     ),
     schema(
         "get_ss_review",

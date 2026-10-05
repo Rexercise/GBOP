@@ -86,6 +86,14 @@ def history(db, guild_id, user_id, args, *, include_photo_bytes=False):
     original text and metadata stays available in legacy_history.
     """
     from gbop_voice_web.journal_numbers import journal_display
+    view = args.get('view') or 'detail'
+    if view not in ('index','detail'):
+        return {'ok':False,'error':'Choose index or detail view.'}
+    index_view = view == 'index'
+    if index_view and any(args.get(key) is not None for key in
+            ('latest','trade_number','journal_number','legacy_journal_number','detail_offset','date_basis')):
+        return {'ok':False,'status':'index_selectors_conflict',
+                'error':'Index lists all record numbers with limit/offset only. Use view=detail for exact or latest records and date selectors.'}
     limit = max(1, min(int(args.get('limit') or 5), 20))
     offset = max(0, int(args.get('offset') or 0))
     latest = args.get('latest')
@@ -118,7 +126,7 @@ def history(db, guild_id, user_id, args, *, include_photo_bytes=False):
             if not selection.get('ok'):
                 return selection
         trade_numbers = {r['id']: n for n, r in enumerate(trades, 1)}
-        timelines, timeline_available = _trade_timelines(conn,guild_id,user_id,trade_numbers,rows)
+        timelines, timeline_available = ({tid:[] for tid in trade_numbers},True) if index_view else _trade_timelines(conn,guild_id,user_id,trade_numbers,rows)
         # Resolve all identities in bulk: remote DB round trips must not grow
         # linearly with every historical trade in a member's journal.
         canonical = {tid: None for tid in trade_numbers}
@@ -215,6 +223,8 @@ def history(db, guild_id, user_id, args, *, include_photo_bytes=False):
         view['reported_trade_date'] = _reported_trade_date(view)
         view['_sort_key'] = (view['saved_at'] or '', view.pop('_sort_id'))
     journals.sort(key=lambda r:r.pop('_sort_key'), reverse=True)
+    if index_view:
+        journals.sort(key=lambda r:(r['is_legacy'],r.get('trade_number') or r['legacy_journal_number']))
     total = len(journals)
     matching = journals
     if selection is not None:
@@ -251,7 +261,8 @@ def history(db, guild_id, user_id, args, *, include_photo_bytes=False):
     photos, photos_available = [], True
     try:
         from gbop_voice_web.journal_bundle import attach_photos
-        photos = attach_photos(db, guild_id, user_id, selected, include_bytes=include_photo_bytes)
+        if not index_view:
+            photos = attach_photos(db, guild_id, user_id, selected, include_bytes=include_photo_bytes)
     except Exception:
         photos_available = False
         for row in selected:
@@ -279,6 +290,32 @@ def history(db, guild_id, user_id, args, *, include_photo_bytes=False):
         has_more=False if latest else offset + len(selected) < len(matching), next_offset=offset + len(selected),
         identity_scope='Authenticated Discord account only; another login may have different records.',
         numbering_note='One Trade #N record includes its journal; Journal #N is an accepted alias. Separate historical entries use Legacy journal #N; ambiguous old journal numbers require clarification.')
+    if index_view:
+        from gbop_voice_web.trade_self_grades import self_grade_summary
+        index=[]
+        for row in selected:
+            item={key:row.get(key) for key in ('journal_number','trade_number','legacy_journal_number',
+                'record_kind','is_legacy','record_key','canonical_record_exists','legacy_history_count','result_r')}
+            facts=row.get('trade_facts') or {}
+            for key,value in (('asset',facts.get('asset') or row['metadata'].get('asset')),
+                              ('status',facts.get('status'))):
+                item[key]=value if isinstance(value,str) and len(value)<=120 else None
+                if value is not None and item[key] is None:
+                    item[key+'_label_omitted']=True
+            grade=self_grade_summary(row.get('metadata'),row.get('result_r'))
+            # The index needs a classification, never unbounded notes/prose.
+            item['self_grade']=({key:grade[key] for key in
+                ('type','member_reported','recorded_type','needs_clarification') if key in grade} if grade else None)
+            item['detail_request']={'tool':'get_journal_history','args':{'view':'detail',
+                **({'legacy_journal_number':row['legacy_journal_number']} if row['is_legacy'] else {'trade_number':row['trade_number']})}}
+            index.append(item)
+        result['journals']=index
+        for key in ('timeline_available','photos_available','photo_count'):
+            result.pop(key,None)
+        result.update(view='index',details_omitted=True,
+            selection_note='Record-number index. No chronology inferred; follow detail_request for the complete record.',
+            detail_note='Notes, updates and photos were not fetched for this index. Missing details are not absent.')
+        return result
     if include_photo_bytes:
         result['_delivery_photos'] = photos
     if latest or selection is not None:
@@ -457,6 +494,7 @@ def member_context_lines(db, guild_id, user_id, limit=5):
 
 
 def send_history(db, guild_id, user_id, args):
+    args = {**args,'view':'detail'}  # An index must never replace the requested complete bundle.
     from gbop_voice_web.delivery_receipts import deliver, bounded_delivery_db
     try:
         result = history(bounded_delivery_db(db), guild_id, user_id, args,
@@ -540,6 +578,8 @@ def _send_history(db, guild_id, user_id, args, operation, result):
 
 
 RECALL_SELECTORS = {
+    'view': {'type':['string','null'],'enum':['index','detail',None],
+             'description':'index lists all owned trade numbers and standalone legacy journals with pagination, no identifiers needed. detail reads full context. Use detail for sends.'},
     'latest': {'type': ['string', 'null'], 'enum': ['trade', 'journal', None],
                'description': 'Last trade uses reported trade date; last journal uses saved time. Never substitute one for the other.'},
     'date_basis': {'type': ['string', 'null'], 'enum': ['trade', 'saved', None]},
@@ -550,6 +590,10 @@ RECALL_SELECTORS = {
 def bind_recall_intent(name, args, text):
     """Keep explicit current text intent from being flattened by model selectors."""
     if name not in ('get_journal_history', 'send_journal_history', 'send_trade_photos') or not text:
+        return args, None
+    # A compound request can ask for an exact record and the complete index.
+    # Do not narrow its index read using the other clause's record selectors.
+    if name == 'get_journal_history' and args.get('view') == 'index':
         return args, None
     text = text.casefold()
     send = re.search(r"(?:^|[.!?;]\s*|\bplease\s+|\bi (?:want|need) you to\s+)"
@@ -576,7 +620,7 @@ def bind_recall_intent(name, args, text):
                 'trade_number': None, 'journal_number': None, 'legacy_journal_number': None, 'offset': 0}
     if name == 'send_journal_history':
         text_only = re.search(r'\b(?:text[- ]only|without (?:the )?(?:photos|pictures|images)|no (?:photos|pictures|images))\b', text)
-        args = {**args, 'include_photos': not bool(text_only)}
+        args = {**args, 'view':'detail', 'include_photos': not bool(text_only)}
     return args, None
 
 
@@ -617,15 +661,17 @@ JOURNAL_RECALL_TOOLS = [schema('send_journal_history',
     'On an explicit send request, privately deliver the selected trade/journal complete bundle: execution and update history, notes, saved feelings, SELF grade and ALL associated photos. Photos are included by default; include_photos=false only for explicit text-only. Latest trade and latest journal are distinct; bind exact record selectors. No recipient override. Report text_sent_count and photo_sent_count; partial is not complete. Default send_or_recover; resend only when explicitly asked.',
     {'limit': {'type': ['integer', 'null']}, 'offset': {'type': ['integer', 'null']},
      'trade_number': {'type': ['integer', 'null']}, 'journal_number': {'type': ['integer', 'null']},
-     'legacy_journal_number': {'type': ['integer', 'null']}, **RECALL_SELECTORS,
+     'legacy_journal_number': {'type': ['integer', 'null']}, **{k:v for k,v in RECALL_SELECTORS.items() if k != 'view'},
      'include_photos': {'type': ['boolean', 'null']}, 'delivery_action': DELIVERY_ACTION})]
 JOURNAL_RECALL_PROMPT = """
-JOURNAL: Trade # includes notes, executions, feelings, SELF grade and photos.
-Questions: get_journal_history; read context_text/next_detail_offset pages for
-that record; no DM. Last trade: latest=trade,date_basis=trade; unknown dates need
-clarification. Last saved trade: date_basis=saved. Last journal: latest=journal.
-Saved time isn't trade time. Clarify ambiguous Legacy journal # aliases.
-Send: send_journal_history includes all scoped photos; text-only explicitly sets
-include_photos=false. No extra account-wide photo send. Report text_sent_count
-and photo_sent_count. Errors aren't empty. get_trade_state is OPEN only.
+JOURNAL: Trade # bundles notes, executions, feelings, SELF grade, photos.
+List IDs: get_journal_history view=index, no selectors; paginate next_offset
+while has_more. No IDs needed. Standalone Legacy journals stay separate.
+Answers: view=detail; follow context_text/next_detail_offset; no DM.
+Latest trade: latest=trade,date_basis=trade; unknown dates need clarification.
+Latest saved trade: date_basis=saved. Latest journal: latest=journal.
+Saved time isn't trade time. Clarify ambiguous Legacy aliases.
+Send: send_journal_history; all scoped photos, include_photos=false only for
+explicit text-only. No account-wide photo send. Report text_sent_count and
+photo_sent_count. Errors aren't empty. get_trade_state is OPEN only.
 """.strip()

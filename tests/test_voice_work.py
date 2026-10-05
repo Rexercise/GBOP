@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 from gbop_voice_web.voice_runtime import VoiceRateLimitRecovery, compact_voice_tool_result
-from gbop_voice_web.voice_work import VoiceToolWork
+from gbop_voice_web.voice_work import VoiceToolWork, READ_STATUS_SECONDS, MAX_READ_STATUS_CALLS
 from gbop_voice_web.voice_payload import voice_tool_payload
 from test_voice_latency import method
 
@@ -57,18 +57,25 @@ class WorkTests(unittest.IsolatedAsyncioTestCase):
         self.sessions = []
         self.receivers = []
 
-    def session(self, member_id=42, provider=None):
+    def session(self, member_id=42, provider=None, authenticated=False):
         session = NS(member=NS(id=member_id, send=AsyncMock()), websocket=Socket(),
                      _voice_turn_count=1, closed=False, last_error=None, send_event=AsyncMock(return_value=True),
                      tool_output_pending=False, _tool_response_options={}, _last_response_options={},
                      recovery_tools=[{'type': 'function', 'name': 'get_journal_history'}],
                      voice_client=NS(channel=NS(id=member_id)), _logged_audio_items=set())
+        if authenticated:
+            session.market_context = NS(owner=(1, member_id, 'discord_voice'),
+                session_id=f'session-{member_id}', closed=False, generation=0,
+                invalidate=Mock(), begin_turn=Mock(), run=Mock())
+            session.authorize_tool = AsyncMock(return_value=None)
         session.rate_limit_recovery = VoiceRateLimitRecovery(session, jitter=lambda: .5, sleep=self.clock.sleep)
         session.tool_work = VoiceToolWork(session, sleep=self.clock.sleep)
         self.provider = provider or AsyncMock(return_value={'ok': True})
         # Bind each session to its own provider, mirroring real member-scoped calls.
         current_provider = self.provider
-        async def to_thread(fn, *args):
+        async def to_thread(fn, *args, **kwargs):
+            if authenticated:
+                return await current_provider(session.member.id, args[0], args[1])
             return await current_provider(*args)
         execute = method('execute_tool', dict(asyncio=NS(to_thread=to_thread), json=json,
             time=time, ai_execute_tool=Mock(), voice_tool_payload=voice_tool_payload,
@@ -367,7 +374,7 @@ class WorkTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(session.tool_work.accepts({'response_id': 'old'}))
 
     async def test_interrupt_cancels_blocked_result_send_before_it_reaches_transport(self):
-        session = self.session()
+        session = self.session(authenticated=True)
         sending = asyncio.Event()
         gate = asyncio.Event()
         delivered = []
@@ -386,6 +393,34 @@ class WorkTests(unittest.IsolatedAsyncioTestCase):
         await settle()
         self.assertEqual(delivered, [])
         self.assertFalse(session.tool_output_pending)
+
+    async def test_queued_result_under_backpressure_never_gets_second_interrupted_output(self):
+        session = self.session(authenticated=True)
+        queued, release = asyncio.Event(), asyncio.Event()
+        delivered = []
+        async def send(event, **kwargs):
+            # WebSocket send can enqueue bytes before awaiting drain. Cancelling
+            # that wait does not retract the already accepted function output.
+            delivered.append(event)
+            queued.set()
+            await release.wait()
+            return True
+        session.send_event.side_effect = send
+        await self.call(session)
+        await queued.wait()
+        self.assertEqual(session.tool_work.read_calls, {})
+        await self.finish(session)
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        release.set()
+        await settle()
+        session.send_event.assert_awaited_once()
+        self.assertEqual([event['type'] for event in delivered], ['conversation.item.create'])
+        self.assertEqual(delivered[0]['item']['call_id'], 'a')
+        self.assertTrue(json.loads(delivered[0]['item']['output'])['ok'])
+        self.assertEqual(self.interrupted_outputs(session), [])
+        self.assertFalse(session.tool_output_pending)
+        session.member.send.assert_not_awaited()
 
     async def test_interrupt_or_stop_cancels_blocked_continuation_send(self):
         for stop in (False, True):
@@ -438,6 +473,241 @@ class WorkTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['sent_count'], 1)
         self.assertEqual(session.send_event.await_count, 2)
+
+    def interrupted_outputs(self, session):
+        return [event.args[0]['item'] for event in session.send_event.await_args_list
+                if event.args[0].get('item', {}).get('type') == 'function_call_output'
+                and json.loads(event.args[0]['item']['output']).get('status') == 'read_interrupted']
+
+    async def test_authenticated_interrupted_read_closes_call_silently_without_restart(self):
+        gate = asyncio.Event()
+        async def blocked(*args):
+            await gate.wait()
+            return {'ok': True, 'journals': ['private late result']}
+        provider = AsyncMock(side_effect=blocked)
+        session = self.session(provider=provider, authenticated=True)
+        await self.call(session)
+        await self.finish(session)
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        outputs = self.interrupted_outputs(session)
+        self.assertEqual([item['call_id'] for item in outputs], ['a'])
+        result = json.loads(outputs[0]['output'])
+        self.assertFalse(result['ok'])
+        self.assertFalse(result['result_available'])
+        self.assertIn('worker may still finish', result['error'])
+        self.assertIn('new user request', result['error'])
+        self.assertFalse(session.tool_output_pending)
+        self.assertFalse(session.tool_work.pending)
+        self.assertEqual([c.args[0]['type'] for c in session.send_event.await_args_list],
+                         ['conversation.item.create'])
+        self.assertEqual(session.authorize_tool.await_count, 2)
+        gate.set()
+        await settle()
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        await self.clock.advance(50)
+        provider.assert_awaited_once()
+        session.send_event.assert_awaited_once()
+        session.member.send.assert_not_awaited()
+        self.assertNotIn('private late result', json.dumps(outputs))
+
+    async def test_interruption_closes_queued_reads_without_starting_them(self):
+        gate = asyncio.Event()
+        provider = AsyncMock(side_effect=lambda *args: None)
+        async def blocked(*args):
+            await gate.wait()
+            return {'ok': True}
+        provider.side_effect = blocked
+        session = self.session(provider=provider, authenticated=True)
+        await self.call(session)
+        await session.websocket.emit({'type': 'response.output_item.done', 'response_id': 'r1',
+            'item': {'type': 'function_call', 'name': 'list_trade_photos', 'call_id': 'b',
+                     'arguments': '{"sensitive":"never copied"}'}})
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        self.assertEqual([item['call_id'] for item in self.interrupted_outputs(session)], ['a', 'b'])
+        self.assertNotIn('never copied', str(session.send_event.await_args_list))
+        gate.set()
+        await settle()
+        provider.assert_awaited_once()
+        self.assertEqual(session.send_event.await_count, 2)
+
+    async def test_read_status_is_fenced_by_member_session_socket_close_and_revocation(self):
+        for change in ('member', 'owner', 'session', 'socket', 'closed', 'context_closed', 'revoked', 'missing_auth'):
+            with self.subTest(change=change):
+                gate = asyncio.Event()
+                async def blocked(*args):
+                    await gate.wait()
+                    return {'ok': True}
+                session = self.session(provider=AsyncMock(side_effect=blocked), authenticated=True)
+                socket = session.websocket
+                await self.call(session)
+                if change == 'member':
+                    session.member = NS(id=99, send=AsyncMock())
+                elif change == 'owner':
+                    session.market_context.owner = (1, 99, 'discord_voice')
+                elif change == 'session':
+                    session.market_context.session_id = 'replacement'
+                elif change == 'socket':
+                    session.websocket = Socket()
+                elif change == 'closed':
+                    session.closed = True
+                elif change == 'context_closed':
+                    session.market_context.closed = True
+                elif change == 'revoked':
+                    session.authorize_tool.return_value = 'Membership was revoked'
+                else:
+                    session.authorize_tool = None
+                await socket.emit({'type': 'input_audio_buffer.speech_started'})
+                gate.set()
+                await settle()
+                session.send_event.assert_not_awaited()
+                session.member.send.assert_not_awaited()
+
+    async def test_second_barge_in_fences_blocked_status_send_without_repeating_it(self):
+        tool_gate, send_gate, sending = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        delivered = []
+        async def blocked(*args):
+            await tool_gate.wait()
+            return {'ok': True}
+        session = self.session(provider=AsyncMock(side_effect=blocked), authenticated=True)
+        async def send(event, **kwargs):
+            sending.set()
+            await send_gate.wait()
+            delivered.append(event)
+            return True
+        session.send_event.side_effect = send
+        await self.call(session)
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        await sending.wait()
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        send_gate.set()
+        tool_gate.set()
+        await settle()
+        self.assertEqual(delivered, [])
+        session.send_event.assert_awaited_once()
+        self.assertFalse(session.tool_output_pending)
+
+    async def test_repeated_speech_during_authorization_reports_only_current_generation(self):
+        tool_gate, auth_gate = asyncio.Event(), asyncio.Event()
+        async def blocked(*args):
+            await tool_gate.wait()
+            return {'ok': True}
+        session = self.session(provider=AsyncMock(side_effect=blocked), authenticated=True)
+        await self.call(session)
+        async def authorize():
+            await auth_gate.wait()
+            return None
+        session.authorize_tool = AsyncMock(side_effect=authorize)
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        self.assertEqual(session._voice_turn_count, 3)
+        session.send_event.assert_not_awaited()
+        auth_gate.set()
+        await settle()
+        self.assertEqual(len(self.interrupted_outputs(session)), 1)
+        tool_gate.set()
+        await settle()
+        session.send_event.assert_awaited_once()
+
+    async def test_identity_change_during_status_authorization_blocks_output(self):
+        for change in ('member', 'session', 'socket'):
+            with self.subTest(change=change):
+                tool_gate, auth_gate = asyncio.Event(), asyncio.Event()
+                async def blocked(*args):
+                    await tool_gate.wait()
+                    return {'ok': True}
+                session = self.session(provider=AsyncMock(side_effect=blocked), authenticated=True)
+                await self.call(session)
+                async def authorize():
+                    await auth_gate.wait()
+                    return None
+                session.authorize_tool = AsyncMock(side_effect=authorize)
+                await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+                if change == 'member':
+                    session.member = NS(id=99, send=AsyncMock())
+                elif change == 'session':
+                    session.market_context.session_id = 'replacement'
+                else:
+                    session.websocket = Socket()
+                auth_gate.set()
+                tool_gate.set()
+                await settle()
+                session.send_event.assert_not_awaited()
+
+    async def test_already_reported_read_and_interrupted_writes_do_not_gain_read_status(self):
+        session = self.session(authenticated=True)
+        await self.call(session)
+        await self.finish(session)
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        self.assertEqual(self.interrupted_outputs(session), [])
+        self.assertEqual(session.tool_work.read_calls, {})
+        self.assertEqual(session.send_event.await_count, 2)
+        for name in ('send_journal_history', 'send_trade_photos', 'open_trade', 'manage_market_watch'):
+            with self.subTest(name=name):
+                gate = asyncio.Event()
+                async def blocked(*args):
+                    await gate.wait()
+                    return {'ok': True}
+                provider = AsyncMock(side_effect=blocked)
+                session = self.session(provider=provider, authenticated=True)
+                await self.call(session, name=name)
+                await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+                self.assertEqual(session.tool_work.read_calls, {})
+                gate.set()
+                await settle()
+                provider.assert_awaited_once()
+                session.send_event.assert_not_awaited()
+                session.member.send.assert_not_awaited()
+
+    async def test_interrupted_read_status_does_not_cross_members(self):
+        gate = asyncio.Event()
+        async def blocked(member, *args):
+            await gate.wait()
+            return {'ok': True, 'member': member}
+        a = self.session(member_id=1, provider=AsyncMock(side_effect=blocked), authenticated=True)
+        b = self.session(member_id=2, provider=AsyncMock(side_effect=blocked), authenticated=True)
+        await self.call(a)
+        await self.call(b)
+        await self.finish(a)
+        await self.finish(b)
+        await a.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        self.assertEqual(len(self.interrupted_outputs(a)), 1)
+        self.assertEqual(self.interrupted_outputs(b), [])
+        gate.set()
+        await settle()
+        self.assertEqual(a.send_event.await_count, 1)
+        self.assertEqual(b.send_event.await_count, 2)
+        self.assertEqual(json.loads(b.send_event.await_args_list[0].args[0]['item']['output'])['member'], 2)
+
+    async def test_response_cancel_before_barge_in_retains_terminal_read_status(self):
+        gate = asyncio.Event()
+        async def blocked(*args):
+            await gate.wait()
+            return {'ok': True}
+        session = self.session(provider=AsyncMock(side_effect=blocked), authenticated=True)
+        await self.call(session)
+        await self.finish(session, status='cancelled')
+        session.send_event.assert_not_awaited()
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        self.assertEqual(len(self.interrupted_outputs(session)), 1)
+        gate.set()
+        await settle()
+        session.send_event.assert_awaited_once()
+
+    async def test_read_status_retention_is_bounded_and_stop_clears_it(self):
+        session = self.session(authenticated=True)
+        session.execute_tool = AsyncMock()
+        for index in range(MAX_READ_STATUS_CALLS + 5):
+            session.tool_work.start({'name': 'get_journal_history', 'call_id': str(index)})
+        self.assertEqual(len(session.tool_work.read_calls), MAX_READ_STATUS_CALLS)
+        self.assertNotIn('0', session.tool_work.read_calls)
+        session.tool_work.cancel(preserve_read_status=True)
+        for entry in session.tool_work.read_calls.values():
+            entry['interrupted_at'] -= READ_STATUS_SECONDS + 1
+        await session.websocket.emit({'type': 'input_audio_buffer.speech_started'})
+        session.send_event.assert_not_awaited()
+        session.tool_work.cancel()
+        self.assertEqual(session.tool_work.read_calls, {})
 
 
 if __name__ == '__main__':

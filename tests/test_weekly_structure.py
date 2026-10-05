@@ -246,7 +246,7 @@ class WeeklyContributionTests(IntelligenceTests):
         self.assertIsNone(stored['high'])
         index = ss.get_weekly_structure_study(self.db,10,20,{'week_start':'2026-09-28'})
         self.assertEqual(len(index['assets']),9)
-        self.assertEqual(sum(x['status']=='source_weekly_boundary_unavailable' for x in index['assets']),2)
+        self.assertEqual(sum(x['status']=='not_prepared' for x in index['assets']),8)
 
     def test_migration_default_deny_and_append_only_backend(self):
         sql = next(Path('supabase/migrations').glob('*weekly_structure_reports.sql')).read_text()
