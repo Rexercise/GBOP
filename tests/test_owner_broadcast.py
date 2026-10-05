@@ -73,6 +73,9 @@ class OwnerBroadcastPlanTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 owner_message(value)
 
+    def test_message_is_attributed_to_gbop(self):
+        self.assertEqual(owner_message('  hello\nworld  '), '📣 **GBOP Message**\n\nhello\nworld')
+
     def test_draft_is_immutable_and_pagination_does_not_drop_recipients(self):
         preview = draft(tuple(range(1, 106)))
         ids = [r.user_id for page in range(preview.page_count) for r in preview.page(page)]
@@ -179,6 +182,35 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(args.kwargs['allowed_mentions'], self.none_mentions)
         self.assertIn('`1`', args.kwargs['embed'].description)
         self.assertIn('`2`', args.kwargs['embed'].description)
+
+    async def test_preview_and_confirmed_delivery_have_identical_gbop_attribution(self):
+        text = 'Synthetic announcement\nFor @everyone'
+        expected_message = '📣 **GBOP Message**\n\n' + text
+        for audience, selection, expected_ids in (
+            ('all', '', {1, 2, 3}),
+            ('selected', '2', {2}),
+            ('all_except', '2', {1, 3}),
+        ):
+            with self.subTest(audience=audience):
+                recipients = {uid: member(uid) for uid in (1, 2, 3)}
+                self.guild(recipients.values())
+                self.ns['_authorized_scheduled_member'].side_effect = recipients.get
+                interaction = self.interaction()
+                await self.ns['gbopmessage'](interaction, text, audience, selection)
+                preview_call = interaction.followup.send.await_args
+                self.assertEqual(preview_call.args[0], expected_message)
+                self.assertIs(preview_call.kwargs['allowed_mentions'], self.none_mentions)
+                for recipient in recipients.values():
+                    recipient.send.assert_not_awaited()
+                view = preview_call.kwargs['view']
+                await view.confirm_send.callback(self.interaction())
+                for uid, recipient in recipients.items():
+                    if uid in expected_ids:
+                        recipient.send.assert_awaited_once_with(
+                            expected_message, allowed_mentions=self.none_mentions,
+                        )
+                    else:
+                        recipient.send.assert_not_awaited()
 
     async def test_command_rejects_nonowner_admin_foreign_guild_and_dm(self):
         self.ns['_resolve_owner_broadcast_draft'] = AsyncMock()
