@@ -3,6 +3,7 @@ import os
 import json
 import re
 from hashlib import sha256
+from textwrap import indent
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from gbop_voice_web.trade_photos import schema
@@ -391,7 +392,7 @@ def _record_text(row, title):
             provenance = meta.get('provenance') or {}
             if key == 'trade_date' and key in (provenance.get('context_defaults') or []) and key not in (provenance.get('member_reported') or []):
                 label = 'Reviewed market date (not a reported execution date)'
-            value += '\n' + label + ': ' + str(meta[key])
+            value += '\n' + label + ': ' + _display_value(meta[key])
     if meta.get('emotion'):
         value += '\nLegacy feeling note (stage/time unspecified): ' + str(meta['emotion'])
     for report in meta.get('feeling_history') or []:
@@ -424,6 +425,86 @@ def _record_text(row, title):
     return value
 
 
+def _display_value(value, *, serialized=False):
+    """Readable saved fields, without dropping nested facts or editing prose."""
+    if serialized and isinstance(value, str):
+        def unique_object(pairs):
+            result = dict(pairs)
+            if len(result) != len(pairs):
+                raise ValueError('Repeated keys must retain their original text.')
+            return result
+        try:
+            parsed = json.loads(value, object_pairs_hook=unique_object)
+            if isinstance(parsed, (dict, list, str)):
+                return _display_value(parsed)
+        except (ValueError, TypeError, RecursionError):
+            # Event details may be arbitrary member prose, including JSON.
+            # Ambiguous/deep serialized text must stay intact, not lose facts
+            # or stop the rest of the journal from being retrieved.
+            return value
+        return value
+    if value is None:
+        return 'Not recorded'
+    if isinstance(value, bool):
+        return 'Yes' if value else 'No'
+    if isinstance(value, dict):
+        fields = []
+        for key, item in value.items():
+            label, rendered = str(key).replace('_', ' '), _display_value(item)
+            fields.append(label + (':\n' + indent(rendered, '  ')
+                          if isinstance(item, (dict, list, tuple)) or '\n' in rendered
+                          else ': ' + rendered))
+        return '\n'.join(fields) or '(empty object)'
+    if isinstance(value, (list, tuple)):
+        return '\n'.join(f'{index}. ' + _display_value(item).replace('\n', '\n   ')
+                         for index, item in enumerate(value, 1)) or '(empty list)'
+    return str(value)
+
+
+def _text_chunks(value, limit=1800):
+    """Lossless transport slices: paragraphs, lines, words, then long tokens.
+
+    Count UTF-16 units conservatively for Discord, and never cut a Unicode
+    character. Whitespace stays with its slice, so the source is recoverable.
+    """
+    if limit < 2:
+        raise ValueError('The message limit must fit a Unicode character.')
+    while value:
+        units, end = 0, 0
+        for char in value:
+            size = 2 if ord(char) > 0xFFFF else 1
+            if units + size > limit:
+                break
+            units += size
+            end += 1
+        if end == len(value):
+            yield value
+            return
+        window = value[:end]
+        # Prefer natural sections, but avoid a tiny heading-only message.
+        boundary = window.rfind('\n\n')
+        if boundary >= end // 3:
+            end = boundary + 2
+        else:
+            boundary = window.rfind('\n')
+            if boundary >= end // 3:
+                end = boundary + 1
+            else:
+                boundary = next((i for i in range(end - 1, -1, -1)
+                                 if value[i].isspace()), -1)
+                if boundary >= 0:
+                    end = boundary + 1
+        yield value[:end]
+        value = value[end:]
+
+
+def _record_chunks(value, title):
+    continuation = title + ' (continued)\n'
+    budget = 1800 - len(continuation.encode('utf-16-le')) // 2
+    for index, chunk in enumerate(_text_chunks(value, budget)):
+        yield (continuation if index else '') + chunk
+
+
 def messages(result):
     header = (f"Your GBOP journal — {result['journal_count']} journal records; "
               f"{result['trade_count']} trade records ({result['open_trade_count']} open).")
@@ -445,17 +526,29 @@ def messages(result):
             value = _record_text(row, title)
         facts = row.get('trade_facts') or {}
         if facts:
-            value += '\nTrade details: ' + ' · '.join(str(k).replace('_',' ') + ': ' + str(v) for k,v in facts.items())
-        for update in row.get('updates') or []:
-            value += '\n\nSaved update (' + str(update.get('created_at') or 'logging time unavailable') + '): '
+            value += '\n\nTrade details:\n' + _display_value(facts)
+        updates = row.get('updates') or []
+        if updates:
+            count_label = 'entry' if len(updates) == 1 else 'entries'
+            value += f'\n\nSaved execution and update history ({len(updates)} {count_label})'
+            value += '\nEach entry is a separate saved event; similar entries are retained.'
+        for index, update in enumerate(updates, 1):
+            kind = {'journal_update': 'Journal correction', 'execution': 'Execution',
+                    'trade_event': 'Trade event'}.get(update.get('kind'), 'Update')
+            value += f'\n\nSaved update #{index} · {kind}'
+            value += '\nLogged: ' + str(update.get('created_at') or 'logging time unavailable')
             if update.get('kind') == 'journal_update':
                 for key,change in (update.get('changes') or {}).items():
-                    value += '\n' + key.replace('metadata.','').replace('_',' ') + ': '
-                    value += str(change.get('before') if change.get('before') is not None else 'Not recorded')
-                    value += ' → ' + str(change.get('after') if change.get('after') is not None else 'Not recorded')
+                    value += '\n' + key.replace('metadata.','').replace('_',' ') + ':'
+                    value += '\nBefore: ' + _display_value(change.get('before'))
+                    value += '\nAfter: ' + _display_value(change.get('after'))
             else:
-                value += ' · '.join(str(k).replace('_',' ') + ': ' + str(v)
-                    for k,v in update.items() if k not in ('created_at',) and v is not None)
+                for key, item in update.items():
+                    if key not in ('created_at', 'kind') and item is not None:
+                        rendered = _display_value(item, serialized=key == 'details')
+                        value += '\n' + key.replace('_', ' ') + ':'
+                        value += ('\n' + indent(rendered, '  ') if '\n' in rendered
+                                  else ' ' + rendered)
         # Deliver every saved source entry in bounded transport messages. The
         # bounded model-facing preview must never become the DM source of truth.
         for prior in row.get('legacy_history') or []:
@@ -464,15 +557,20 @@ def messages(result):
             value += '\nSaved photos could not be checked; the photo count is unknown.'
         elif 'photo_count' in row:
             value += '\nAssociated saved photos: ' + str(row['photo_count'])
-        for photo in row.get('photos') or []:
-            value += '\n\nSaved photo ' + photo['id']
+        photos = row.get('photos') or []
+        if photos:
+            value += '\nPhoto observations are separate from the reported trade facts above.'
+        for index, photo in enumerate(photos, 1):
+            value += f'\n\nSaved photo {index} of {len(photos)} · ' + photo['id']
             for key in ('created_at','asset','play','entry_model','tier','analysis'):
                 if photo.get(key) is not None and photo.get(key) != '':
-                    value += '\nPhoto ' + key.replace('_',' ') + ': ' + str(photo[key])
-        output.extend(value[n:n+1800] for n in range(0, len(value), 1800))
+                    label = ('Photo analysis (image-derived; execution details unconfirmed)'
+                             if key == 'analysis' else 'Photo ' + key.replace('_',' '))
+                    value += '\n' + label + ': ' + _display_value(photo[key])
+        output.extend(_record_chunks(value, title))
     if result['has_more']:
         output.append('More records are available. Ask for the next page of your journal.')
-    return output
+    return [chunk for content in output for chunk in _text_chunks(content)]
 
 
 def member_context_lines(db, guild_id, user_id, limit=5):

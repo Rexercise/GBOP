@@ -229,7 +229,9 @@ class SelfGradeTests(unittest.TestCase):
         rendered = '\n'.join(recall.messages(history))
         self.assertIn('Member SELF grade: Type 4', rendered)
         self.assertIn('metadata.self_grade', str(history))
-        self.assertIn("'type': 'type1'", rendered)
+        self.assertIn('type: type1', rendered)
+        self.assertIn('type: type4', rendered)
+        self.assertNotIn("{'type':", rendered)
         self.assertEqual(recall.history(self.db, 10, 30, {})['journals'], [])
 
     def test_later_journal_correction_flags_grade_instead_of_regrading(self):
