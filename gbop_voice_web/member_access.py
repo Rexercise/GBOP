@@ -4,6 +4,8 @@ Discord role/OAuth checks remain the responsibility of the caller. This gate
 adds fresh GBOP activation and revocation checks, never replaces role checks.
 """
 
+MEMBER_ACCESS_UNAVAILABLE = 'GBOP access could not be verified. Please try again later.'
+
 
 def member_access_error(db, guild_id: int, user_id: int, owner_id: int):
     """Return a public-safe denial, or None. Fail closed without leaking SQL."""
@@ -24,4 +26,4 @@ def member_access_error(db, guild_id: int, user_id: int, owner_id: int):
             return 'Review the GBOP privacy notice and activate with /activate agree:true in G.T.O.P.'
         return None
     except Exception:
-        return 'GBOP access could not be verified. Please try again later.'
+        return MEMBER_ACCESS_UNAVAILABLE

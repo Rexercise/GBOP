@@ -133,7 +133,7 @@ class WorkTests(unittest.IsolatedAsyncioTestCase):
             await gate.wait()
             return {'ok': True}
         session = self.session(provider=AsyncMock(side_effect=blocked))
-        await self.call(session)
+        await self.call(session, name='review_market_session')
         await self.finish(session)
         await self.clock.advance(4)
         session.member.send.assert_awaited_once_with("I'm still checking your request.")
@@ -143,10 +143,25 @@ class WorkTests(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await settle()
         self.assertEqual(session.send_event.await_count, 2)
-        await self.call(session, call_id='b', response_id='r2')
+        await self.call(session, name='review_market_session', call_id='b', response_id='r2')
         await self.finish(session, response_id='r2')
         await self.clock.advance(20)
         session.member.send.assert_awaited_once()
+
+    async def test_slow_journal_summary_never_sends_private_progress(self):
+        gate = asyncio.Event()
+        async def blocked(*args):
+            await gate.wait()
+            return {'ok': True}
+        session = self.session(provider=AsyncMock(side_effect=blocked))
+        await self.call(session, name='get_journal_history')
+        await self.finish(session)
+        await self.clock.advance(45)
+        session.member.send.assert_not_awaited()
+        gate.set()
+        await settle()
+        session.member.send.assert_not_awaited()
+        self.assertEqual(session.send_event.await_count, 2)
 
     async def test_multiple_tools_are_serialized_and_request_only_one_followup(self):
         gate = asyncio.Event()
@@ -308,7 +323,7 @@ class WorkTests(unittest.IsolatedAsyncioTestCase):
             return {'ok': True}
         session = self.session(provider=AsyncMock(side_effect=blocked))
         session.member.send.side_effect = RuntimeError('DM blocked')
-        await self.call(session)
+        await self.call(session, name='review_market_session')
         await self.finish(session)
         await self.clock.advance(4)
         gate.set()

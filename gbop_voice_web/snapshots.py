@@ -7,6 +7,8 @@ import re
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from gbop_voice_web.adherence import adherence_bucket as _adherence_bucket
+
 
 def _period_bounds_utc(start_day: date, end_day_exclusive: date, tz: ZoneInfo):
     start_local = datetime.combine(start_day, time.min, tzinfo=tz)
@@ -207,22 +209,6 @@ def _normalize_session(value):
     if text in {"day", "day shift", "new york", "new york session"}:
         return "Day Shift"
     return str(value or "Unspecified").strip() or "Unspecified"
-
-
-def _adherence_bucket(value):
-    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
-    if not text or text in {"unknown", "unspecified", "n/a"}:
-        return "unknown"
-    if re.search(r"(?:no|not|never|didn't|did not) (?:violation|violate|break|broke)", text):
-        return "unknown"  # negated prose is not a positive adherence assessment
-    if text in {"no", "n", "off-plan", "off plan"} or re.search(
-            r"did(?:n['’]t| not) follow|not followed|did(?:n['’]t| not) adhere|violat|broke|broken", text):
-        return "violated"
-    if "partial" in text or "deviat" in text:
-        return "partial"
-    if text in {"yes", "y", "clean", "followed", "adhered", "followed plan", "followed the plan"}:
-        return "followed"
-    return "unknown"
 
 
 def _record_adherence(row):

@@ -1074,6 +1074,13 @@ class MarketConversation:
             intent = deepcopy(self.intent)
         if name in WRITE_TOOLS:
             return self._run_journal(name, arguments, runner, ticket)
+        from gbop_voice_web.journal_recall import bind_recall_intent
+        arguments, denial = bind_recall_intent(name, arguments, getattr(self, '_client_text', None))
+        if denial:
+            return denial
+        if name in ('get_journal_history', 'send_journal_history'):
+            from gbop_voice_web.journal_recall import run_recall
+            return run_recall(self, name, arguments, runner, ticket)
         from gbop_voice_web.delivery_receipts import PRIVATE_DELIVERY_NAMES, run_delivery
         if name in PRIVATE_DELIVERY_NAMES:
             return run_delivery(self, name, arguments, runner, generation=ticket)

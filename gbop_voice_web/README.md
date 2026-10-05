@@ -2,7 +2,31 @@
 
 This is the low-latency voice front end for GBOP.
 
-Architecture:
+## Owner messages
+
+`/gbopmessage text:...` now creates a private preview. It never sends immediately.
+Only the existing configured GBOP owner can use it, in the configured G.T.O.P guild.
+
+- `audience:all` previews all currently eligible members.
+- `audience:selected members:@Alice,@Bob` previews only the selected members.
+- `audience:all_except members:@Alice,@Bob` previews all eligible members except those selected.
+
+The `members` option accepts exact user mentions or Discord user IDs separated by
+spaces or commas. It does not guess from names or accept role mentions. An invalid
+or ineligible selected ID blocks the preview instead of silently changing its scope.
+Current eligibility uses the existing role, activation, leadership acknowledgement,
+revocation, and owner rules. Stored profiles of former members are not recipients.
+
+The preview displays the exact outgoing message and names plus IDs for every
+recipient. Review all recipient pages, then press **Confirm send**, or **Cancel**.
+Previews expire after ten minutes. Messages above 1,800 characters are rejected
+rather than shortened. Newly eligible members are not added after preview; access
+is refreshed immediately before each DM and unverified recipients are skipped.
+Repeated confirmation clicks cannot resend the same preview. Delivery errors are
+reported as unconfirmed; GBOP does not start a new attempt after an error. No database migration,
+new credential, or permission change is needed. Scheduled shift messages are unchanged.
+
+## Architecture
 - Browser microphone -> WebRTC -> OpenAI GPT-Live-1
 - GPT-Live-1 handles the natural voice conversation and interruption.
 - Private GTOP data/actions use client delegation to this local backend.
@@ -138,7 +162,21 @@ Member ownership and current authorization are checked inside serialized write
 transactions. Conversation-generation guards prevent canceled or stale requests
 from saving. Full private recall retains the update timeline; ordinary model
 responses are bounded previews and mark omitted history rather than claiming it
-is absent. Photo and text delivery still have separate verified receipts.
+is absent. Exact-record recall also offers read-only full-context pages, including
+all saved feelings, SELF grades, execution/management history and photo notes.
+Questions use those pages without sending private messages.
+
+`latest=trade` orders by actual reported trade dates. Missing, conflicting or
+overlapping date precision requires clarification; a market-review default date
+is not a member execution date. `date_basis=saved` explicitly requests the latest
+saved trade; `latest=journal` uses saved/updated time. A selected identity is bound
+through the same turn's context pages and send even if display numbers change.
+
+`send_journal_history` sends one complete private bundle by default. It includes
+all images associated through the selected owned trade, journal source pages,
+metadata or source events, deduplicated without a five-photo page limit. Explicit
+text-only requests set `include_photos=false`. Unrelated account photos are never
+added. The receipt reports `text_sent_count` and `photo_sent_count` separately.
 
 ## Private journal and photo delivery receipts
 
@@ -149,6 +187,10 @@ this request (0 photos).” It does not count that notice as a delivered photo.
 Confirmed messages, partial delivery and uncertain transport outcomes remain
 available through `get_delivery_status` after voice interruption or reconnect.
 The status tool never sends anything.
+An interrupted Discord voice delivery refreshes its exact authenticated receipt
+into current conversation context once. This does not restart old replies or
+audio, and an already-generating answer is not rewritten. Read-only journal
+lookups do not send private progress notices.
 
 Matching requests recover their receipt for 15 minutes after a clean terminal
 outcome. Pending, partial and uncertain deliveries are never automatically
@@ -161,6 +203,9 @@ still mean Discord accepted the last message; that uncertainty is preserved.
 Per-transaction SQL has a 15-second statement timeout. Connection establishment
 has a 10-second connection timeout; pending receipts older than two
 minutes are reported as uncertain rather than promised as still progressing.
+Bundle deduplication uses selected record identities/content, not unrelated
+account counts; an incomplete bundle cannot be automatically repeated after a
+content change. No schema changes or historical journal rewrites are involved.
 
 ## Weekly Structure Study and optional private reflection
 

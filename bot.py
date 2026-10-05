@@ -1,5 +1,5 @@
 from gbop_voice_web.market_watch import WATCH_TOOLS, WATCH_NAMES, WATCH_PROMPT, watch_tool, init_watches
-from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT
+from gbop_voice_web.journal_recall import history as recall_journal_history, send_history as send_journal_history, JOURNAL_RECALL_TOOLS, JOURNAL_RECALL_PROMPT, RECALL_SELECTORS
 from gbop_voice_web.delivery_receipts import DELIVERY_TOOLS, DELIVERY_PROMPT, delivery_status
 from gbop_voice_web.midpoint_preferences import TOOLS as MIDPOINT_TOOLS, MIDPOINT_PROMPT
 import os
@@ -24,7 +24,10 @@ from gbop_voice_web.discord_controls import (
 )
 from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
 from db_compat import db
-from gbop_voice_web.member_access import member_access_error
+from gbop_voice_web.member_access import MEMBER_ACCESS_UNAVAILABLE, member_access_error
+from gbop_voice_web.owner_broadcast import (
+    AUDIENCE_LABELS, PREVIEW_SECONDS, build_draft, owner_message, parse_selection,
+)
 from gbop_voice_web.checkin_routing import save_checkin_reply
 from gbop_voice_web.no_trade_checkins import (
     no_trade_acknowledgment, record_reason_prompt, save_no_trade_reason,
@@ -611,36 +614,229 @@ async def checkin(interaction: discord.Interaction):
     )
 
 
+async def _resolve_owner_broadcast_draft(text, audience, selected_ids):
+    guild = client.get_guild(GTOP_GUILD_ID)
+    if guild is None:
+        raise ValueError('The G.T.O.P server is unavailable. Please try again later.')
+    eligible = []
+    if audience == 'selected':
+        for user_id in selected_ids:
+            member = await _authorized_scheduled_member(user_id)
+            if member is not None:
+                eligible.append(member)
+    else:
+        # A fresh complete guild listing avoids silently treating a partial
+        # gateway cache or stored former-member profiles as the whole audience.
+        try:
+            async for member in guild.fetch_members(limit=None):
+                if member.bot or not (has_member_role(member) or is_owner(member)):
+                    continue
+                error = await asyncio.to_thread(
+                    member_access_error, db, GTOP_GUILD_ID, member.id, GTOP_OWNER_USER_ID,
+                )
+                if error == MEMBER_ACCESS_UNAVAILABLE:
+                    raise ValueError('Member access lookup unavailable')
+                if not error:
+                    eligible.append(member)
+        except Exception:
+            logger.warning('GBOP owner-message recipient list unavailable')
+            raise ValueError('The complete current member list could not be verified. Nothing was sent.') from None
+    return build_draft(GTOP_OWNER_USER_ID, GTOP_GUILD_ID, text, audience, selected_ids, eligible)
+
+
+async def _send_owner_broadcast(draft):
+    """Never expand a confirmed audience; fail closed at every recipient."""
+    sent = unconfirmed = skipped = 0
+    if draft.owner_id != GTOP_OWNER_USER_ID or draft.guild_id != GTOP_GUILD_ID:
+        return 0, 0, len(draft.recipients)
+    for recipient in draft.recipients:
+        member = await _authorized_scheduled_member(recipient.user_id)
+        if member is None:
+            skipped += 1
+            continue
+        try:
+            await member.send(draft.message, allowed_mentions=discord.AllowedMentions.none())
+            sent += 1
+        except Exception:
+            # Do not retry an ambiguous transport failure and risk a duplicate.
+            unconfirmed += 1
+            logger.warning('GBOP owner-message delivery unconfirmed user=%s', recipient.user_id)
+    return sent, unconfirmed, skipped
+
+
+class OwnerBroadcastView(discord.ui.View):
+    def __init__(self, draft):
+        super().__init__(timeout=PREVIEW_SECONDS)
+        self.draft = draft
+        self.expires_at = time.monotonic() + PREVIEW_SECONDS
+        self.page_index = 0
+        self.seen_pages = {0}
+        self.state = 'pending'
+        self.preview_message = None
+        self.lock = asyncio.Lock()
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        self.previous_page.disabled = self.page_index == 0
+        self.next_page.disabled = self.page_index == self.draft.page_count - 1
+        self.confirm_send.disabled = len(self.seen_pages) != self.draft.page_count
+
+    def preview_embed(self):
+        lines = []
+        for recipient in self.draft.page(self.page_index):
+            name = ' '.join(recipient.name.split())[:80]
+            name = discord.utils.escape_markdown(name)
+            lines.append(f'{name} — `{recipient.user_id}`')
+        embed = discord.Embed(
+            title=f'Preview only · {len(self.draft.recipients)} recipient(s)',
+            description=(f'**{AUDIENCE_LABELS[self.draft.audience]}**\n'
+                         + (f'{self.draft.excluded_count} selected member(s) excluded.\n' if self.draft.excluded_count else '')
+                         + '\n'.join(lines)),
+        )
+        embed.set_footer(text=(f'Recipients page {self.page_index + 1}/{self.draft.page_count}. '
+            'Review every page, then Confirm send. Expires in 10 minutes. '
+            'New members are not added; members who lose access are skipped.'))
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if (not is_owner(interaction.user) or interaction.user.id != self.draft.owner_id
+                or interaction.guild_id != self.draft.guild_id
+                or self.draft.guild_id != GTOP_GUILD_ID):
+            await interaction.response.send_message(
+                'Only the GBOP owner can use this preview in the G.T.O.P server.', ephemeral=True,
+            )
+            return False
+        return True
+
+    async def _pending(self, interaction):
+        if not await self.interaction_check(interaction):
+            return False
+        if self.state != 'pending':
+            await interaction.response.send_message(
+                'This preview is already closed or sending. It cannot be sent again.', ephemeral=True,
+            )
+            return False
+        if time.monotonic() >= self.expires_at:
+            self.state = 'expired'
+            self.stop()
+            await interaction.response.edit_message(
+                content='This preview expired. Run /gbopmessage again. Nothing was sent.', embed=None, view=None,
+            )
+            return False
+        return True
+
+    async def _turn_page(self, interaction, offset):
+        async with self.lock:
+            if not await self._pending(interaction):
+                return
+            old_index, old_seen = self.page_index, self.seen_pages.copy()
+            self.page_index = max(0, min(self.draft.page_count - 1, self.page_index + offset))
+            self.seen_pages.add(self.page_index)
+            self._sync_buttons()
+            try:
+                await interaction.response.edit_message(
+                    content=self.draft.message, embed=self.preview_embed(), view=self,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                self.page_index, self.seen_pages = old_index, old_seen
+                self._sync_buttons()
+                raise
+
+    @discord.ui.button(label='Previous recipients', style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._turn_page(interaction, -1)
+
+    @discord.ui.button(label='Next recipients', style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._turn_page(interaction, 1)
+
+    @discord.ui.button(label='Confirm send', style=discord.ButtonStyle.danger)
+    async def confirm_send(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.lock:
+            if not await self._pending(interaction):
+                return
+            if len(self.seen_pages) != self.draft.page_count:
+                await interaction.response.send_message('Review every recipient page before sending.', ephemeral=True)
+                return
+            # Consume confirmation before the first await that can lead to a DM.
+            # Duplicate clicks and errors cannot resume this draft.
+            self.state = 'sending'
+            self.stop()
+            await interaction.response.edit_message(
+                content='Sending the exact message to the reviewed recipients…', embed=None, view=None,
+            )
+        sent, unconfirmed, skipped = await _send_owner_broadcast(self.draft)
+        self.state = 'finished'
+        await interaction.followup.send(
+            f'GBOP message delivered to **{sent}** member(s). '
+            f'{unconfirmed} delivery attempt(s) could not be confirmed; GBOP did not retry after a delivery error. '
+            f'{skipped} recipient(s) were skipped because current access could not be verified.',
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary)
+    async def cancel_send(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.lock:
+            if not await self._pending(interaction):
+                return
+            self.state = 'cancelled'
+            self.stop()
+            await interaction.response.edit_message(
+                content='GBOP message cancelled. Nothing was sent.', embed=None, view=None,
+            )
+
+    async def on_timeout(self):
+        async with self.lock:
+            if self.state == 'pending':
+                self.state = 'expired'
+                if self.preview_message is not None:
+                    try:
+                        await self.preview_message.edit(
+                            content='This preview expired. Run /gbopmessage again. Nothing was sent.',
+                            embed=None, view=None,
+                        )
+                    except Exception:
+                        logger.warning('GBOP owner-message expired preview could not be updated')
+
+
 @tree.command(
     name="gbopmessage",
-    description="Owner-only broadcast message to GBOP role members.",
+    description="Owner-only message: choose members, preview, then confirm.",
     guild=GUILD,
 )
-@app_commands.describe(text="The message GBOP should send to its members.")
-async def gbopmessage(interaction: discord.Interaction, text: str):
-    if not is_owner(interaction.user):
+@app_commands.describe(
+    text="The exact message to preview (up to 1,800 characters).",
+    audience="All eligible members, selected members only, or all except selected members.",
+    members="For selected/all_except: @user mentions or user IDs, separated by spaces or commas.",
+)
+async def gbopmessage(
+    interaction: discord.Interaction,
+    text: str,
+    audience: Literal['all', 'selected', 'all_except'] = 'all',
+    members: str = '',
+):
+    if not is_owner(interaction.user) or interaction.guild_id != GTOP_GUILD_ID:
         await interaction.response.send_message(
-            "⛔ Only the GBOP owner can broadcast a GBOP message.",
-            ephemeral=True,
+            "⛔ Only the GBOP owner can preview a GBOP message in the G.T.O.P server.", ephemeral=True,
         )
         return
-
-    text = text.strip()
-    if not text:
-        await interaction.response.send_message(
-            "Please provide a message to broadcast.",
-            ephemeral=True,
-        )
+    try:
+        owner_message(text)
+        selected_ids = parse_selection(audience, members)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True)
-    sent, failed = await _broadcast_gbop_dm(
-        "📣 **GBOP Message from the Owner**\n\n" + text[:1800]
-    )
-    await interaction.followup.send(
-        f"GBOP message sent to **{sent}** role member(s). "
-        f"{failed} DM(s) could not be delivered.",
-        ephemeral=True,
+    try:
+        draft = await _resolve_owner_broadcast_draft(text, audience, selected_ids)
+    except ValueError as exc:
+        await interaction.followup.send(str(exc), ephemeral=True)
+        return
+    view = OwnerBroadcastView(draft)
+    view.preview_message = await interaction.followup.send(
+        draft.message, embed=view.preview_embed(), view=view, ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(), wait=True,
     )
 
 
@@ -5325,7 +5521,9 @@ GBOP_AI_TOOLS.extend(DELIVERY_TOOLS)
 GBOP_AI_TOOLS.extend(MIDPOINT_TOOLS)
 for _recall_tool in GBOP_AI_TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
-        _recall_tool['description'] = 'Read this member\'s saved journals, all-trade counts and next page. Empty OPEN trades does not mean no saved trades.'
+        _recall_tool['description'] = 'Read complete connected journal context: executions, notes, feelings, SELF grade and photo notes. Use latest trade versus latest journal and explicit date basis. Follow read-only context_text pages before summarizing; never send a DM for a question.'
+        _recall_tool['parameters']['properties'].update(RECALL_SELECTORS)
+        _recall_tool['parameters']['required'].extend(k for k in RECALL_SELECTORS if k not in _recall_tool['parameters']['required'])
         _recall_tool['parameters']['properties']['offset'] = {'type': ['integer', 'null']}
         if 'offset' not in _recall_tool['parameters']['required']:
             _recall_tool['parameters']['required'].append('offset')
@@ -6210,8 +6408,20 @@ class GBOPRealtimeSession:
                             bind_preference_args(context, tool, values, generation)),
                         generation=generation)
                 return await asyncio.to_thread(ai_execute_tool, self.member.id, name, args)
+            async def read_delivery_receipt(receipt_id):
+                # Exact, member-scoped read only. Rebind current authorization in
+                # the context before recovering an interrupted operation.
+                context = getattr(self, 'market_context', None)
+                status_args = {'kind': 'all', 'receipt_id': receipt_id}
+                if context is not None:
+                    return await asyncio.to_thread(context.run, 'get_delivery_status', status_args,
+                        lambda tool, values: ai_execute_tool(self.member.id, tool, values),
+                        generation=context.generation)
+                return await asyncio.to_thread(ai_execute_tool, self.member.id,
+                                               'get_delivery_status', status_args)
             runner = lambda: guarded_voice_tool(self, name, args, call_id, run_current_tool,
-                is_current=(lambda: work.current(scope)) if work is not None else None)
+                is_current=(lambda: work.current(scope)) if work is not None else None,
+                receipt_reader=read_delivery_receipt)
             result = await work.run_tool(scope, runner) if work is not None else await runner()
         except Exception as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -6240,6 +6450,8 @@ class GBOPRealtimeSession:
         )
         if sent is False or (work is not None and not work.current(scope)):
             return
+        from gbop_voice_web.voice_runtime import delivery_result_reported
+        delivery_result_reported(self, result)
 
         if name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
             # Update the existing voice session so the next answer uses the new
@@ -6316,6 +6528,8 @@ class GBOPRealtimeSession:
                 context = getattr(self, 'market_context', None)
                 if context is not None:
                     context.begin_turn()
+                if work is not None:
+                    work.recover_delivery()
                 print(
                     "[GBOP-RT-EVENT] speech_started:",
                     self.member,

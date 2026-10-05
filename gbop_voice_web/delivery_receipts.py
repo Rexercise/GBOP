@@ -23,6 +23,8 @@ SAFE_FIELDS = frozenset({'ok', 'status', 'sent_count', 'attempted_count', 'notic
     'canonical_journal_count', 'legacy_journal_count', 'preserved_legacy_history_count',
     'stored_journal_entry_count', 'matched_record_count', 'photo_count', 'error',
     'delivery', 'receipt_id', 'tool', 'started_at', 'updated_at', 'message_ids'})
+SAFE_FIELDS = SAFE_FIELDS | frozenset({'text_sent_count', 'photo_sent_count', 'include_photos',
+    'photos_available', 'selection_basis', 'latest', 'selection_note'})
 
 
 def canonical_arguments(name, args):
@@ -30,6 +32,13 @@ def canonical_arguments(name, args):
         result = {'limit': max(1, min(int(args.get('limit') or 5), 20)),
                   'offset': max(0, int(args.get('offset') or 0))}
         result.update({k: args[k] for k in ('trade_number','journal_number','legacy_journal_number') if args.get(k) is not None})
+        result['include_photos'] = args.get('include_photos') is not False
+        result['latest'] = args.get('latest')
+        result['date_basis'] = args.get('date_basis') or ('trade' if args.get('latest') == 'trade' else 'saved')
+        if args.get('_bundle_fingerprint'):
+            result = {'include_photos': result['include_photos'],
+                      'bundle_fingerprint': args['_bundle_fingerprint'],
+                      'bundle_scope': args['_bundle_scope']}
         if args.get('delivery_action') == 'resend':
             result['delivery_action'] = 'resend'
         return result
@@ -131,7 +140,8 @@ class DeliveryOperation:
             raise ValueError('Delivery identity must come from the authenticated conversation.')
         canonical = canonical_arguments(name, args)
         scope = [binding.session_id, binding.generation] if binding else [uuid4().hex]
-        self.id = PREFIX + _digest([guild, user, scope, name, canonical])
+        identity = {k: v for k, v in canonical.items() if k != 'bundle_fingerprint'}
+        self.id = PREFIX + _digest([guild, user, scope, name, identity])
         self.binding = binding
         self.resend = args.get('delivery_action') == 'resend'
         fingerprint = _digest([guild, user, name, {k: v for k, v in canonical.items() if k != 'delivery_action'}])
@@ -139,6 +149,9 @@ class DeliveryOperation:
             sent_count=0, attempted_count=0, notice_sent=False, delivery_uncertain=False,
             message_ids=[], started_at=time.time(), updated_at=time.time(),
             delivery='private_discord_dm')
+        if canonical.get('bundle_scope'):
+            self.state['request_scope_fingerprint'] = _digest([guild, user, name,
+                canonical['bundle_scope']])
 
     def claim(self):
         # Wait for the DB before taking the conversation lock; cancellation can
@@ -160,6 +173,14 @@ class DeliveryOperation:
                     if existing:
                         return _public(json.loads(existing['state']))
                     if not self.resend:
+                        if self.state.get('request_scope_fingerprint'):
+                            scoped = conn.execute('SELECT state FROM gbop_watch_runtime WHERE owner=? AND id LIKE ? '
+                                'AND state LIKE ? ORDER BY last_tick DESC,id DESC',
+                                (self.owner, PREFIX + '%', '%"request_scope_fingerprint": "' + self.state['request_scope_fingerprint'] + '"%')).fetchall()
+                            for row in scoped:
+                                saved = json.loads(row['state'])
+                                if saved.get('status') in ('pending','partial','uncertain') or saved.get('delivery_uncertain'):
+                                    return _public(saved)
                         previous = conn.execute('SELECT state FROM gbop_watch_runtime WHERE owner=? AND id LIKE ? '
                             'AND state LIKE ? ORDER BY last_tick DESC,id DESC LIMIT 1',
                             (self.owner, PREFIX + '%', '%"request_fingerprint": "' + self.state['request_fingerprint'] + '"%')).fetchone()
@@ -203,11 +224,14 @@ class DeliveryOperation:
         self.state['delivery_uncertain'] = True
         self.persist()  # Must commit before any external message POST.
 
-    def accepted(self, response, *, notice=False):
+    def accepted(self, response, *, notice=False, component=None):
         if notice:
             self.state['notice_sent'] = True
         else:
             self.state['sent_count'] += 1
+            if component in ('text', 'photo'):
+                key = component + '_sent_count'
+                self.state[key] = self.state.get(key, 0) + 1
         self.state['delivery_uncertain'] = False
         try:
             message_id = response.json().get('id')
@@ -250,7 +274,7 @@ def deliver(db, guild, user, name, args, perform):
             'it was not automatically repeated.' if operation.state['delivery_uncertain'] else
             'Private delivery could not finish. Check its receipt before requesting another send.'))
         try:
-            return operation.finish(result, 'no_photos' if operation.state.get('photo_count') == 0 else None)
+            return operation.finish(result, 'no_photos' if name == 'send_trade_photos' and operation.state.get('photo_count') == 0 else None)
         except Exception:
             state = {**operation.state, 'status': 'partial' if operation.state['sent_count'] else 'error',
                      'ok': False, 'delivery_uncertain': True,
@@ -270,12 +294,20 @@ def delivery_status(db, guild, user, args):
             member_revision(conn, guild, user)
             clause = ' AND state LIKE ?' if name else ''
             params = [_owner(guild, user), PREFIX + '%']
-            if name:
+            if kind == 'photos':
+                clause = ' AND (state LIKE ? OR (state LIKE ? AND state LIKE ?))'
+                params.extend(['%"tool": "send_trade_photos"%', '%"tool": "send_journal_history"%',
+                               '%"include_photos": true%'])
+            elif name:
                 params.append('%"tool": "' + name + '"%')
+            if args.get('receipt_id') is not None:
+                clause += ' AND id=?'
+                params.append(args['receipt_id'])
             rows = conn.execute('SELECT state FROM gbop_watch_runtime WHERE owner=? AND id LIKE ?' + clause +
                 ' ORDER BY last_tick DESC,id DESC LIMIT 10', params).fetchall()
         receipts = [_public(json.loads(row['state'])) for row in rows]
-        receipts = [r for r in receipts if name is None or r.get('tool') == name][:10]
+        receipts = [r for r in receipts if name is None or r.get('tool') == name
+                    or kind == 'photos' and r.get('tool') == 'send_journal_history' and r.get('include_photos') is True][:10]
         return {'ok': True, 'receipts': receipts,
                 'recovery_note': 'These are prior transport receipts, not new sends. Never repeat accepted or uncertain delivery automatically.'}
     except Exception:
@@ -286,7 +318,7 @@ DELIVERY_RECEIPT_TOOL = {'type': 'function', 'name': 'get_delivery_status', 'str
     'description': 'Read this authenticated member\'s latest private photo/journal delivery receipts after interruption, reconnect or a delivery question. Never resends.',
     'parameters': {'type': 'object', 'properties': {'kind': {'type': ['string', 'null'],
         'enum': ['photos', 'journal', 'all', None]}}, 'required': ['kind'], 'additionalProperties': False}}
-DELIVERY_RECEIPT_PROMPT = '''PRIVATE DELIVERY: Admitted sends survive interruption/reconnect. For missing DMs or 'did it send', read get_delivery_status first. Never auto-repeat accepted, partial, pending or uncertain sends. Use delivery_action=resend only on an explicit request to send again. no_photos is a successful empty lookup: its notice is not a photo. Journal text proves no photo delivery; acceptance proves no read.'''
+DELIVERY_RECEIPT_PROMPT = """DELIVERY: Admitted sends survive interruption. Waiting/did-it-send: get_delivery_status; terminal receipts supersede pending. Never auto-repeat pending, partial or uncertain sends. resend needs an explicit new request. no_photos means empty, not a sent photo. Journal text isn't photo delivery; acceptance isn't read."""
 
 # Integration names used by all authenticated transports.
 DELIVERY_TOOLS = [DELIVERY_RECEIPT_TOOL]
