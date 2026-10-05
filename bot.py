@@ -26,6 +26,9 @@ from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
 from db_compat import db
 from gbop_voice_web.member_access import member_access_error
 from gbop_voice_web.checkin_routing import save_checkin_reply
+from gbop_voice_web.no_trade_checkins import (
+    no_trade_acknowledgment, record_reason_prompt, save_no_trade_reason,
+)
 from gbop_voice_web.voice_policy import build_voice_instructions
 from gbop_voice_web.journal_coach import COACH_PROMPT, COACH_TOOLS, COACH_NAMES, coach_tool, init_coach
 from gbop_voice_web.member_intelligence import (
@@ -70,6 +73,7 @@ from gbop_voice_web.snapshots import (
     format_reflections,
     format_market_context,
     format_coverage,
+    format_no_trade_checkins,
     format_comparison,
     format_profit_factor as snapshot_profit_factor,
     format_percent as snapshot_percent,
@@ -3610,6 +3614,9 @@ def _snapshot_embed(stats):
         f"({process['unknown']} unknown)\n"
         f"Check-in replies: **{process['checkins_completed']}/{process['checkins_expected']} sent prompts**; "
         "missing replies are not nonadherence."), True)
+    no_trades = format_no_trade_checkins(stats)
+    if no_trades:
+        field("No-Trade Check-ins • Member Reported", no_trades, limit=700)
     field("Patterns in Your Records", "\n".join(stats["patterns"]))
     field("Feelings & Optional Self-Grades", format_reflections(stats["reflections"]), limit=950)
     comparison = format_comparison(stats)
@@ -4035,11 +4042,41 @@ async def _consume_checkin_reply(message):
     if reference is not None and (reply_id is None
             or getattr(reference, 'channel_id', None) != message.channel.id):
         return False
+    reason = await asyncio.to_thread(save_no_trade_reason, db, GTOP_GUILD_ID,
+        message.author.id, message.content, reply_message_id=reply_id,
+        source_message_id=getattr(message, 'id', None))
+    if reason is not None:
+        if reason['status'] == 'already_answered':
+            reply = 'That check-in already has a reason saved. Its original answer is unchanged.'
+        elif reason['skipped']:
+            reply = 'Skipped. Your no-trade check-in is saved; no reason is required.'
+        else:
+            reply = 'Saved your reason with the same shift’s check-in.'
+        await message.reply(reply)
+        return True
     saved = await asyncio.to_thread(save_checkin_reply, db, GTOP_GUILD_ID,
-        message.author.id, message.content, reply_message_id=reply_id)
+        message.author.id, message.content, reply_message_id=reply_id,
+        source_message_id=getattr(message, 'id', None))
     if saved is None:
         return False
+    if saved.get('duplicate'):
+        await message.reply('That check-in was already saved.')
+        return True
     checkin_id = saved['id']
+    acknowledgment = await asyncio.to_thread(no_trade_acknowledgment, db,
+        GTOP_GUILD_ID, message.author.id, saved)
+    if acknowledgment is not None:
+        sent = await message.reply(acknowledgment['text'])
+        if acknowledgment['ask_reason']:
+            try:
+                tracked = await asyncio.to_thread(record_reason_prompt, db, GTOP_GUILD_ID,
+                    message.author.id, saved, getattr(sent, 'id', None))
+                if not tracked:
+                    await message.reply('Your check-in is saved, but optional reason replies could not be enabled right now.')
+            except Exception:
+                logger.exception('GBOP no-trade reason prompt tracking failed checkin=%s', checkin_id)
+                await message.reply('Your check-in is saved, but optional reason replies could not be enabled right now.')
+        return True
 
     reply = "Saved. GBOP folded this check-in into your member coaching profile."
     try:

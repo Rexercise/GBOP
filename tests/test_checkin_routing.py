@@ -446,6 +446,8 @@ class CheckinConsumerTests(unittest.IsolatedAsyncioTestCase):
         ns = dict(asyncio=asyncio, db=Mock(), GTOP_GUILD_ID=1, GTOP_OWNER_USER_ID=999,
                   member_access_error=Mock(return_value=None),
                   save_checkin_reply=Mock(return_value=None),
+                  save_no_trade_reason=Mock(return_value=None),
+                  no_trade_acknowledgment=Mock(return_value=None), record_reason_prompt=Mock(),
                   ingest_checkin_by_id=Mock(), get_member_plan=Mock(return_value={}),
                   logger=Mock())
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), ns)
@@ -459,7 +461,7 @@ class CheckinConsumerTests(unittest.IsolatedAsyncioTestCase):
         message.content = BTC_REQUEST
         self.assertFalse(await ns['_consume_checkin_reply'](message))
         ns['save_checkin_reply'].assert_called_once_with(ns['db'], 1, 20, BTC_REQUEST,
-                                                       reply_message_id=500)
+                                                       reply_message_id=500, source_message_id=None)
         ns['ingest_checkin_by_id'].assert_not_called()
         ns['get_member_plan'].assert_not_called()
         message.reply.assert_not_awaited()

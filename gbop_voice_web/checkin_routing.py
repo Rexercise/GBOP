@@ -7,7 +7,8 @@ MAX_REPLY_AGE = timedelta(hours=24)
 _PREFIX = re.compile(r"^check[ -]?in\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
 _ACTIONS = (
     r"watch|monitor|notify|alert|send|show|list|cancel|stop|start|open|close|"
-    r"delete|edit|update|save|record|add|log|journal|review|analy[sz]e|get|give|tell"
+    r"delete|edit|update|save|record|add|log|journal|review|analy[sz]e|get|give|tell|"
+    r"check|find|compare|explain|help|calculate|summari[sz]e|pull|fetch|look|remind|set"
 )
 _REQUEST = re.compile(
     r"(?:^|[.!?;,\n]\s*|\b(?:and|also|then|but)\s+)"
@@ -42,7 +43,7 @@ def _eligible(row, now):
         return False
 
 
-def save_checkin_reply(db, guild_id, user_id, content, reply_message_id=None, now_utc=None):
+def save_checkin_reply(db, guild_id, user_id, content, reply_message_id=None, now_utc=None, source_message_id=None):
     """Save only an explicit answer after the caller has verified member access.
 
     A Discord reply must target this member's recorded formation prompt. Plain
@@ -64,7 +65,16 @@ def save_checkin_reply(db, guild_id, user_id, content, reply_message_id=None, no
     if now.tzinfo is None:
         return None
     scope = (int(guild_id), int(user_id))
+    receipt_key = None
+    if source_message_id is not None:
+        if (isinstance(source_message_id, bool) or not str(source_message_id).isdecimal()
+                or int(str(source_message_id)) <= 0):
+            return None
+        receipt_key = 'checkin_reply:' + str(source_message_id)
     with db() as conn:
+        if receipt_key and conn.execute('''SELECT event_key FROM gbop_shift_deliveries
+            WHERE event_key=? AND guild_id=? AND user_id=?''', (receipt_key,) + scope).fetchone():
+            return {'duplicate': True}
         candidates = conn.execute('''SELECT id,shift_date,shift,prompt_sent_at
             FROM post_shift_checkins WHERE guild_id=? AND user_id=? AND response IS NULL
             ORDER BY id DESC LIMIT 50''', scope).fetchall()
@@ -84,12 +94,23 @@ def save_checkin_reply(db, guild_id, user_id, content, reply_message_id=None, no
                     (key,) + scope + (str(reply_message_id),)).fetchone()
                 if delivered is None:
                     continue
+            if receipt_key:
+                claimed = conn.execute('''INSERT INTO gbop_shift_deliveries
+                    (event_key,guild_id,user_id,discord_message_id,delivered_at) VALUES (?,?,?,?,?)
+                    ON CONFLICT(event_key,guild_id,user_id) DO NOTHING RETURNING event_key''',
+                    (receipt_key,) + scope + (str(source_message_id), now.isoformat())).fetchone()
+                if claimed is None:
+                    return {'duplicate': True}
             saved = conn.execute('''UPDATE post_shift_checkins
                 SET response=?,responded_at=? WHERE id=? AND guild_id=? AND user_id=?
                 AND response IS NULL AND prompt_sent_at=? RETURNING id''',
                 (response, now.astimezone(timezone.utc).isoformat(), row['id']) + scope
                 + (row['prompt_sent_at'],)).fetchone()
             if saved is not None:
-                return {'id': saved['id'], 'response': response}
+                return {'id': saved['id'], 'response': response,
+                        'shift_date': row['shift_date'], 'shift': row['shift']}
+            if receipt_key:
+                conn.execute('''DELETE FROM gbop_shift_deliveries
+                    WHERE event_key=? AND guild_id=? AND user_id=?''', (receipt_key,) + scope)
             return None
     return None
