@@ -413,6 +413,11 @@ def current_voice_overview(result):
 
 def voice_tool_payload(name, result):
     """Select a bounded presentation after authoritative context capture."""
+    if name == 'scan_young_lefty':
+        if _encoded_size(result) > 28000:
+            return {'ok': False, 'status': 'scan_payload_budget_exceeded',
+                    'message': 'Scan evidence exceeded its response budget; no complete scan result was supplied.'}
+        return deepcopy(result)
     if (name == 'review_other_market_ranges' and isinstance(result, dict)
             and isinstance(result.get('review', {}).get('other_range_followup'), dict)):
         out = deepcopy(result)
