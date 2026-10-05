@@ -12,15 +12,16 @@ from gbop_voice_web.candle_naming import candle_label, source_timeframe
 from gbop_voice_web.shift_narrative import directional_outcome
 from gbop_voice_web.smt_reference import closing_candle
 from gbop_voice_web.active_range_story import selected_range_story, shift_end_state, _double_sentence
+from gbop_voice_web.variant_explanation import variant_clause
 from gbop_voice_web.target_approach import owner_inducement_example, inducement_clause
 
 
 SYNOPSIS_CONTRACT = (
-    '9ate8 verdict first; independent Young Lefty status next, even absent/unverified. '
-    'Follow active_range_context to shift_end; only next_selected_range changes the anchor. '
-    'Body direction is not range thesis. Verdict then BUT induced 50% with measured gap/path '
-    'progress; no glossary or inferred profit. Model 1/CISD/Soup needs exact detail_request; '
-    'omission is not absence.')
+    '9ate8 verdict, Young Lefty status, then selected chronology to shift_end. '
+    'Only next_selected_range changes anchors. Explain supplied variants/candidates and missing conditions. '
+    'Preserve earlier delivery and BUT induced 50% gap/path. Body is not thesis; no glossary/profit. '
+    'Use detail_request for Model 1/CISD/Soup; omission is not absence.')
+
 
 OTHER_RANGES_CONTRACT = (
     'Use spoken_summary/ranges chronologically. Exclude discussed anchors from new opportunities, '
@@ -65,10 +66,7 @@ def _continuity_bridge(context):
                     source_timeframe(event.get('precision_seconds'))))
         if actions:
             parts.append(f"The {_clock(hour['candle_start_ny'])} H1 candle " + ' and '.join(actions) + '.')
-    codes = [v['code'] for v in context.get('variant', {}).get('labels', [])]
-    if codes:
-        parts.append('/'.join(codes) + ' is supported by the completed H1 sequence'
-                     + (f" at {_clock(context['variant_known_at_ny'])}." if context.get('variant_known_at_ny') else '.'))
+    parts.append(variant_clause(context.get('variant', {}), include_known=True) + '.')
     if context.get('invalidated_at_ny'):
         parts.append(f"The range was invalidated at {_clock(context['invalidated_at_ny'])}"
                      + (' after recorded delivery.' if context['conclusion']['status'] == 'opposing_liquidity_delivered' else '.'))
@@ -100,13 +98,9 @@ def _short_selected_summary(context):
                                f"{source_timeframe(event.get('precision_seconds')) or 'source'}")
         if actions:
             parts.append(f"{_clock(hour['candle_start_ny'])} H1 " + ', then '.join(actions) + '.')
-    labels = [v['code'] for v in context.get('variant', {}).get('labels', [])]
-    if labels:
-        parts.append('/'.join(labels) + ' at the completed '
-                     + (f"{_clock(context['variant_known_at_ny'])} H1 close."
-                        if context.get('variant_known_at_ny') else 'H1 close.'))
-    elif context['conclusion']['status'] == 'pending_at_review_cutoff':
-        parts.append('Its outcome and variant remain pending at the cutoff.')
+    parts.append(variant_clause(context.get('variant', {}), include_known=True) + '.')
+    if context['conclusion']['status'] == 'pending_at_review_cutoff':
+        parts.append('Its outcome remains pending at the cutoff.')
     elif context['conclusion']['status'] == 'unverified':
         parts.append('Its outcome remains unverified.')
     if context.get('invalidated_at_ny'):
@@ -150,7 +144,7 @@ def _clock(value):
 
 
 def _objective(value, level=None):
-    out = _pick(value, ('status', 'level', 'liquidity_side', 'spoken_label'))
+    out = _pick(value, ('status', 'level', 'liquidity_side'))
     if 'level' not in out and level is not None:
         out['level'] = level
     evidence = value.get('evidence')
@@ -178,8 +172,11 @@ def _local_fact(row, play=None):
     return {'anchor_start_ny': row['anchor']['start_ny'], 'anchor_timeframe': 'H1', 'play': play,
             'role': row.get('role', 'independent_range_context'),
             'direction': outcome['direction'], 'verdict': verdict, 'outcome': status,
-            'variant': {'status': 'established' if labels else 'not_established' if invalid else 'pending',
-                        'labels': labels},
+            'variant': {'status': 'established' if labels else 'not_established' if invalid else
+                            variant.get('explanation', {}).get('status', 'pending'),
+                        'labels': labels, **({'explanation': {k: deepcopy(v) for k, v in variant['explanation'].items()
+                            if v is not None and v != []}}
+                            if variant.get('explanation') and (labels or variant['explanation'].get('candidates')) else {})},
             'midpoint': _objective(outcome['midpoint'], row['anchor'].get('midpoint')),
             'opposing_liquidity': _objective(outcome['opposing_liquidity'],
                 row['anchor'].get('high' if outcome['direction'] == 'bullish' else 'low') if outcome['direction'] else None),
@@ -265,11 +262,9 @@ def _sentence(fact, *, young=False):
     text = f'{name}: {intro}, {_delivery_text(fact)}'
     if fact['verdict'] == 'boneless_potential':
         text += '; setup qualification pending'
-    labels = fact['variant']['labels']
-    if labels:
-        text += '; ' + '/'.join(v['code'] + ' ' + v['name'] for v in labels)
-    elif not young and fact['verdict'] != 'not_initiated':
-        text += '; variant ' + ('not established' if fact['variant']['status'] == 'not_established' else 'pending')
+    if (fact['variant']['labels'] or fact['variant'].get('explanation', {}).get('candidates')
+            or not young and fact['verdict'] != 'not_initiated'):
+        text += '; ' + variant_clause(fact['variant'])
     if fact.get('invalidated_at_ny'):
         text += '; ' + ('later invalidated on ' if fact['outcome'] == 'opposing_liquidity_delivered' else 'invalidated on ')
         text += closing_candle(fact['invalidated_at_ny'])['spoken_label']

@@ -1,7 +1,7 @@
 """Owner broadcasts with synthetic members and a fake Discord transport only."""
 import ast
 import asyncio
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 import re
 import time
@@ -18,9 +18,9 @@ from gbop_voice_web.owner_broadcast import (
 BOT = Path(__file__).resolve().parents[1] / 'bot.py'
 
 
-def member(user_id, *, name=None, role=True, bot=False):
+def member(user_id, *, name=None, role=True, bot=False, guild_id=10):
     return NS(id=user_id, display_name=name or f'Member {user_id}', bot=bot,
-              role=role, send=AsyncMock())
+              guild=NS(id=guild_id), role=role, send=AsyncMock(), add_roles=AsyncMock())
 
 
 def draft(ids=(1, 2), audience='all', selected=()):
@@ -38,21 +38,25 @@ class OwnerBroadcastPlanTests(unittest.TestCase):
                 parse_selection('selected', value)
 
     def test_audience_and_selection_must_be_explicit_and_consistent(self):
-        for mode, raw in (('all', '1'), ('selected', ''), ('all_except', ''), ('unknown', '1')):
+        for mode, raw in (('all', '1'), ('all_server_members', '1'), ('selected', ''),
+                          ('all_except', ''), ('unknown', '1')):
             with self.subTest(mode=mode), self.assertRaises(ValueError):
                 parse_selection(mode, raw)
         self.assertEqual(parse_selection('all', ''), ())
+        self.assertEqual(parse_selection('all_server_members', ''), ())
 
-    def test_all_three_audiences_resolve_exact_ids(self):
+    def test_all_four_audiences_resolve_exact_ids(self):
         self.assertEqual([r.user_id for r in draft().recipients], [1, 2])
         self.assertEqual([r.user_id for r in draft(audience='selected', selected=(2,)).recipients], [2])
         excluded = draft(audience='all_except', selected=(2,))
         self.assertEqual([r.user_id for r in excluded.recipients], [1])
         self.assertEqual(excluded.excluded_count, 1)
+        self.assertEqual([r.user_id for r in draft(audience='all_server_members').recipients], [1, 2])
 
     def test_unknown_selection_cannot_silently_broaden_audience(self):
-        for mode in ('selected', 'all_except'):
-            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'not currently eligible'):
+        for mode, error in (('selected', 'not verified current human members'),
+                            ('all_except', 'not currently eligible')):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, error):
                 draft(audience=mode, selected=(99,))
 
     def test_zero_recipient_audience_has_no_confirmation(self):
@@ -130,7 +134,7 @@ class FakeEmbed:
 class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.none_mentions = object()
-        discord = NS(Interaction=object, Embed=FakeEmbed, ButtonStyle=NS(secondary=1, danger=2),
+        discord = NS(Interaction=object, Message=object, Embed=FakeEmbed, ButtonStyle=NS(secondary=1, danger=2),
             AllowedMentions=NS(none=lambda: self.none_mentions),
             utils=NS(escape_markdown=lambda value: re.sub(r'([*_`])', r'\\\1', value)),
             ui=NS(View=FakeView, Button=object, button=lambda **kwargs: lambda fn: FakeButton(fn, **kwargs)))
@@ -138,12 +142,14 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
             GTOP_OWNER_USER_ID=999, GTOP_GUILD_ID=10,
             is_owner=lambda m: m.id == 999, has_member_role=lambda m: m.role,
             client=NS(get_guild=Mock()), logger=Mock(),
-            member_access_error=Mock(return_value=None), db=object(),
+            member_access_error=Mock(return_value=None), db=Mock(side_effect=AssertionError('No broadcast DB writes')),
+            ensure_member_record=Mock(side_effect=AssertionError('No broadcast activation')),
             MEMBER_ACCESS_UNAVAILABLE=MEMBER_ACCESS_UNAVAILABLE,
             AUDIENCE_LABELS=AUDIENCE_LABELS, PREVIEW_SECONDS=PREVIEW_SECONDS,
             build_draft=build_draft, owner_message=owner_message, parse_selection=parse_selection,
             _authorized_scheduled_member=AsyncMock())
-        names = {'_resolve_owner_broadcast_draft', '_send_owner_broadcast', 'OwnerBroadcastView', 'gbopmessage'}
+        names = {'_current_owner_message_member', '_resolve_owner_broadcast_draft',
+                 '_send_owner_broadcast', 'OwnerBroadcastView', 'gbopmessage'}
         nodes = [n for n in ast.parse(BOT.read_text()).body if getattr(n, 'name', '') in names]
         for node in nodes:
             node.decorator_list = []
@@ -161,7 +167,9 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
                 yield m
             if error:
                 raise RuntimeError('Synthetic listing failure')
-        guild = NS(fetch_members=fetch_members)
+        members = list(members)
+        guild = NS(id=10, fetch_members=fetch_members,
+                   fetch_member=AsyncMock(side_effect={m.id: m for m in members}.get))
         self.ns['client'].get_guild.return_value = guild
         return guild
 
@@ -188,6 +196,7 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
         expected_message = '📣 **GBOP Message**\n\n' + text
         for audience, selection, expected_ids in (
             ('all', '', {1, 2, 3}),
+            ('all_server_members', '', {1, 2, 3}),
             ('selected', '2', {2}),
             ('all_except', '2', {1, 3}),
         ):
@@ -214,11 +223,12 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_command_rejects_nonowner_admin_foreign_guild_and_dm(self):
         self.ns['_resolve_owner_broadcast_draft'] = AsyncMock()
-        for user_id, guild_id in ((1, 10), (999, 11), (999, None)):
-            interaction = self.interaction(user_id, guild_id)
-            await self.ns['gbopmessage'](interaction, 'test')
-            interaction.response.send_message.assert_awaited_once()
-            interaction.response.defer.assert_not_awaited()
+        for audience in AUDIENCE_LABELS:
+            for user_id, guild_id in ((1, 10), (999, 11), (999, None)):
+                interaction = self.interaction(user_id, guild_id)
+                await self.ns['gbopmessage'](interaction, 'test', audience, '2' if audience in ('selected', 'all_except') else '')
+                interaction.response.send_message.assert_awaited_once()
+                interaction.response.defer.assert_not_awaited()
         self.ns['_resolve_owner_broadcast_draft'].assert_not_awaited()
 
     async def test_command_rejects_invalid_inputs_before_lookup(self):
@@ -263,14 +273,16 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
             await self.ns['_resolve_owner_broadcast_draft']('test', 'all', ())
 
     async def test_selected_does_not_require_or_expand_to_guild_listing(self):
-        self.ns['_authorized_scheduled_member'].return_value = member(2)
+        guild = self.guild([member(2, role=False)])
+        guild.fetch_members = Mock(side_effect=AssertionError('No selected member listing'))
         preview = await self.ns['_resolve_owner_broadcast_draft']('test', 'selected', (2,))
         self.assertEqual([r.user_id for r in preview.recipients], [2])
-        self.ns['_authorized_scheduled_member'].assert_awaited_once_with(2)
+        guild.fetch_member.assert_awaited_once_with(2)
+        self.ns['_authorized_scheduled_member'].assert_not_awaited()
 
     async def test_selected_and_excluded_ineligible_members_block_preview(self):
-        self.ns['_authorized_scheduled_member'].return_value = None
-        with self.assertRaisesRegex(ValueError, 'not currently eligible'):
+        self.guild([])
+        with self.assertRaisesRegex(ValueError, 'not verified current human members'):
             await self.ns['_resolve_owner_broadcast_draft']('test', 'selected', (2,))
         self.guild([member(1)])
         with self.assertRaisesRegex(ValueError, 'not currently eligible'):
@@ -421,6 +433,244 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('**1** member', result)
         self.assertIn('1 delivery attempt(s) could not be confirmed', result)
         self.assertIn('2 recipient(s) were skipped', result)
+
+    async def test_server_audiences_receive_without_gbop_access_or_profile_writes(self):
+        for audience in ('selected', 'all_server_members'):
+            for access_state in ('missing profile', 'inactive', 'unacknowledged', 'revoked'):
+                with self.subTest(audience=audience, access_state=access_state):
+                    recipient = member(2, role=False)
+                    guild = self.guild([recipient])
+                    self.ns['member_access_error'].return_value = access_state
+                    interaction = self.interaction()
+                    await self.ns['gbopmessage'](interaction, 'Exact synthetic message', audience,
+                                                 '2' if audience == 'selected' else '')
+                    preview = interaction.followup.send.await_args
+                    self.assertIn('`2`', preview.kwargs['embed'].description)
+                    self.assertIn('does not grant GBOP access', preview.kwargs['embed'].description)
+                    recipient.send.assert_not_awaited()
+                    await preview.kwargs['view'].confirm_send.callback(self.interaction())
+                    recipient.send.assert_awaited_once_with(preview.args[0], allowed_mentions=self.none_mentions)
+                    recipient.add_roles.assert_not_awaited()
+                    self.assertFalse(recipient.role)
+                    guild.fetch_member.assert_awaited_with(2)
+        self.ns['member_access_error'].assert_not_called()
+        self.ns['db'].assert_not_called()
+        self.ns['ensure_member_record'].assert_not_called()
+        self.ns['_authorized_scheduled_member'].assert_not_awaited()
+
+    async def test_server_wide_uses_complete_fresh_humans_not_partial_cache_or_gbop_gate(self):
+        eligible, no_role, inactive, revoked, bot = [member(1), member(2, role=False),
+                                                   member(3), member(4), member(5, bot=True)]
+        guild = self.guild([eligible, no_role, inactive, revoked, bot])
+        guild.members = [eligible]  # A partial gateway cache must never define this audience.
+        self.ns['member_access_error'].side_effect = AssertionError('No GBOP eligibility check')
+        preview = await self.ns['_resolve_owner_broadcast_draft']('test', 'all_server_members', ())
+        self.assertEqual([r.user_id for r in preview.recipients], [1, 2, 3, 4])
+        self.assertEqual(await self.ns['_send_owner_broadcast'](preview), (4, 0, 0))
+        self.assertEqual([call.args[0] for call in guild.fetch_member.await_args_list], [1, 2, 3, 4])
+        bot.send.assert_not_awaited()
+        self.ns['member_access_error'].assert_not_called()
+        self.ns['db'].assert_not_called()
+
+    async def test_default_and_exclusion_audiences_keep_full_gbop_eligibility(self):
+        for audience, selected, expected in (('all', (), [1, 6]), ('all_except', (6,), [1])):
+            self.guild([member(1), member(2, role=False), member(3), member(4), member(5, bot=True), member(6)])
+            self.ns['member_access_error'].side_effect = lambda db, guild, uid, owner: {
+                3: 'inactive', 4: 'revoked',
+            }.get(uid)
+            self.ns['_authorized_scheduled_member'].reset_mock()
+            self.ns['_authorized_scheduled_member'].side_effect = lambda uid: member(uid)
+            preview = await self.ns['_resolve_owner_broadcast_draft']('test', audience, selected)
+            self.assertEqual([r.user_id for r in preview.recipients], expected)
+            self.assertEqual(await self.ns['_send_owner_broadcast'](preview), (len(expected), 0, 0))
+            self.assertEqual([c.args[0] for c in self.ns['_authorized_scheduled_member'].await_args_list], expected)
+
+    async def test_server_member_helper_rejects_malformed_ids_without_lookup(self):
+        guild = self.guild([member(1)])
+        for user_id in (None, True, False, '1', '', '<@1>', 'external', 0, -1, 2**64, 1.0):
+            with self.subTest(user_id=user_id):
+                self.assertIsNone(await self.ns['_current_owner_message_member'](user_id))
+        guild.fetch_member.assert_not_awaited()
+
+    async def test_selected_bots_nonmembers_external_and_unverified_members_block_whole_preview(self):
+        for invalid in (None, member(2, bot=True), member(2, guild_id=11), member(99),
+                        NS(id=2, bot=False), member(2, bot=None)):
+            with self.subTest(invalid=invalid):
+                one = member(1)
+                guild = self.guild([one])
+                guild.fetch_member.side_effect = [one, invalid]
+                with self.assertRaisesRegex(ValueError, 'not verified current human members'):
+                    await self.ns['_resolve_owner_broadcast_draft']('test', 'selected', (1, 2))
+                one.send.assert_not_awaited()
+
+    async def test_server_listing_partial_failure_or_invalid_guild_member_blocks_preview(self):
+        self.guild([member(1)], error=True)
+        with self.assertRaisesRegex(ValueError, 'complete current member list'):
+            await self.ns['_resolve_owner_broadcast_draft']('test', 'all_server_members', ())
+        for invalid in (member(2, guild_id=11), member(0), member('2'), member(True),
+                        member(2, bot=None), NS(id=2, bot=False)):
+            self.guild([member(1), invalid])
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'complete current member list'):
+                await self.ns['_resolve_owner_broadcast_draft']('test', 'all_server_members', ())
+
+    async def test_empty_or_bot_only_server_cannot_produce_confirmation(self):
+        for members in ([], [member(1, bot=True)]):
+            self.guild(members)
+            with self.assertRaisesRegex(ValueError, 'No eligible recipients'):
+                await self.ns['_resolve_owner_broadcast_draft']('test', 'all_server_members', ())
+
+    async def test_server_modes_fail_closed_when_guild_missing_wrong_or_fetch_fails(self):
+        for guild in (None, NS(id=11)):
+            self.ns['client'].get_guild.return_value = guild
+            for audience in ('selected', 'all_server_members'):
+                with self.subTest(audience=audience), self.assertRaisesRegex(ValueError, 'server is unavailable'):
+                    await self.ns['_resolve_owner_broadcast_draft']('test', audience, (2,) if audience == 'selected' else ())
+            self.assertIsNone(await self.ns['_current_owner_message_member'](2))
+        guild = self.guild([member(2)])
+        guild.fetch_member.side_effect = TimeoutError('Synthetic Discord outage')
+        with self.assertRaisesRegex(ValueError, 'not verified current human members'):
+            await self.ns['_resolve_owner_broadcast_draft']('test', 'selected', (2,))
+        for audience in ('selected', 'all_server_members'):
+            preview = draft((2,), audience, (2,) if audience == 'selected' else ())
+            self.assertEqual(await self.ns['_send_owner_broadcast'](preview), (0, 0, 1))
+
+    async def test_server_modes_recheck_departure_bots_guild_and_freeze_the_audience(self):
+        for audience in ('selected', 'all_server_members'):
+            members = {uid: member(uid, role=False) for uid in (1, 2, 3, 4)}
+            guild = self.guild(members.values())
+            preview = await self.ns['_resolve_owner_broadcast_draft'](
+                'test', audience, (1, 2, 3, 4) if audience == 'selected' else ())
+            del members[2]  # Left since preview; the old object can still exist in a cache.
+            members[3].bot = True
+            members[4].guild.id = 11
+            members[5] = member(5)  # New join must not expand the preview.
+            guild.fetch_member.reset_mock()
+            guild.fetch_member.side_effect = members.get
+            self.assertEqual(await self.ns['_send_owner_broadcast'](preview), (1, 0, 3))
+            self.assertEqual([c.args[0] for c in guild.fetch_member.await_args_list], [1, 2, 3, 4])
+            members[1].send.assert_awaited_once()
+            for uid in (3, 4, 5):
+                members[uid].send.assert_not_awaited()
+
+    async def test_loss_of_gbop_role_or_activation_does_not_expand_or_revoke_receive_only_permission(self):
+        for audience in ('selected', 'all_server_members'):
+            recipient = member(2)
+            self.guild([recipient])
+            preview = await self.ns['_resolve_owner_broadcast_draft'](
+                'test', audience, (2,) if audience == 'selected' else ())
+            recipient.role = False
+            self.ns['member_access_error'].return_value = 'revoked'
+            self.assertEqual(await self.ns['_send_owner_broadcast'](preview), (1, 0, 0))
+            recipient.add_roles.assert_not_awaited()
+        self.ns['member_access_error'].assert_not_called()
+        self.ns['db'].assert_not_called()
+
+    async def test_server_dm_privacy_and_uncertain_failures_are_not_retried(self):
+        for audience in ('selected', 'all_server_members'):
+            recipients = [member(1, role=False), member(2), member(3)]
+            recipients[0].send.side_effect = PermissionError('Synthetic disabled server-member DMs')
+            recipients[1].send.side_effect = TimeoutError('Synthetic uncertain transport failure')
+            self.guild(recipients)
+            preview = await self.ns['_resolve_owner_broadcast_draft'](
+                'test', audience, (1, 2, 3) if audience == 'selected' else ())
+            self.assertEqual(await self.ns['_send_owner_broadcast'](preview), (1, 2, 0))
+            for recipient in recipients:
+                recipient.send.assert_awaited_once()
+
+    async def test_large_server_preview_requires_every_page_and_sends_sequentially_once(self):
+        recipients = [member(uid, role=False) for uid in range(1, 106)]
+        active, peak = 0, 0
+
+        async def limited_send(*args, **kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0)  # Synthetic yield during a rate-limited Discord send.
+            active -= 1
+
+        for recipient in recipients:
+            recipient.send.side_effect = limited_send
+        self.guild(recipients)
+        preview = await self.ns['_resolve_owner_broadcast_draft']('Exact test', 'all_server_members', ())
+        view = self.view(preview)
+        await view.confirm_send.callback(self.interaction())
+        self.assertTrue(all(m.send.await_count == 0 for m in recipients))
+        observed = [r.user_id for r in preview.page(0)]
+        for page in range(1, preview.page_count):
+            interaction = self.interaction()
+            await view.next_page.callback(interaction)
+            self.assertEqual(interaction.response.edit_message.await_args.kwargs['content'], preview.message)
+            observed.extend(r.user_id for r in preview.page(page))
+        self.assertEqual(observed, list(range(1, 106)))
+        await asyncio.gather(*(view.confirm_send.callback(self.interaction()) for _ in range(4)))
+        self.assertEqual(peak, 1)
+        self.assertEqual(view.state, 'finished')
+        for recipient in recipients:
+            recipient.send.assert_awaited_once_with(preview.message, allowed_mentions=self.none_mentions)
+
+    async def test_server_preview_timeout_and_expired_result_transport_cannot_replay(self):
+        recipients = [member(uid, role=False) for uid in range(1, 26)]
+        self.guild(recipients)
+        preview = await self.ns['_resolve_owner_broadcast_draft']('test', 'all_server_members', ())
+        expired = self.view(preview)
+        expired.expires_at = 0
+        await expired.confirm_send.callback(self.interaction())
+        self.assertTrue(all(m.send.await_count == 0 for m in recipients))
+        view = self.view(preview)
+        for _ in range(1, preview.page_count):
+            await view.next_page.callback(self.interaction())
+        interaction = self.interaction()
+        interaction.followup.send.side_effect = TimeoutError('Synthetic expired interaction after long delivery')
+        with self.assertRaises(TimeoutError):
+            await view.confirm_send.callback(interaction)
+        await view.confirm_send.callback(self.interaction())
+        self.assertEqual(view.state, 'finished')
+        self.assertTrue(all(m.send.await_count == 1 for m in recipients))
+
+    async def test_server_audience_buttons_reject_nonowner_and_foreign_guild(self):
+        self.ns['_send_owner_broadcast'] = AsyncMock()
+        for audience in ('selected', 'all_server_members'):
+            for name in ('confirm_send', 'cancel_send', 'next_page', 'previous_page'):
+                for uid, gid in ((1, 10), (999, 11), (999, None)):
+                    view = self.view(draft((2,), audience, (2,) if audience == 'selected' else ()))
+                    interaction = self.interaction(uid, gid)
+                    await getattr(view, name).callback(interaction)
+                    self.assertEqual(view.state, 'pending')
+                    interaction.response.send_message.assert_awaited_once()
+        self.ns['_send_owner_broadcast'].assert_not_awaited()
+
+    async def test_unknown_audience_cannot_fall_through_to_sender(self):
+        self.assertEqual(await self.ns['_send_owner_broadcast'](replace(draft(), audience='unknown')), (0, 0, 2))
+        self.ns['_authorized_scheduled_member'].assert_not_awaited()
+
+    async def test_receiving_server_message_does_not_bypass_reply_restrictions(self):
+        node = next(n for n in ast.parse(BOT.read_text()).body if getattr(n, 'name', '') == 'on_message')
+        node.decorator_list = []
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(BOT), 'exec'), self.ns)
+        self.ns['GBOP_PRIVATE_ROOMS'] = Mock()
+        self.ns['client'].user = None
+        self.ns['ai_generate_reply'] = Mock(side_effect=AssertionError('Unauthorized reply'))
+        for role, record, denial in (
+            (False, {'activated': 0, 'revoked': 0}, 'member role'),
+            (True, {'activated': 0, 'revoked': 0}, 'Activate your GBOP'),
+            (True, {'activated': 1, 'revoked': 1}, 'revoked'),
+        ):
+            recipient = member(2, role=role)
+            self.guild([recipient])
+            preview = await self.ns['_resolve_owner_broadcast_draft']('test', 'selected', (2,))
+            self.assertEqual(await self.ns['_send_owner_broadcast'](preview), (1, 0, 0))
+            self.ns['ensure_member_record'].assert_not_called()
+            self.ns['db'].assert_not_called()
+            recipient.add_roles.assert_not_awaited()
+            self.ns['ai_resolve_member'] = AsyncMock(return_value=recipient)
+            self.ns['ensure_member_record'] = Mock()
+            self.ns['get_member_record'] = Mock(return_value=record.copy())
+            reply = NS(author=recipient, channel=NS(id=100), guild=None, mentions=[], reply=AsyncMock())
+            await self.ns['on_message'](reply)
+            self.assertIn(denial, reply.reply.await_args.args[0])
+            self.assertEqual(self.ns['get_member_record'].return_value, record)
+            self.ns['ensure_member_record'].reset_mock()
+        self.ns['ai_generate_reply'].assert_not_called()
 
 
 if __name__ == '__main__':

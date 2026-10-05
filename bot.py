@@ -614,14 +614,33 @@ async def checkin(interaction: discord.Interaction):
     )
 
 
+async def _current_owner_message_member(user_id):
+    """Resolve a server-member DM recipient without requiring or granting GBOP access."""
+    if type(user_id) is not int or not 0 < user_id < 2**64:
+        return None
+    guild = client.get_guild(GTOP_GUILD_ID)
+    if guild is None or guild.id != GTOP_GUILD_ID:
+        return None
+    try:
+        # Always refresh from Discord, never a cached user or stored profile.
+        member = await guild.fetch_member(user_id)
+        if (member.id != user_id or member.guild.id != GTOP_GUILD_ID
+                or member.bot is not False):
+            return None
+        return member
+    except Exception:
+        logger.warning('GBOP owner-message membership unavailable user=%s', user_id)
+        return None
+
+
 async def _resolve_owner_broadcast_draft(text, audience, selected_ids):
     guild = client.get_guild(GTOP_GUILD_ID)
-    if guild is None:
+    if guild is None or guild.id != GTOP_GUILD_ID:
         raise ValueError('The G.T.O.P server is unavailable. Please try again later.')
     eligible = []
     if audience == 'selected':
         for user_id in selected_ids:
-            member = await _authorized_scheduled_member(user_id)
+            member = await _current_owner_message_member(user_id)
             if member is not None:
                 eligible.append(member)
     else:
@@ -629,6 +648,13 @@ async def _resolve_owner_broadcast_draft(text, audience, selected_ids):
         # gateway cache or stored former-member profiles as the whole audience.
         try:
             async for member in guild.fetch_members(limit=None):
+                if audience == 'all_server_members':
+                    if (member.guild.id != GTOP_GUILD_ID or type(member.id) is not int
+                            or not 0 < member.id < 2**64 or type(member.bot) is not bool):
+                        raise ValueError('Invalid server member in listing')
+                    if not member.bot:
+                        eligible.append(member)
+                    continue
                 if member.bot or not (has_member_role(member) or is_owner(member)):
                     continue
                 error = await asyncio.to_thread(
@@ -647,10 +673,14 @@ async def _resolve_owner_broadcast_draft(text, audience, selected_ids):
 async def _send_owner_broadcast(draft):
     """Never expand a confirmed audience; fail closed at every recipient."""
     sent = unconfirmed = skipped = 0
-    if draft.owner_id != GTOP_OWNER_USER_ID or draft.guild_id != GTOP_GUILD_ID:
+    if (draft.owner_id != GTOP_OWNER_USER_ID or draft.guild_id != GTOP_GUILD_ID
+            or draft.audience not in AUDIENCE_LABELS):
         return 0, 0, len(draft.recipients)
     for recipient in draft.recipients:
-        member = await _authorized_scheduled_member(recipient.user_id)
+        if draft.audience in ('selected', 'all_server_members'):
+            member = await _current_owner_message_member(recipient.user_id)
+        else:
+            member = await _authorized_scheduled_member(recipient.user_id)
         if member is None:
             skipped += 1
             continue
@@ -687,15 +717,21 @@ class OwnerBroadcastView(discord.ui.View):
             name = ' '.join(recipient.name.split())[:80]
             name = discord.utils.escape_markdown(name)
             lines.append(f'{name} — `{recipient.user_id}`')
+        server_audience = self.draft.audience in ('selected', 'all_server_members')
+        selected_notice = ('Recipients do not need GBOP access to receive this message. '
+                           'Sending does not grant GBOP access.\n' if server_audience else '')
         embed = discord.Embed(
             title=f'Preview only · {len(self.draft.recipients)} recipient(s)',
             description=(f'**{AUDIENCE_LABELS[self.draft.audience]}**\n'
                          + (f'{self.draft.excluded_count} selected member(s) excluded.\n' if self.draft.excluded_count else '')
+                         + selected_notice
                          + '\n'.join(lines)),
         )
+        skip_notice = ('departed or unverified server members are skipped.' if server_audience
+                       else 'members who lose GBOP access are skipped.')
         embed.set_footer(text=(f'Recipients page {self.page_index + 1}/{self.draft.page_count}. '
             'Review every page, then Confirm send. Expires in 10 minutes. '
-            'New members are not added; members who lose access are skipped.'))
+            f'New members are not added; {skip_notice}'))
         return embed
 
     async def interaction_check(self, interaction: discord.Interaction):
@@ -771,7 +807,7 @@ class OwnerBroadcastView(discord.ui.View):
         await interaction.followup.send(
             f'GBOP message delivered to **{sent}** member(s). '
             f'{unconfirmed} delivery attempt(s) could not be confirmed; GBOP did not retry after a delivery error. '
-            f'{skipped} recipient(s) were skipped because current access could not be verified.',
+            f'{skipped} recipient(s) were skipped because current recipient eligibility could not be verified.',
             ephemeral=True,
         )
 
@@ -807,13 +843,13 @@ class OwnerBroadcastView(discord.ui.View):
 )
 @app_commands.describe(
     text="The exact message to preview (up to 1,800 characters).",
-    audience="All eligible members, selected members only, or all except selected members.",
+    audience="Eligible GBOP members, selected members, all server members, or eligible members except selected.",
     members="For selected/all_except: @user mentions or user IDs, separated by spaces or commas.",
 )
 async def gbopmessage(
     interaction: discord.Interaction,
     text: str,
-    audience: Literal['all', 'selected', 'all_except'] = 'all',
+    audience: Literal['all', 'selected', 'all_server_members', 'all_except'] = 'all',
     members: str = '',
 ):
     if not is_owner(interaction.user) or interaction.guild_id != GTOP_GUILD_ID:

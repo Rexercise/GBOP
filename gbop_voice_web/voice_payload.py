@@ -275,9 +275,8 @@ def _budget_overview(out):
         out['review'].pop('limits', None)
         out['review']['shift_story'].pop('limits', None)
         out['voice_view']['consolidated_limits'] = (
-            'Closed OHLC only; same-bar tick order unknown. Gaps/forming means unverified. '
-            'Independent ranges are not selected; incomplete hours cannot verify promotion. '
-            'Model 1 identity is separate from CSD/Soup/fills. Later delivery never restores invalid CRTs.')
+            'Closed OHLC; same-bar order unknown. Gaps/forming are unverified and block promotion; independent ranges are not selected. '
+            'Model 1 differs from CSD/Soup/fills. Later delivery never restores invalid CRTs.')
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         # Identical paired qualification/evidence is emitted once. References
         # resolve within this same payload, never through another API request.
@@ -301,7 +300,7 @@ def _budget_overview(out):
             if key in out['review']:
                 out['review'][key] = factor(out['review'][key], '#/review/' + key)
         out['voice_view']['reference_format'] = (
-            'same_evidence_as resolves to identical evidence at its JSON pointer in this payload.')
+            'same_evidence_as points to identical evidence within this payload.')
     out['voice_view']['character_budget'] = SHIFT_OVERVIEW_TARGET_CHARS
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         recap = out['review']['shift_recap']
@@ -320,13 +319,11 @@ def _budget_overview(out):
         recap.pop('range_summaries', None)
         out['voice_view'].pop('hourly_summary_reference', None)
         out['voice_view']['range_recap_prose_omitted'] = (
-            'Duplicate range prose omitted; named evidence remains. Use detail_request. Earlier delivery remains valid.')
+            'Duplicate prose omitted; named evidence/detail_request remain. Preserve earlier delivery.')
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         out['voice_view']['note'] = (
-            'All Model 1 bodies, first original-direction lifecycle and first wick per direction remain. '
-            'Own targets belong to that candle; parent and paired theses remain separate. '
-            'Do not infer absence from omission: fetch exact detail_request for other prices/times/lifecycles. '
-            'Source intervals differ from assigned closes. No fills or restored CRT validity are inferred.')
+            'All Model 1 bodies, first initiating lifecycle and first wick/direction remain; own/parent/paired scopes differ. '
+            'Do not infer absence: use detail_request. Source bars differ from assigned closes; no fills/restored validity.')
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         for row in ranges:
             row['blessed_thief'] = {**_pick(row['blessed_thief'], ('status', 'timeframe', 'source_gap_at_ny')),
@@ -362,12 +359,9 @@ def shift_voice_synopsis(result):
     out['voice_view'] = {
         'kind': 'shift_synopsis', 'detail_omitted': True,
         'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
-        'note': 'Default short synopsis only. Do not infer absence from omission. '
-                'Follow active_range_context through later candles to its conclusion and shift_end; '
-                'hourly candles do not automatically become new selected ranges. '
-                'Every named range remains recoverable through range_index detail_request; '
-                'specify detail_candle_start_ny for Model 1/CISD/Soup. '
-                'Seven is independent and can oppose eight. Raw verified context is retained.'}
+        'note': 'Follow the selected range to shift_end; only a recorded transition '
+                'changes selection. Name supported variants/candidates with reasons and missing conditions. '
+                'Omission is not absence; range_index retrieves Model 1/CISD/Soup detail.'}
     if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
         synopsis = out['review']['shift_synopsis']
         return _bounded_error({'ok': False, 'status': 'voice_synopsis_budget_exceeded',

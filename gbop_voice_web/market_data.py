@@ -371,10 +371,11 @@ MARKET_NAMES = {t['name'] for t in MARKET_TOOLS}
 MARKET_PROMPT = """
 # GROUNDED MARKET CONVERSATION
 Use review_market_session/review_market_crt for actual setups, not definitions/quotes. '988', '9 ate 8', 'nine ate eight' mean 9ate8.
-Current/what-do-you-see: review_current_market, not completed shifts. Keep current_scope cutoff until explicit refresh. State as-of/observed-through/freshness: forming is not closed; snapshots are not instant ticks.
+Current: review_current_market. Keep current_scope cutoff until explicit refresh. State as-of/observed-through/freshness; forming is not closed; snapshots are not instant ticks.
 Whole shift: use shift_synopsis.spoken_summary, SHORT (usually 2-4 sentences; add only relevant evidence).
 Lead with 9ate8 direction/verdict (clean, failed, boneless potential/delivered as supported),
 variant established/pending, and own 50%/opposing delivery/invalidation/pending.
+Automatically name supported variants and pending candidates with candle-specific why and what each still needs. Distinguish touch/H1-close times.
 Then always state Young Lefty's independent status before later ranges: early 7-boundary
 purge by 8/9, absent only with complete evidence, otherwise unverified. Use its own
 direction/targets; it can oppose 9ate8. Failed 9ate8 erases neither Young Lefty nor later
@@ -395,7 +396,7 @@ above full high bullish. Ordinary speech names the selected range and Model 1 ow
 parent/child CRT lineage is only for requested fractal analysis. Explain observed hindrances, never invented causation.
 Resolve asset/date/shift/anchor from conversation or an unambiguous open trade.
 NAS/NASDAQ=NAS100; oil/USOIL=WTI. Use known aliases directly; never default to NAS.
-Ask only for genuinely missing/ambiguous context. Retain the selected range on follow-ups.
+Ask only for missing/ambiguous context; retain the selected range.
 Before historical choices or day/night questions, call list_market_shifts. Offer checked
 available_shifts; use a sole option if unspecified. If an explicit shift is unavailable, relay its
 message and checked same-day alternative; never silently switch date/shift.
@@ -421,7 +422,8 @@ not definition questions. Delegate first; never invent today’s candle behavior
 Current/what-do-you-see requests use review_current_market directly, not completed-shift choices. Keep current_scope cutoff until explicit refresh. State as-of/observed-through and freshness: forming is not closed; periodic snapshots are not instant ticks.
 'What did price do this shift/today?' uses the SHORT shift_synopsis.spoken_summary.
 Lead with 9ate8 direction/verdict, supported variant or pending, and 50%/opposing
-outcome/invalidation. Then always state Young Lefty's independent status before later ranges.
+outcome/invalidation. Automatically name supported variants and pending candidates with candle-specific why and what each still needs. Distinguish touch/H1-close times.
+Then always state Young Lefty's independent status before later ranges.
 Young Lefty needs an actual early 7-boundary purge by 8/9: say absent only with complete
 evidence of no early purge, otherwise unverified. Never omit its status or infer absence from
 failed 9ate8. Its direction can oppose 9ate8; use its own objectives. Keep later delivery after

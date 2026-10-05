@@ -17,6 +17,7 @@ CURRENT_CONTRACT = (
     'on-demand snapshot, not tick streaming. Never say purging as we speak. '
     'Forming ranges are provisional, never fixed references or closed candles. '
     'Purges require a complete reference; variants/CISD require their own closes. '
+    'Name supplied variants/candidates with candle-specific why and missing conditions. '
     'Keep observed delivery separate from pending classification. Preserve this '
     'scope/cutoff for detail and journals; refresh only on a new current request. '
     'No completed-shift fallback, automatic fractal scan, member fill or result inference.')
@@ -153,7 +154,9 @@ def _range_fact(evidence, role, play, asset, cutoff, tf, assigned):
             'direction': outcome.get('direction'), 'outcome': outcome.get('status'),
             'invalidated_at_ny': evidence.get('invalidated_at_ny'),
             'variant': {'status': 'not_assessed' if tf != 'H1' else 'established' if labels else
-                        'not_established' if evidence.get('invalidated_at_ny') else 'pending', 'labels': labels},
+                        'not_established' if evidence.get('invalidated_at_ny') else
+                        variants.get('explanation', {}).get('status', 'pending') if purges else 'pending', 'labels': labels,
+                        **({'explanation': deepcopy(variants['explanation'])} if variants.get('explanation') else {})},
             'midpoint': _objective(outcome.get('midpoint', {})),
             'opposing_liquidity': _objective(outcome.get('opposing_liquidity', {})),
             'first_purge': _pick(purges[0], ('kind', 'bar_open_ny', 'bar_close_ny', 'precision_seconds')) if purges else None,
