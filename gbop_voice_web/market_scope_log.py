@@ -44,8 +44,61 @@ def _scope(value):
     return out
 
 
+def _ss_scope(value):
+    """Only canonical public market identities; never free-form tool inputs."""
+    from gbop_voice_web.market_data import asset_name
+    value = _dict(value)
+    out = {}
+    asset = value.get('asset')
+    if asset is not None:
+        try:
+            if not isinstance(asset, str) or len(asset) > 32:
+                raise ValueError('Invalid asset')
+            out['asset'] = asset_name(asset)
+        except ValueError:
+            out['asset_status'] = 'invalid'
+    day = value.get('week_start')
+    if day is not None:
+        try:
+            if not isinstance(day, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day):
+                raise ValueError('Invalid week')
+            parsed = date.fromisoformat(day)
+            if parsed.weekday() != 0:
+                raise ValueError('Invalid week')
+            out['week_start'] = parsed.isoformat()
+        except ValueError:
+            out['week_start_status'] = 'invalid'
+    version = value.get('report_version')
+    if version is not None:
+        if isinstance(version, str) and re.fullmatch(r'ss-weekly-v\d{1,3}-[a-f0-9]{20}(?:-r\d{1,9})?', version):
+            out['report_version'] = version
+        else:
+            out['report_version_status'] = 'invalid'
+    return out
+
+
+def _ss_log(args, result, voice):
+    args, voice = _dict(args), _dict(voice)
+    ok = result.get('ok') is True
+    statuses = {'report_not_prepared', 'report_version_not_found',
+                'source_weekly_boundary_unavailable', 'week_not_closed'}
+    status = result.get('status')
+    out = {'tool': 'get_weekly_structure_study', 'requested': _ss_scope(args),
+           'lookup_mode': 'latest_completed' if args.get('week_start') is None
+               and args.get('report_version') is None else 'exact_scope',
+           'ok': ok,
+           'status': ('prepared' if result.get('asset') else 'catalogue') if ok
+               else status if isinstance(status, str) and status in statuses else 'lookup_failed'}
+    out['resolved' if ok else 'searched'] = _ss_scope(result)
+    if voice:
+        out['voice_ok'] = voice.get('ok') is True
+    return out
+
+
 def market_scope_log(name, args, result, voice=None):
     """Return bounded typed scope/identity facts only for read-only market tools."""
+    if name == 'get_weekly_structure_study' and isinstance(result, dict):
+        return _ss_log(args, result, voice)
     if name not in TOOLS or not isinstance(result, dict):
         return None
     context = _dict(result.get('market_context'))

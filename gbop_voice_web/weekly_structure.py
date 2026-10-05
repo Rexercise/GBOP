@@ -213,13 +213,18 @@ def persist_report(db, report):
 
 
 def read_report(conn, asset, week_start, report_version=None):
-    if report_version:
+    if report_version is not None:
         row = conn.execute('''SELECT payload FROM gbop_ss_reports
             WHERE asset=? AND week_start=? AND report_version=?''', (asset, week_start, report_version)).fetchone()
     else:
         row = conn.execute('''SELECT payload FROM gbop_ss_reports WHERE asset=? AND week_start=?
             ORDER BY revision DESC LIMIT 1''', (asset, week_start)).fetchone()
     return json.loads(row['payload']) if row else None
+
+
+def _saved_week_exists(conn, asset, week_start):
+    return conn.execute('SELECT 1 FROM gbop_ss_reports WHERE asset=? AND week_start=? LIMIT 1',
+                        (asset, week_start)).fetchone() is not None
 
 
 def get_weekly_structure_study(db, guild, user, args=None):
@@ -234,6 +239,11 @@ def get_weekly_structure_study(db, guild, user, args=None):
                 if latest:
                     window['week_start'] = str(latest['week_start'])
             report = read_report(conn, asset, window['week_start'], args.get('report_version'))
+            # A saved-report lookup cannot establish why preparation is missing.
+            # In particular, an exact-version miss is not missing W1 evidence.
+            saved_week = bool(report)
+            if not report and args.get('report_version') is not None:
+                saved_week = _saved_week_exists(conn, asset, window['week_start'])
             contributions = conn.execute('''SELECT report_version,revision,answers,created_at
                 FROM gbop_ss_contributions WHERE guild_id=? AND user_id=? AND asset=? AND week_start=? AND report_version=?
                 ORDER BY revision DESC LIMIT 12''',
@@ -246,16 +256,21 @@ def get_weekly_structure_study(db, guild, user, args=None):
                     latest = conn.execute('SELECT week_start FROM gbop_ss_reports WHERE asset=? ORDER BY week_start DESC,revision DESC LIMIT 1', (name,)).fetchone()
                     if latest:
                         target = str(latest['week_start'])
-                row = read_report(conn, name, target)
+                row = read_report(conn, name, target, args.get('report_version'))
+                missing_version = (not row and args.get('report_version') is not None
+                                   and _saved_week_exists(conn, name, target))
                 reports.append({'asset': name, 'week_start': target, 'window': row['window'] if row else None, 'report_version': row['report_version'] if row else None,
                                 'coverage': {k: row['coverage'][k] for k in ('status', 'source_timeframe', 'unobserved_interval_count', 'nominal_final_bar_present', 'full_broker_week_verified')} if row else None,
-                                'status': 'prepared' if row else 'source_weekly_boundary_unavailable' if name in CRYPTO else 'not_prepared'})
+                                'status': 'prepared' if row else 'report_version_not_found' if missing_version else 'not_prepared'})
             return {'ok': True, 'kind': 'Weekly Structure Study', 'week_start': window['week_start'],
                     'assets': reports, 'next_step': 'Which asset would you like to review?'}
     if not report:
         return {'ok': False, 'asset': asset, 'week_start': window['week_start'],
-                'status': 'source_weekly_boundary_unavailable' if asset in CRYPTO else 'not_prepared',
-                'message': 'No saved report for this exact asset, week and version. Never substitute another week or asset.'}
+                'status': 'report_version_not_found' if saved_week else 'report_not_prepared',
+                'saved_report_for_week': saved_week,
+                'message': ('A saved report exists for this asset/week, but the requested version was not found. '
+                    if saved_week else 'No saved report was found for this asset/week. The reason is not established by this lookup. ')
+                    + 'Keep any explicitly selected asset, week and version; never silently substitute. For a latest-completed request, week_start and report_version must both be null.'}
     compact_contributions = []
     for row in contributions:
         payload = json.loads(row['answers'])

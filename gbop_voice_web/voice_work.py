@@ -5,8 +5,12 @@ import time
 from collections import deque
 from uuid import uuid4
 
-from gbop_voice_web.voice_runtime import (RECOVERY_NAMES, recovery_options,
+from gbop_voice_web.voice_runtime import (RECOVERY_NAMES, READ_ONLY_RECOVERY_NAMES, recovery_options,
     delivery_identity, delivery_receipt_fingerprint)
+
+
+READ_STATUS_SECONDS = 300
+MAX_READ_STATUS_CALLS = 64
 
 
 async def create_response(session, options):
@@ -52,6 +56,8 @@ class VoiceToolWork:
         self.stale_responses = deque(maxlen=64)
         self.request_scopes = {}
         self.delivery_recovery = None
+        self.read_calls = {}
+        self.read_status = None
 
     @property
     def pending(self):
@@ -97,9 +103,9 @@ class VoiceToolWork:
             self.stale_responses.append(response_id)
         self.response_finished = response.get('status') in ('completed', 'incomplete')
         if response.get('status') in ('cancelled', 'failed'):
-            self.cancel()
+            self.cancel(preserve_read_status=True)
 
-    def cancel(self):
+    def cancel(self, *, preserve_read_status=False):
         context = getattr(self.session, 'market_context', None)
         if context is not None:
             context.invalidate()
@@ -115,6 +121,78 @@ class VoiceToolWork:
         if self.delivery_recovery is not None:
             self.delivery_recovery.cancel()
             self.delivery_recovery = None
+        if self.read_status is not None:
+            self.read_status.cancel()
+            self.read_status = None
+        if preserve_read_status:
+            for entry in self.read_calls.values():
+                entry.setdefault('interrupted_at', time.monotonic())
+        else:
+            self.read_calls.clear()
+
+    def result_sending(self, call_id):
+        """Consume before transport, which may queue output before it returns.
+
+        Cancellation under backpressure leaves acceptance uncertain. Never
+        append a second, contradictory output to that same function call.
+        """
+        self.read_calls.pop(call_id, None)
+
+    def _read_status_current(self, entry, scope):
+        identity = delivery_identity(self.session)
+        member, owner, session_id = identity
+        context = getattr(self.session, 'market_context', None)
+        return bool(self.current(scope) and member and len(owner) >= 2 and owner[1] == member
+                    and session_id and not getattr(context, 'closed', False)
+                    and identity == entry['identity'] and self.session.websocket is entry['websocket']
+                    and self.session._voice_turn_count > entry['turn']
+                    and 'interrupted_at' in entry
+                    and time.monotonic() - entry['interrupted_at'] <= READ_STATUS_SECONDS)
+
+    def recover_reads(self):
+        """Close interrupted read calls with metadata only, without starting work.
+
+        The shielded worker can still finish, but its output is fenced. Do not
+        leave the model believing a usable result or reply is still on the way.
+        No records, arguments, private sends, or response.create enter this path.
+        """
+        scope = self.scope()
+        if any(self._read_status_current(entry, scope) for entry in self.read_calls.values()):
+            if self.read_status is None or self.read_status.done():
+                self.read_status = asyncio.create_task(self._report_interrupted_reads(scope))
+
+    async def _report_interrupted_reads(self, scope):
+        try:
+            authorize = getattr(self.session, 'authorize_tool', None)
+            if authorize is None:
+                return
+            for call_id, entry in list(self.read_calls.items()):
+                if not self._read_status_current(entry, scope):
+                    continue
+                if await authorize() or not self._read_status_current(entry, scope):
+                    return
+                result = {
+                    'ok': False, 'status': 'read_interrupted', 'tool': entry['tool'],
+                    'result_available': False,
+                    'error': 'This read was interrupted before a result was delivered. '
+                             'No result or reply will arrive from this call. The underlying '
+                             'worker may still finish, but its output is discarded. Do not '
+                             'claim this call is still fetching an answer, or retry it '
+                             'automatically. A fresh read requires a new user request.',
+                }
+                # Consume before transport: an interrupted/uncertain send must
+                # never duplicate a function output on another barge-in.
+                self.read_calls.pop(call_id, None)
+                await self.session.send_event({'type': 'conversation.item.create', 'item': {
+                    'type': 'function_call_output', 'call_id': call_id,
+                    'output': json.dumps(result, separators=(',', ':'))}})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print('[GBOP-READ-STATUS] unavailable:', type(exc).__name__)
+        finally:
+            if self.read_status is asyncio.current_task():
+                self.read_status = None
 
     def recover_delivery(self):
         """Publish exact interrupted-operation facts in current context, silently.
@@ -208,6 +286,11 @@ class VoiceToolWork:
             return
         self.seen_calls.append(call_id)
         scope = self.scope()
+        if item['name'] in READ_ONLY_RECOVERY_NAMES:
+            self.read_calls[call_id] = dict(tool=item['name'], identity=delivery_identity(self.session),
+                websocket=self.session.websocket, turn=self.session._voice_turn_count)
+            if len(self.read_calls) > MAX_READ_STATUS_CALLS:
+                self.read_calls.pop(next(iter(self.read_calls)))
         previous = self.tail or self.operation
         task = asyncio.create_task(self._run(item, scope, previous))
         self.tasks.add(task)

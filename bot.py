@@ -6018,7 +6018,7 @@ GBOP_AI_TOOLS.extend(DELIVERY_TOOLS)
 GBOP_AI_TOOLS.extend(MIDPOINT_TOOLS)
 for _recall_tool in GBOP_AI_TOOLS:
     if _recall_tool.get('name') == 'get_journal_history':
-        _recall_tool['description'] = 'Read complete connected journal context: executions, notes, feelings, SELF grade and photo notes. Use latest trade versus latest journal and explicit date basis. Follow read-only context_text pages before summarizing; never send a DM for a question.'
+        _recall_tool['description'] = 'List every owned trade/journal number with view=index, no identifiers needed; follow has_more/next_offset. Linked Trade # journals and standalone Legacy journals are distinct. view=detail reads executions, notes, feelings, SELF grade and photo notes. Latest trade differs from latest journal. Follow context_text pages; never send a DM for a question.'
         _recall_tool['parameters']['properties'].update(RECALL_SELECTORS)
         _recall_tool['parameters']['required'].extend(k for k in RECALL_SELECTORS if k not in _recall_tool['parameters']['required'])
         _recall_tool['parameters']['properties']['offset'] = {'type': ['integer', 'null']}
@@ -6935,6 +6935,8 @@ class GBOPRealtimeSession:
         if scope_log is not None:
             print("[GBOP-MARKET-SCOPE]", json.dumps(scope_log, separators=(",", ":")))
 
+        if work is not None:
+            work.result_sending(call_id)
         sent = await self.send_event(
             {
                 "type": "conversation.item.create",
@@ -7015,7 +7017,7 @@ class GBOPRealtimeSession:
                 if delivery is not None:
                     delivery.cancel()
                 if work is not None:
-                    work.cancel()
+                    work.cancel(preserve_read_status=True)
                 self.rate_limit_recovery.cancel(reset=True)
                 self._recovery_active = False
                 self.tool_output_pending = False
@@ -7026,6 +7028,7 @@ class GBOPRealtimeSession:
                 if context is not None:
                     context.begin_turn()
                 if work is not None:
+                    work.recover_reads()
                     work.recover_delivery()
                 print(
                     "[GBOP-RT-EVENT] speech_started:",
