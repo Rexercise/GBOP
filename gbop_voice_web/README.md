@@ -6,6 +6,7 @@ This is the low-latency voice front end for GBOP.
 
 `/gbopmessage text:...` now creates a private preview. It never sends immediately.
 Only the existing configured GBOP owner can use it, in the configured G.T.O.P guild.
+Recipients see the heading **GBOP Message**, sent by the GBOP bot.
 
 - `audience:all` previews all currently eligible members.
 - `audience:selected members:@Alice,@Bob` previews only the selected members.

@@ -14,7 +14,7 @@ AUDIENCE_LABELS = {
 }
 PREVIEW_SECONDS = 600
 RECIPIENTS_PER_PAGE = 10
-MESSAGE_HEADER = '📣 **GBOP Message from the Owner**\n\n'
+MESSAGE_HEADER = '📣 **GBOP Message**\n\n'
 
 
 def parse_selection(audience, raw):
