@@ -137,7 +137,9 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
         discord = NS(Interaction=object, Message=object, Embed=FakeEmbed, ButtonStyle=NS(secondary=1, danger=2),
             AllowedMentions=NS(none=lambda: self.none_mentions),
             utils=NS(escape_markdown=lambda value: re.sub(r'([*_`])', r'\\\1', value)),
-            ui=NS(View=FakeView, Button=object, button=lambda **kwargs: lambda fn: FakeButton(fn, **kwargs)))
+            ui=NS(View=FakeView, Button=object, UserSelect=object,
+                  button=lambda **kwargs: lambda fn: FakeButton(fn, **kwargs),
+                  select=lambda **kwargs: lambda fn: FakeButton(fn, **kwargs)))
         self.ns = dict(asyncio=asyncio, time=time, discord=discord, Literal=Literal,
             GTOP_OWNER_USER_ID=999, GTOP_GUILD_ID=10,
             is_owner=lambda m: m.id == 999, has_member_role=lambda m: m.role,
@@ -149,7 +151,7 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
             build_draft=build_draft, owner_message=owner_message, parse_selection=parse_selection,
             _authorized_scheduled_member=AsyncMock())
         names = {'_current_owner_message_member', '_resolve_owner_broadcast_draft',
-                 '_send_owner_broadcast', 'OwnerBroadcastView', 'gbopmessage'}
+                 '_send_owner_broadcast', 'OwnerBroadcastView', 'OwnerBroadcastMemberPicker', 'gbopmessage'}
         nodes = [n for n in ast.parse(BOT.read_text()).body if getattr(n, 'name', '') in names]
         for node in nodes:
             node.decorator_list = []
@@ -158,7 +160,7 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
     def interaction(self, user_id=999, guild_id=10):
         return NS(user=member(user_id), guild_id=guild_id,
                   response=NS(send_message=AsyncMock(), edit_message=AsyncMock(), defer=AsyncMock()),
-                  followup=NS(send=AsyncMock()))
+                  followup=NS(send=AsyncMock()), edit_original_response=AsyncMock())
 
     def guild(self, members, *, error=False):
         async def fetch_members(**kwargs):
@@ -234,7 +236,7 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_command_rejects_invalid_inputs_before_lookup(self):
         self.ns['_resolve_owner_broadcast_draft'] = AsyncMock()
         for text, audience, members in (('', 'all', ''), ('x' * 1801, 'all', ''),
-                                       ('test', 'selected', ''), ('test', 'all', '1')):
+                                       ('test', 'selected', '<@&2>'), ('test', 'all', '1')):
             await self.ns['gbopmessage'](self.interaction(), text, audience, members)
         self.ns['_resolve_owner_broadcast_draft'].assert_not_awaited()
 
@@ -671,6 +673,209 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.ns['get_member_record'].return_value, record)
             self.ns['ensure_member_record'].reset_mock()
         self.ns['ai_generate_reply'].assert_not_called()
+
+
+    def picker(self, audience='selected', text='Synthetic picker message'):
+        return self.ns['OwnerBroadcastMemberPicker'](text, audience)
+
+    async def choose(self, picker, ids=(2,), interaction=None):
+        interaction = interaction or self.interaction()
+        await picker.choose_members.callback(interaction, NS(values=[member(uid) for uid in ids]))
+        return interaction
+
+    async def test_blank_selected_members_opens_native_picker_without_lookup_or_send(self):
+        self.ns['_resolve_owner_broadcast_draft'] = AsyncMock()
+        self.ns['_send_owner_broadcast'] = AsyncMock()
+        for audience in ('selected', 'all_except'):
+            interaction = self.interaction()
+            await self.ns['gbopmessage'](interaction, 'Exact picker text', audience, '   ')
+            sent = interaction.followup.send.await_args
+            self.assertTrue(sent.kwargs['ephemeral'])
+            self.assertEqual(sent.args[0], owner_message('Exact picker text'))
+            self.assertIs(sent.kwargs['allowed_mentions'], self.none_mentions)
+            self.assertIsInstance(sent.kwargs['view'], self.ns['OwnerBroadcastMemberPicker'])
+            self.assertEqual(sent.kwargs['view'].audience, audience)
+            self.assertIn('25', sent.kwargs['embed'].description)
+        self.ns['_resolve_owner_broadcast_draft'].assert_not_awaited()
+        self.ns['_send_owner_broadcast'].assert_not_awaited()
+
+    async def test_native_picker_nonrole_member_becomes_exact_preview_without_access_or_send(self):
+        recipient = member(2, role=False)
+        guild = self.guild([recipient, member(3)])
+        picker = self.picker(text='Exact text @everyone')
+        interaction = await self.choose(picker)
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=False)
+        edit = interaction.edit_original_response.await_args.kwargs
+        preview = edit['view']
+        self.assertEqual([r.user_id for r in preview.draft.recipients], [2])
+        self.assertEqual(edit['content'], owner_message('Exact text @everyone'))
+        self.assertIs(edit['allowed_mentions'], self.none_mentions)
+        self.assertIn('`2`', edit['embed'].description)
+        self.assertNotIn('`3`', edit['embed'].description)
+        self.assertEqual(picker.state, 'previewed')
+        self.assertTrue(picker.stopped)
+        self.assertIs(preview.preview_message, interaction.edit_original_response.return_value)
+        guild.fetch_member.assert_awaited_once_with(2)
+        recipient.send.assert_not_awaited()
+        recipient.add_roles.assert_not_awaited()
+        self.ns['db'].assert_not_called()
+        self.ns['ensure_member_record'].assert_not_called()
+        self.ns['member_access_error'].assert_not_called()
+
+    async def test_native_picker_exclusions_retain_eligible_only_audience(self):
+        self.guild([member(1), member(2), member(3, role=False)])
+        interaction = await self.choose(self.picker('all_except'), (2,))
+        preview = interaction.edit_original_response.await_args.kwargs['view'].draft
+        self.assertEqual(preview.audience, 'all_except')
+        self.assertEqual([r.user_id for r in preview.recipients], [1])
+        self.assertEqual(preview.excluded_count, 1)
+
+    async def test_native_picker_invalid_or_bot_selection_never_silently_reduces_audience(self):
+        for invalid in (member(3, bot=True), member(3, guild_id=11), None):
+            with self.subTest(invalid=invalid):
+                self.guild([member(2), invalid] if invalid else [member(2)])
+                picker = self.picker()
+                interaction = await self.choose(picker, (2, 3))
+                self.assertEqual(picker.state, 'pending')
+                interaction.edit_original_response.assert_not_awaited()
+                self.assertIn('not verified current human members', interaction.followup.send.await_args.args[0])
+                self.assertTrue(interaction.followup.send.await_args.kwargs['ephemeral'])
+
+    async def test_native_picker_can_reselect_after_lookup_failure(self):
+        self.guild([member(2, role=False)])
+        picker = self.picker()
+        await self.choose(picker, (3,))
+        successful = await self.choose(picker, (2,))
+        self.assertEqual(picker.state, 'previewed')
+        self.assertEqual(successful.edit_original_response.await_args.kwargs['view'].draft.recipients[0].user_id, 2)
+
+    async def test_native_picker_owner_and_guild_guard_all_actions_before_lookup(self):
+        self.ns['_resolve_owner_broadcast_draft'] = AsyncMock()
+        for uid, gid in ((1, 10), (999, 11), (999, None)):
+            for action in ('choose', 'cancel'):
+                picker = self.picker()
+                interaction = self.interaction(uid, gid)
+                if action == 'choose':
+                    await self.choose(picker, interaction=interaction)
+                else:
+                    await picker.cancel_selection.callback(interaction)
+                self.assertEqual(picker.state, 'pending')
+                interaction.response.send_message.assert_awaited_once()
+                interaction.response.defer.assert_not_awaited()
+        self.ns['_resolve_owner_broadcast_draft'].assert_not_awaited()
+
+    async def test_native_picker_configuration_change_closes_access(self):
+        for setting in ('GTOP_OWNER_USER_ID', 'GTOP_GUILD_ID'):
+            picker = self.picker()
+            old = self.ns[setting]
+            self.ns[setting] = old + 1
+            if setting == 'GTOP_OWNER_USER_ID':
+                self.ns['is_owner'] = lambda m: m.id == self.ns['GTOP_OWNER_USER_ID']
+            interaction = await self.choose(picker)
+            interaction.response.send_message.assert_awaited_once()
+            interaction.edit_original_response.assert_not_awaited()
+            self.ns[setting] = old
+
+    async def test_native_picker_rejects_empty_oversized_and_malformed_values(self):
+        self.ns['_resolve_owner_broadcast_draft'] = AsyncMock()
+        for ids in ((), tuple(range(1, 27)), (0,), (-1,), (2**64,), ('2',), (True,)):
+            interaction = await self.choose(self.picker(), ids)
+            interaction.response.send_message.assert_awaited_once()
+            interaction.response.defer.assert_not_awaited()
+        self.ns['_resolve_owner_broadcast_draft'].assert_not_awaited()
+
+    async def test_native_picker_cannot_reopen_after_cancel_or_expiry(self):
+        self.ns['_resolve_owner_broadcast_draft'] = AsyncMock()
+        for state in ('cancelled', 'expired'):
+            picker = self.picker()
+            interaction = self.interaction()
+            if state == 'cancelled':
+                await picker.cancel_selection.callback(interaction)
+            else:
+                picker.expires_at = 0
+                await self.choose(picker, interaction=interaction)
+            self.assertEqual(picker.state, state)
+            self.assertIsNone(interaction.response.edit_message.await_args.kwargs['view'])
+            await self.choose(picker)
+            await picker.cancel_selection.callback(self.interaction())
+            self.assertEqual(picker.state, state)
+        self.ns['_resolve_owner_broadcast_draft'].assert_not_awaited()
+
+    async def test_native_picker_timeout_removes_controls_and_never_sends(self):
+        picker = self.picker()
+        picker.preview_message = NS(edit=AsyncMock())
+        await picker.on_timeout()
+        self.assertEqual(picker.state, 'expired')
+        picker.preview_message.edit.assert_awaited_once()
+        self.assertIsNone(picker.preview_message.edit.await_args.kwargs['view'])
+        self.ns['_resolve_owner_broadcast_draft'] = AsyncMock()
+        await self.choose(picker)
+        self.ns['_resolve_owner_broadcast_draft'].assert_not_awaited()
+
+    async def test_native_picker_timeout_transport_failure_still_closes(self):
+        picker = self.picker()
+        picker.preview_message = NS(edit=AsyncMock(side_effect=TimeoutError()))
+        await picker.on_timeout()
+        self.assertEqual(picker.state, 'expired')
+        self.ns['logger'].warning.assert_called_once()
+
+    async def test_native_picker_expiry_during_membership_lookup_cannot_publish_preview(self):
+        picker = self.picker()
+        async def slow_lookup(*args):
+            picker.expires_at = 0
+            return draft((2,), 'selected', (2,))
+        self.ns['_resolve_owner_broadcast_draft'] = AsyncMock(side_effect=slow_lookup)
+        interaction = await self.choose(picker)
+        self.assertEqual(picker.state, 'expired')
+        self.assertIsNone(interaction.edit_original_response.await_args.kwargs['view'])
+
+    async def test_native_picker_duplicate_events_produce_one_preview(self):
+        self.guild([member(2), member(3)])
+        picker = self.picker()
+        interactions = [self.interaction() for _ in range(3)]
+        await asyncio.gather(*(self.choose(picker, (i + 2,) if i < 2 else (2,), interaction)
+                               for i, interaction in enumerate(interactions)))
+        self.assertEqual(sum(i.edit_original_response.await_count for i in interactions), 1)
+        self.assertEqual(sum(i.response.send_message.await_count for i in interactions), 2)
+        self.assertEqual(picker.state, 'previewed')
+
+    async def test_native_picker_uncertain_preview_edit_is_not_replayed(self):
+        self.guild([member(2)])
+        picker = self.picker()
+        interaction = self.interaction()
+        interaction.edit_original_response.side_effect = TimeoutError('Synthetic uncertain preview update')
+        with self.assertRaises(TimeoutError):
+            await self.choose(picker, interaction=interaction)
+        attempted_preview = interaction.edit_original_response.await_args.kwargs['view']
+        self.assertTrue(attempted_preview.stopped)
+        self.assertEqual(picker.state, 'previewed')
+        repeated = await self.choose(picker)
+        repeated.edit_original_response.assert_not_awaited()
+
+    async def test_native_picker_25_people_still_require_all_preview_pages_and_single_confirmation(self):
+        recipients = [member(uid, role=False) for uid in range(1, 26)]
+        self.guild(recipients)
+        interaction = await self.choose(self.picker(), tuple(range(1, 26)))
+        view = interaction.edit_original_response.await_args.kwargs['view']
+        self.assertEqual(len(view.draft.recipients), 25)
+        self.assertEqual(view.draft.page_count, 3)
+        await view.confirm_send.callback(self.interaction())
+        self.assertTrue(all(m.send.await_count == 0 for m in recipients))
+        await view.next_page.callback(self.interaction())
+        await view.next_page.callback(self.interaction())
+        await asyncio.gather(*(view.confirm_send.callback(self.interaction()) for _ in range(3)))
+        self.assertTrue(all(m.send.await_count == 1 for m in recipients))
+        self.assertEqual(view.state, 'finished')
+
+    async def test_native_picker_deferred_failure_prevents_member_lookup(self):
+        self.ns['_resolve_owner_broadcast_draft'] = AsyncMock()
+        picker = self.picker()
+        interaction = self.interaction()
+        interaction.response.defer.side_effect = TimeoutError('Synthetic acknowledgement error')
+        with self.assertRaises(TimeoutError):
+            await self.choose(picker, interaction=interaction)
+        self.ns['_resolve_owner_broadcast_draft'].assert_not_awaited()
+        interaction.edit_original_response.assert_not_awaited()
 
 
 if __name__ == '__main__':
