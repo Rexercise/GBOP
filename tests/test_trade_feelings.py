@@ -239,6 +239,58 @@ class TradeFeelingTests(unittest.TestCase):
             self.assertFalse(self.save(feeling=feeling,text=text)['ok'])
         self.assertNotIn('feeling_history',self.metadata())
 
+    def test_full_punctuated_reports_save_without_a_recent_prompt(self):
+        self.opened()
+        self.context.begin_turn('Show the current price.')
+        for message in ('I felt calm.', "I'm feeling nervous!", 'I’m feeling confident.',
+                "I've been feeling uncertain.", 'I have been feeling focused.'):
+            with self.subTest(message=message):
+                result = self.save(feeling=message, text=message)
+                self.assertTrue(result['ok'], result)
+                self.assertEqual(result['feeling']['feeling'], message)
+                self.assertIsNone(result['feeling']['reported_at'])
+        self.assertEqual(len(self.metadata()['feeling_history']), 5)
+
+    def test_explicit_report_can_accompany_an_unrelated_question(self):
+        self.opened()
+        self.context.begin_turn('Show my journal.')
+        result = self.save(feeling='I felt calm.',
+            text='I felt calm. What is the current price?')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['feeling']['feeling'], 'I felt calm.')
+
+    def test_prompt_cannot_authorize_third_party_or_hypothetical_reports(self):
+        for text, feeling in (
+                ('I feel calm. My friend felt anxious.', 'anxious'),
+                ('I feel calm but my friend feels anxious.', 'anxious'),
+                ('My friend feels anxious.', 'anxious'),
+                ('If I feel nervous I will stop.', 'nervous'),
+                ('Imagine I felt calm.', 'calm'),
+                ('Do I feel calm?', 'calm')):
+            with self.subTest(text=text):
+                number = self.opened()['trade_id']
+                result = self.save(number=number, feeling=feeling, text=text)
+                self.assertFalse(result['ok'], result)
+                self.assertNotIn('feeling_history', self.metadata(number))
+
+    def test_bare_prompt_reply_still_preserves_qualified_feelings(self):
+        number = self.opened()['trade_id']
+        result = self.save(number=number, feeling='A little nervous, but focused.',
+            text='A little nervous, but focused.')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['feeling']['feeling'], 'A little nervous, but focused.')
+
+    def test_unprompted_bare_reply_and_paraphrase_do_not_save(self):
+        self.opened()
+        self.context.begin_turn('Show the current price.')
+        self.assertFalse(self.save(feeling='calm', text='calm')['ok'])
+        self.assertFalse(self.save(feeling='relaxed', text='I felt calm.')['ok'])
+        self.assertNotIn('feeling_history', self.metadata())
+
+    def test_contracted_open_report_does_not_trigger_another_question(self):
+        result = self.opened(text="I opened the trade and I'm feeling nervous.")
+        self.assertNotIn('optional_feeling_prompt', result)
+
     def test_short_reply_cannot_jump_to_another_trade_or_stage(self):
         self.opened();self.opened()
         self.assertFalse(self.save(number=1,text='calm')['ok'])

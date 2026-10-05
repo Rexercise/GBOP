@@ -65,7 +65,17 @@ def _normalize(text):
 
 
 def _explicit_self_report(text):
-    return bool(re.search(r"\b(?:i\s+(?:feel|felt|am feeling|was feeling)|my\s+(?:feeling|emotion|mood)(?:s)?\s*(?:is|was|:)|i(?:'m| am| was)\s+(?:calm|anxious|nervous|confident|afraid|scared|excited|frustrated|angry|bored|uncertain|relaxed|stressed|worried|overwhelmed|hesitant|impatient|focused|tired|happy|sad|hopeful|fearful|relieved|uneasy|optimistic))\b", _normalize(text)))
+    return bool(re.search(r"\b(?:i\s+(?:feel|felt|am feeling|was feeling)|i'm\s+feeling|i(?:'ve| have)\s+been feeling|my\s+(?:feeling|emotion|mood)(?:s)?\s*(?:is|was|:)|i(?:'m| am| was)\s+(?:calm|anxious|nervous|confident|afraid|scared|excited|frustrated|angry|bored|uncertain|relaxed|stressed|worried|overwhelmed|hesitant|impatient|focused|tired|happy|sad|hopeful|fearful|relieved|uneasy|optimistic))\b", _normalize(text)))
+
+
+def _report_clauses(text):
+    # Compare clause content without its sentence-ending punctuation. The exact
+    # original member text is still checked separately and saved unchanged.
+    # A new subject cannot borrow the member's preceding first-person report.
+    return [_normalize(part).strip(' .!;') for part in re.split(
+        r'(?<=[.!?;])\s*|\n+|(?:,\s*|\b(?:and|but|while|whereas)\s+)'
+        r'(?=(?:my|your|his|her|their|our|he|she|they|you|we)\b)',
+        str(text).casefold().replace('’', "'")) if part.strip(' .!;\n')]
 
 
 def _short_answer(text):
@@ -75,6 +85,12 @@ def _short_answer(text):
     """
     value = _normalize(text).strip(' .!')
     if len(value) > 160 or '?' in value:
+        return False
+    # This fallback is only for bare answers such as "a little nervous". A
+    # failed explicit report, hypothetical, or another person's words must not
+    # become writable merely because a feeling question preceded the message.
+    if (len(_report_clauses(value)) != 1 or _explicit_self_report(value)
+            or re.search(r"\b(?:i|my|you|your|he|his|she|her|they|their|we|our|friend|if|suppose|imagine|would|could|should|said|says|feels|felt)\b", value)):
         return False
     if re.search(r'\b(?:watch|alert|monitor|notify|remind|send|show|buy|sell|stop|target|price|btc|nas100|journal|trade|chart|recap|review|shift|hello|thanks)\b', value):
         return False
@@ -101,8 +117,9 @@ def _ground_report(args, guild, user):
             raise ValueError('Preserve an exact feeling statement from this member’s current message; do not infer one.')
         # Tie the saved phrase to this member's own statement, not another
         # sentence about someone else or a hypothetical feeling question.
-        clauses = re.split(r'[.!?;\n]', _normalize(text))
-        if any(_normalize(feeling) in clause and _explicit_self_report(clause)
+        clauses = _report_clauses(text)
+        phrase = _normalize(feeling).strip(' .!;\n')
+        if phrase and any(phrase in clause and '?' not in clause and _explicit_self_report(clause)
                 and not re.search(r'\b(?:if|suppose|imagine|what if)\s+(?:that\s+)?i\b', clause)
                 for clause in clauses):
             return
