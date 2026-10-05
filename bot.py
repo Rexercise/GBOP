@@ -953,19 +953,341 @@ class OwnerBroadcastMemberPicker(discord.ui.View):
                         logger.warning('GBOP owner-message expired picker could not be updated')
 
 
+class OwnerBroadcastWizard:
+    """One private, expiring draft. Navigation invalidates all older controls."""
+    def __init__(self, audience='all', selected_ids=(), stage='audience'):
+        self.owner_id = GTOP_OWNER_USER_ID
+        self.guild_id = GTOP_GUILD_ID
+        self.audience = audience
+        self.selected_ids = tuple(selected_ids)
+        self.text = ''
+        self.stage = stage
+        self.revision = 0
+        self.modal_token = 0
+        self.expires_at = time.monotonic() + PREVIEW_SECONDS
+        self.lock = asyncio.Lock()
+        self.current_view = None
+        self.preview_message = None
+        self.closed = False
+
+    async def reply(self, interaction, text):
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+
+    async def check(self, interaction, revision, modal_token=None):
+        if (not is_owner(interaction.user) or interaction.user.id != self.owner_id
+                or interaction.guild_id != self.guild_id or self.guild_id != GTOP_GUILD_ID):
+            await self.reply(interaction, 'Only the GBOP owner can use this draft in the G.T.O.P server.')
+            return False
+        if self.closed or revision != self.revision or (
+                modal_token is not None and modal_token != self.modal_token):
+            await self.reply(interaction, 'This step is closed or has been replaced. Use the latest draft or run /gbopmessage again.')
+            return False
+        if time.monotonic() >= self.expires_at:
+            await self.close(interaction, 'This draft expired. Run /gbopmessage again. Nothing was sent.')
+            return False
+        return True
+
+    def replace(self, stage):
+        if self.current_view is not None:
+            self.current_view.stop()
+        self.revision += 1
+        self.modal_token += 1
+        self.stage = stage
+        self.current_view = OwnerBroadcastSetupView(self)
+        return self.current_view
+
+    async def show(self, interaction, stage, *, deferred=False):
+        view = self.replace(stage)
+        edit = interaction.edit_original_response if deferred else interaction.response.edit_message
+        try:
+            result = await edit(content=None, embed=view.setup_embed(), view=view,
+                                allowed_mentions=discord.AllowedMentions.none())
+            if deferred:
+                self.preview_message = result
+        except Exception:
+            self.closed = True
+            view.stop()
+            raise
+
+    async def close(self, interaction, text):
+        self.closed = True
+        self.revision += 1
+        self.modal_token += 1
+        if self.current_view is not None:
+            self.current_view.stop()
+        edit = interaction.edit_original_response if interaction.response.is_done() else interaction.response.edit_message
+        await edit(content=text, embed=None, view=None)
+
+    async def expire(self, revision):
+        async with self.lock:
+            if (self.closed or revision != self.revision
+                    or self.stage == 'preview' and self.current_view.state != 'pending'):
+                return
+            self.closed = True
+            self.revision += 1
+            self.modal_token += 1
+            if self.current_view is not None:
+                self.current_view.stop()
+            if self.preview_message is not None:
+                try:
+                    await self.preview_message.edit(
+                        content='This draft expired. Run /gbopmessage again. Nothing was sent.', embed=None, view=None,
+                    )
+                except Exception:
+                    logger.warning('GBOP owner-message expired draft could not be updated')
+
+
+class OwnerBroadcastSetupView(discord.ui.View):
+    def __init__(self, wizard):
+        super().__init__(timeout=max(0.01, wizard.expires_at - time.monotonic()))
+        self.wizard = wizard
+        self.revision = wizard.revision
+        stage = wizard.stage
+        if stage != 'audience':
+            self.remove_item(self.choose_audience)
+        if stage != 'members':
+            self.remove_item(self.choose_members)
+        if stage != 'compose':
+            self.remove_item(self.compose)
+        if stage == 'audience':
+            self.remove_item(self.back)
+        if stage == 'compose' and wizard.text:
+            self.compose.label = 'Edit message'
+        if stage == 'members' and len(wizard.selected_ids) <= 25:
+            self.choose_members.default_values = [discord.Object(id=uid) for uid in wizard.selected_ids]
+
+    def setup_embed(self):
+        wizard = self.wizard
+        if wizard.stage == 'audience':
+            return discord.Embed(title='GBOP Message · choose audience', description=(
+                'Who should receive this message? Choose an audience below.\n'
+                'Next: choose members if needed, write your message, then review and confirm. '
+                'Nothing sends until you press Confirm send. Drafts expire 10 minutes after starting.'
+            ))
+        if wizard.stage == 'members':
+            notice = ('Choose current human server members with or without GBOP access.'
+                      if wizard.audience == 'selected' else
+                      'Choose eligible GBOP members to exclude. The remaining audience stays GBOP-only.')
+            return discord.Embed(title='GBOP Message · choose members', description=(
+                f'**{AUDIENCE_LABELS[wizard.audience]}**\n{notice}\n'
+                'Search and select up to 25 people. Then write your message. Nothing has been sent.'
+            ))
+        selection = (f'\n{len(wizard.selected_ids)} member(s) '
+                     + ('excluded.' if wizard.audience == 'all_except' else 'selected.')
+                     if wizard.selected_ids else '')
+        action = 'Edit message' if wizard.text else 'Write message'
+        return discord.Embed(title='GBOP Message · write your message', description=(
+            f'**{AUDIENCE_LABELS[wizard.audience]}**{selection}\n'
+            f'Press {action} to open the form. Submit it to see the exact message '
+            'and every recipient before confirming. If you close the form, reopen it here. '
+            'Use Back to change the audience or members. Nothing has been sent.'
+        ))
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if not await self.wizard.check(interaction, self.revision):
+            return False
+        # discord.py refreshes a view timeout on interaction; retain this draft's absolute deadline.
+        self.timeout = max(0.01, self.wizard.expires_at - time.monotonic())
+        return True
+
+    @discord.ui.select(placeholder='Who should receive this message?', min_values=1, max_values=1, row=0,
+        options=[
+            discord.SelectOption(label='All eligible GBOP members', value='all', description='Only members with current GBOP access'),
+            discord.SelectOption(label='Selected server members', value='selected', description='Pick people with or without GBOP access'),
+            discord.SelectOption(label='All GBOP members except…', value='all_except', description='Pick eligible members to exclude'),
+            discord.SelectOption(label='All human server members', value='all_server_members', description='Everyone in the server, with or without GBOP access'),
+        ])
+    async def choose_audience(self, interaction: discord.Interaction, select: discord.ui.Select):
+        async with self.wizard.lock:
+            if not await self.interaction_check(interaction):
+                return
+            if len(select.values) != 1 or select.values[0] not in AUDIENCE_LABELS:
+                await self.wizard.reply(interaction, 'Choose one of the four audiences.')
+                return
+            self.wizard.audience = select.values[0]
+            self.wizard.selected_ids = ()
+            await self.wizard.show(interaction, 'members' if self.wizard.audience in ('selected', 'all_except') else 'compose')
+
+    @discord.ui.select(cls=discord.ui.UserSelect, placeholder='Search server members (any role)',
+                       min_values=1, max_values=25, row=1)
+    async def choose_members(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        async with self.wizard.lock:
+            if not await self.interaction_check(interaction):
+                return
+            ids = tuple(user.id for user in select.values)
+            if (not 1 <= len(ids) <= 25
+                    or any(type(uid) is not int or not 0 < uid < 2**64 for uid in ids)):
+                await self.wizard.reply(interaction, 'Choose between 1 and 25 server users.')
+                return
+            self.wizard.selected_ids = tuple(dict.fromkeys(ids))
+            await self.wizard.show(interaction, 'compose')
+
+    @discord.ui.button(label='Write message', style=discord.ButtonStyle.primary, row=2)
+    async def compose(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.wizard.lock:
+            if not await self.interaction_check(interaction):
+                return
+            if self.wizard.stage == 'resolving':
+                await self.wizard.reply(interaction, 'The preview is being checked. You can go Back or Cancel.')
+                return
+            self.wizard.modal_token += 1
+            # Opening a modal must be the initial acknowledgement: no defer or membership lookup first.
+            await interaction.response.send_modal(OwnerBroadcastComposeModal(self.wizard))
+
+    @discord.ui.button(label='Back', style=discord.ButtonStyle.secondary, row=2)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.wizard.lock:
+            if not await self.interaction_check(interaction):
+                return
+            stage = ('members' if self.wizard.stage in ('compose', 'resolving')
+                     and self.wizard.audience in ('selected', 'all_except') else 'audience')
+            await self.wizard.show(interaction, stage)
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary, row=2)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.wizard.lock:
+            if await self.interaction_check(interaction):
+                await self.wizard.close(interaction, 'GBOP message cancelled. Nothing was sent.')
+
+    async def on_timeout(self):
+        await self.wizard.expire(self.revision)
+
+
+class OwnerBroadcastComposeModal(discord.ui.Modal):
+    def __init__(self, wizard):
+        super().__init__(title='Write GBOP Message', timeout=max(0.01, wizard.expires_at - time.monotonic()))
+        self.wizard = wizard
+        self.revision = wizard.revision
+        self.modal_token = wizard.modal_token
+        self.message_text = discord.ui.TextInput(
+            label='Message', style=discord.TextStyle.paragraph, required=True,
+            min_length=1, max_length=1800, default=wizard.text,
+            placeholder='Write the message recipients will receive…',
+        )
+        self.add_item(self.message_text)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        wizard = self.wizard
+        async with wizard.lock:
+            if not await wizard.check(interaction, self.revision, self.modal_token):
+                return
+            text = str(self.message_text)
+            try:
+                owner_message(text)
+            except ValueError as exc:
+                await wizard.reply(interaction, str(exc))
+                return
+            # Consume this submission before resolving anything. Back/Cancel remain available while resolving.
+            wizard.modal_token += 1
+            wizard.text = text
+            wizard.stage = 'resolving'
+            token = wizard.modal_token
+            audience, ids = wizard.audience, wizard.selected_ids
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                wizard.stage = 'compose'
+                raise
+        try:
+            draft = await _resolve_owner_broadcast_draft(text, audience, ids)
+        except Exception as exc:
+            async with wizard.lock:
+                if not await wizard.check(interaction, self.revision, token):
+                    return
+                wizard.stage = 'compose'
+                message = str(exc) if isinstance(exc, ValueError) else 'The preview could not be checked. Please try again. Nothing was sent.'
+                await wizard.reply(interaction, message)
+            return
+        async with wizard.lock:
+            if not await wizard.check(interaction, self.revision, token):
+                return
+            wizard.current_view.stop()
+            wizard.revision += 1
+            wizard.stage = 'preview'
+            view = OwnerBroadcastGuidedPreview(draft, wizard)
+            wizard.current_view = view
+            try:
+                wizard.preview_message = view.preview_message = await interaction.edit_original_response(
+                    content=draft.message, embed=view.preview_embed(), view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                wizard.closed = True
+                view.state = 'closed'
+                view.stop()
+                raise
+
+
+class OwnerBroadcastGuidedPreview(OwnerBroadcastView):
+    def __init__(self, draft, wizard):
+        super().__init__(draft)
+        self.wizard = wizard
+        self.revision = wizard.revision
+        self.lock = wizard.lock
+        self.expires_at = wizard.expires_at
+        self.timeout = max(0.01, self.expires_at - time.monotonic())
+        if wizard.audience not in ('selected', 'all_except'):
+            self.remove_item(self.edit_members)
+
+    def preview_embed(self):
+        embed = super().preview_embed()
+        embed.set_footer(text=embed.footer.text.replace(
+            'Expires in 10 minutes.', 'Draft expires 10 minutes after starting.',
+        ))
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if not await super().interaction_check(interaction):
+            return False
+        # A delayed duplicate must never turn an in-flight/completed send into a false expiry notice.
+        if self.state != 'pending':
+            await self.wizard.reply(interaction, 'This preview is already closed or sending. It cannot be sent again.')
+            return False
+        if not await self.wizard.check(interaction, self.revision):
+            return False
+        self.timeout = max(0.01, self.expires_at - time.monotonic())
+        return True
+
+    async def _edit_step(self, interaction, stage):
+        async with self.lock:
+            if not await self._pending(interaction):
+                return
+            self.state = 'replaced'
+            await self.wizard.show(interaction, stage)
+
+    @discord.ui.button(label='Edit message', style=discord.ButtonStyle.secondary, row=1)
+    async def edit_message(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._edit_step(interaction, 'compose')
+
+    @discord.ui.button(label='Edit audience', style=discord.ButtonStyle.secondary, row=1)
+    async def edit_audience(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._edit_step(interaction, 'audience')
+
+    @discord.ui.button(label='Edit members', style=discord.ButtonStyle.secondary, row=1)
+    async def edit_members(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._edit_step(interaction, 'members')
+
+    async def on_timeout(self):
+        if self.state == 'pending':
+            await self.wizard.expire(self.revision)
+
+
 @tree.command(
     name="gbopmessage",
-    description="Owner-only message: choose members, preview, then confirm.",
+    description="Owner-only guided message: choose audience, compose, preview, then confirm.",
     guild=GUILD,
 )
 @app_commands.describe(
-    text="The exact message to preview (up to 1,800 characters).",
+    text="Optional shortcut: exact message up to 1,800 characters. Omit to use the guided message form.",
     audience="Use selected to pick server users; all/all_except use GBOP eligibility; all_server_members uses all.",
     members="Optional exact @user mentions/IDs. Leave blank for the selected/all_except server-user picker.",
 )
 async def gbopmessage(
     interaction: discord.Interaction,
-    text: str,
+    text: str | None = None,
     audience: Literal['all', 'selected', 'all_server_members', 'all_except'] = 'all',
     members: str = '',
 ):
@@ -973,6 +1295,20 @@ async def gbopmessage(
         await interaction.response.send_message(
             "⛔ Only the GBOP owner can preview a GBOP message in the G.T.O.P server.", ephemeral=True,
         )
+        return
+    if text is None:
+        try:
+            ids = parse_selection(audience, members) if members.strip() or audience not in ('selected', 'all_except') else ()
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        stage = ('audience' if audience == 'all' else
+                 'members' if audience in ('selected', 'all_except') and not ids else 'compose')
+        wizard = OwnerBroadcastWizard(audience, ids, stage)
+        view = wizard.replace(stage)
+        await interaction.response.send_message(embed=view.setup_embed(), view=view, ephemeral=True,
+                                                allowed_mentions=discord.AllowedMentions.none())
+        wizard.preview_message = await interaction.original_response()
         return
     try:
         owner_message(text)

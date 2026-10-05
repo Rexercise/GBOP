@@ -4,24 +4,37 @@ This is the low-latency voice front end for GBOP.
 
 ## Owner messages
 
-`/gbopmessage text:...` now creates a private preview. It never sends immediately.
-Only the existing configured GBOP owner can use it, in the configured G.T.O.P guild.
+Run **`/gbopmessage`** with no options to open the private guided flow:
+
+1. Choose the audience from a dropdown: eligible GBOP members, selected server
+   members, eligible GBOP members except selected people, or all human server members.
+2. For selected/excluded audiences, search Discord's native user picker and choose
+   up to 25 people. It has no GBOP-role suggestion filter.
+3. Press **Write message**, enter up to 1,800 characters in the form, and submit it
+   to build the preview. Closing the form does not send anything; reopen it to continue.
+4. Review the exact message and every recipient page, then **Confirm send** or **Cancel**.
+
+Only the configured GBOP owner can use this flow in the configured G.T.O.P server.
 Recipients see the heading **GBOP Message**, sent by the GBOP bot.
+**Back**, **Edit message**, **Edit audience**, and **Edit members** let you revise
+before sending. Edits invalidate the old preview and require a newly resolved
+recipient list and another complete review. Older buttons and forms cannot send
+or replace the latest draft. Cancel and the ten-minute draft expiry close the flow.
+A dismissed form can be reopened; text is retained after it has been submitted.
+Drafts do not survive a bot restart.
 
-- `audience:all` previews all currently eligible members.
-- `audience:selected` opens Discord's searchable server-user picker. Select up to
-  25 people to preview only those current human server members, even without GBOP access.
-- `audience:all_server_members` previews all current human server members, with or without GBOP access.
-- `audience:all_except` opens the same picker to exclude selected eligible GBOP members.
+Existing explicit command shortcuts remain supported:
 
-Leave the optional `members` field blank to use the native user picker, rather than
-Discord's text mention suggestions. The picker lists server users without a GBOP-role
-filter; bots and unverified/departed members cannot pass the subsequent preview check.
-Selecting users creates a private preview only, not a send. Cancel and expiry close
-the picker without sending. For more than 25 people, or to paste an existing list,
-`members` still accepts exact user mentions or Discord user IDs separated by
-spaces or commas. It does not guess from names or accept role mentions. An invalid
-or unverified selected ID blocks the preview instead of silently changing its scope.
+- `text:... audience:all` previews all currently eligible GBOP members.
+- `text:... audience:selected` opens the native user picker for current human
+  server members, including people without GBOP access.
+- `text:... audience:all_server_members` previews all current human server members.
+- `text:... audience:all_except` opens the native picker for eligible exclusions.
+
+For more than 25 selections or an existing list, the optional `members` shortcut
+accepts exact user mentions or Discord IDs separated by spaces or commas. It never
+guesses from names or accepts role mentions. Bots, invalid users, and unverified or
+departed selected members block the preview instead of silently changing its scope.
 For `all` (the default) and `all_except`, current eligibility still uses the existing
 role, activation, leadership acknowledgement, revocation, and owner rules. Explicit
 `selected` and `all_server_members` recipients need only be verified current human members of G.T.O.P; they
