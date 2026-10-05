@@ -307,7 +307,10 @@ are 500 characters per report, 32 reports per trade and the existing journal
 metadata budget; reaching a limit rejects the new report without pruning history.
 
 Text report grounding uses the current authenticated utterance; brief bare feeling
-answers require this exact conversation's immediately preceding prompt. Other
+answers require this exact conversation's immediately preceding prompt. Explicit
+reports support ordinary contractions and sentence-ending punctuation
+while preserving the member's exact words. A recent prompt does not authorize
+hypothetical reports, questions, or feelings attributed to someone else. Other
 requests, including watches, retain their ordinary route. Audio-only classification
 still relies on the existing model and does not claim an added transcript check.
 Trade identity, member access, revocation, cancellation and connection lifetime are
