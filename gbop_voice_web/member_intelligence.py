@@ -266,6 +266,13 @@ def parse_behavior_text(text):
     if not t:
         return []
 
+    # A zero-trade check-in and its optional reason are neutral reflections.
+    # "No setup met my criteria" must not become either a setup violation or
+    # an inferred strength. Prior, independent coaching evidence is unchanged.
+    from gbop_voice_web.no_trade_checkins import no_trade_report
+    if no_trade_report(original) is not None:
+        return []
+
     out = []
 
     def add(theme, polarity, weight=1.0):

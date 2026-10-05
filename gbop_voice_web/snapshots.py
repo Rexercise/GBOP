@@ -531,7 +531,17 @@ def collect_snapshot(db_factory, guild_id: int, user_id: int, period: dict):
     risks = [_finite(r.get("risk_r")) for r in executions]
     known_risks = [r for r in risks if r is not None]
     by_play, by_asset, by_session = (_trade_breakdown(closed, key) for key in ("play", "asset", "session"))
+    from gbop_voice_web.no_trade_checkins import no_trade_report
+    no_trade_checkins = []
+    for row in checkins:
+        report = no_trade_report(row.get('response'), row['shift'])
+        if report:
+            no_trade_checkins.append({
+                'shift_date': row['shift_date'], 'shift': row['shift'],
+                'reason': report['reason'], 'reason_text': report['reason_text'][:500],
+            })
     stats = {
+        "no_trade_checkins": no_trade_checkins,
         "period": period,
         "performance": {
             "opened_trades": sum(r.get("status") not in {"JOURNALED", "IDEA"} and r["id"] not in study_theses
@@ -667,3 +677,18 @@ def format_execution_breakdown(items, limit=4):
         f"{format_r(item['risk_r'])} known risk ({item['unknown_risk']} unknown)"
         for item in items[:limit]
     )
+
+
+def format_no_trade_checkins(stats):
+    """Descriptive check-in evidence, kept separate from performance/adherence."""
+    rows = stats.get('no_trade_checkins', [])
+    if not rows:
+        return ''
+    lines = []
+    for row in rows[-3:]:
+        reason = row['reason_text'] or 'Reason not provided (optional).'
+        lines.append(f"{row['shift_date']} {row['shift']}: reported no trades. {reason[:160]}")
+    if len(rows) > 3:
+        lines.append(f"{len(rows) - 3} additional no-trade check-in(s) in this period.")
+    lines.append('Member reports only; no discipline or adherence inferred. Trade records are unchanged.')
+    return '\n'.join(lines)

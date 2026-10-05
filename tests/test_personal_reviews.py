@@ -343,6 +343,7 @@ class ScheduledReviewTests(unittest.IsolatedAsyncioTestCase):
         env=self.functions({'_snapshot_embed'},discord=NS(Embed=Embed,Color=NS(blurple=lambda:0)),
             snapshot_r=snap.format_r,snapshot_percent=snap.format_percent,snapshot_profit_factor=snap.format_profit_factor,
             format_reflections=snap.format_reflections,format_coverage=snap.format_coverage,
+            format_no_trade_checkins=snap.format_no_trade_checkins,
             format_comparison=snap.format_comparison,format_market_context=snap.format_market_context,
             format_trade_breakdown=snap.format_trade_breakdown,format_execution_breakdown=snap.format_execution_breakdown)
         embed=env['_snapshot_embed'](stats)
