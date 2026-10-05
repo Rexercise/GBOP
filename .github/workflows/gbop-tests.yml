@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependency
-        run: pip install httpx==0.28.1 fastapi==0.116.1
+        run: pip install httpx==0.28.1 fastapi==0.116.1 discord.py==2.7.1
       - name: Compile changed Python
         run: >-
           python -m py_compile
