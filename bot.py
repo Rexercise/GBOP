@@ -836,6 +836,123 @@ class OwnerBroadcastView(discord.ui.View):
                         logger.warning('GBOP owner-message expired preview could not be updated')
 
 
+class OwnerBroadcastMemberPicker(discord.ui.View):
+    """Choose server users without depending on text mention suggestions."""
+    def __init__(self, text, audience):
+        super().__init__(timeout=PREVIEW_SECONDS)
+        self.text = text
+        self.audience = audience
+        self.owner_id = GTOP_OWNER_USER_ID
+        self.guild_id = GTOP_GUILD_ID
+        self.expires_at = time.monotonic() + PREVIEW_SECONDS
+        self.state = 'pending'
+        self.preview_message = None
+        self.lock = asyncio.Lock()
+
+    def picker_embed(self):
+        notice = ('Choose current human server members with or without GBOP access.'
+                  if self.audience == 'selected' else
+                  'Choose currently eligible GBOP members to exclude from the audience.')
+        return discord.Embed(
+            title='Choose members · nothing sent',
+            description=(f'**{AUDIENCE_LABELS[self.audience]}**\n{notice}\n'
+                         'Search and select up to 25 people below. Completing your selection opens '
+                         'the exact recipient preview; sending still requires Confirm send.\n'
+                         'For more than 25 people, cancel and provide exact user IDs in members. '
+                         'This picker expires in 10 minutes.'),
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if (not is_owner(interaction.user) or interaction.user.id != self.owner_id
+                or interaction.guild_id != self.guild_id or self.guild_id != GTOP_GUILD_ID):
+            await interaction.response.send_message(
+                'Only the GBOP owner can choose recipients in the G.T.O.P server.', ephemeral=True,
+            )
+            return False
+        return True
+
+    async def _pending(self, interaction):
+        if not await self.interaction_check(interaction):
+            return False
+        if self.state != 'pending':
+            await interaction.response.send_message(
+                'This picker is already closed. Use the preview or run /gbopmessage again.', ephemeral=True,
+            )
+            return False
+        if time.monotonic() >= self.expires_at:
+            self.state = 'expired'
+            self.stop()
+            await interaction.response.edit_message(
+                content='This picker expired. Run /gbopmessage again. Nothing was sent.', embed=None, view=None,
+            )
+            return False
+        return True
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect, placeholder='Search server members (any role)', min_values=1, max_values=25,
+    )
+    async def choose_members(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        async with self.lock:
+            if not await self._pending(interaction):
+                return
+            ids = tuple(user.id for user in select.values)
+            if (not 1 <= len(ids) <= 25
+                    or any(type(user_id) is not int or not 0 < user_id < 2**64 for user_id in ids)):
+                await interaction.response.send_message('Choose between 1 and 25 server users.', ephemeral=True)
+                return
+            # Defer the component update before fresh Discord membership lookups.
+            # The resolver verifies humans/current membership and never grants access.
+            await interaction.response.defer(ephemeral=True, thinking=False)
+            try:
+                draft = await _resolve_owner_broadcast_draft(self.text, self.audience, ids)
+            except ValueError as exc:
+                await interaction.followup.send(str(exc), ephemeral=True)
+                return
+            if time.monotonic() >= self.expires_at:
+                self.state = 'expired'
+                self.stop()
+                await interaction.edit_original_response(
+                    content='This picker expired. Run /gbopmessage again. Nothing was sent.', embed=None, view=None,
+                )
+                return
+            # Consume this picker before publishing a single immutable preview.
+            self.state = 'previewed'
+            self.stop()
+            view = OwnerBroadcastView(draft)
+            try:
+                view.preview_message = await interaction.edit_original_response(
+                    content=draft.message, embed=view.preview_embed(), view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                view.stop()
+                raise
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary)
+    async def cancel_selection(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.lock:
+            if not await self._pending(interaction):
+                return
+            self.state = 'cancelled'
+            self.stop()
+            await interaction.response.edit_message(
+                content='GBOP message cancelled. Nothing was sent.', embed=None, view=None,
+            )
+
+    async def on_timeout(self):
+        async with self.lock:
+            if self.state == 'pending':
+                self.state = 'expired'
+                if self.preview_message is not None:
+                    try:
+                        await self.preview_message.edit(
+                            content='This picker expired. Run /gbopmessage again. Nothing was sent.',
+                            embed=None, view=None,
+                        )
+                    except Exception:
+                        logger.warning('GBOP owner-message expired picker could not be updated')
+
+
 @tree.command(
     name="gbopmessage",
     description="Owner-only message: choose members, preview, then confirm.",
@@ -843,8 +960,8 @@ class OwnerBroadcastView(discord.ui.View):
 )
 @app_commands.describe(
     text="The exact message to preview (up to 1,800 characters).",
-    audience="Eligible GBOP members, selected members, all server members, or eligible members except selected.",
-    members="For selected/all_except: @user mentions or user IDs, separated by spaces or commas.",
+    audience="Use selected to pick server users; all/all_except use GBOP eligibility; all_server_members uses all.",
+    members="Optional exact @user mentions/IDs. Leave blank for the selected/all_except server-user picker.",
 )
 async def gbopmessage(
     interaction: discord.Interaction,
@@ -859,11 +976,19 @@ async def gbopmessage(
         return
     try:
         owner_message(text)
-        selected_ids = parse_selection(audience, members)
+        use_picker = audience in ('selected', 'all_except') and not members.strip()
+        selected_ids = () if use_picker else parse_selection(audience, members)
     except ValueError as exc:
         await interaction.response.send_message(str(exc), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
+    if use_picker:
+        view = OwnerBroadcastMemberPicker(text, audience)
+        view.preview_message = await interaction.followup.send(
+            owner_message(text), embed=view.picker_embed(), view=view, ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(), wait=True,
+        )
+        return
     try:
         draft = await _resolve_owner_broadcast_draft(text, audience, selected_ids)
     except ValueError as exc:

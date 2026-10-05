@@ -9,11 +9,17 @@ Only the existing configured GBOP owner can use it, in the configured G.T.O.P gu
 Recipients see the heading **GBOP Message**, sent by the GBOP bot.
 
 - `audience:all` previews all currently eligible members.
-- `audience:selected members:@Alice,@Bob` previews only those current human server members, even without GBOP access.
+- `audience:selected` opens Discord's searchable server-user picker. Select up to
+  25 people to preview only those current human server members, even without GBOP access.
 - `audience:all_server_members` previews all current human server members, with or without GBOP access.
-- `audience:all_except members:@Alice,@Bob` previews all eligible members except those selected.
+- `audience:all_except` opens the same picker to exclude selected eligible GBOP members.
 
-The `members` option accepts exact user mentions or Discord user IDs separated by
+Leave the optional `members` field blank to use the native user picker, rather than
+Discord's text mention suggestions. The picker lists server users without a GBOP-role
+filter; bots and unverified/departed members cannot pass the subsequent preview check.
+Selecting users creates a private preview only, not a send. Cancel and expiry close
+the picker without sending. For more than 25 people, or to paste an existing list,
+`members` still accepts exact user mentions or Discord user IDs separated by
 spaces or commas. It does not guess from names or accept role mentions. An invalid
 or unverified selected ID blocks the preview instead of silently changing its scope.
 For `all` (the default) and `all_except`, current eligibility still uses the existing
