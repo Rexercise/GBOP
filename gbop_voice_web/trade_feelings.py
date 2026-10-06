@@ -77,8 +77,11 @@ FEELING_WORDS = (r"calm|anxious|nervous|confident|afraid|scared|excited|frustrat
     r"bored|uncertain|relaxed|stressed|worried|overwhelmed|hesitant|impatient|focused|"
     r"tired|happy|sad|hopeful|fearful|relieved|uneasy|optimistic|on edge|fomo")
 TRADE_NUMBER = r"\btrade\s*#?\s*(\d+)\b"
+NOTE_STAGE = r"opening|entry|adding|add[ -]entry|mid[ -]trade|closing"
 NOTE_REQUEST = re.compile(r"^\s*(?:please\s+)?(?:note\s+(?:for|on)|"
-    r"(?:save|record|log|add)\s+(?:(?:this|my|a)\s+)?(?:(?:feeling|note)\s+)?(?:for|to|on))"
+    r"(?:save|record|log|add)\s+(?:(?:this|my|an?)\s+)?"
+    r"(?:(?:as\s+(?:an?\s+)?)?(?:" + NOTE_STAGE + r")\s+)?"
+    r"(?:(?:feeling|note)\s+)?(?:for|to|on))"
     r"\s+(?:my\s+)?trade\s*#?\s*(\d+)\s*[:,-]\s*(.+)$", re.I | re.S)
 UNSAFE_SOURCE = re.compile(r"\b(?:if|suppose|imagine|pretend|hypothetical|example|preview|draft|"
     r"quote[ds]?|quotation|would|could|might|he|she|they|his|her|their|friend|someone|"
@@ -116,7 +119,7 @@ SUBJECT_PREDICATE = (r"felt|feels?|is|was|are|were|seem(?:s|ed)?|look(?:s|ed)?|"
 POSSESSIVE_FEELING_SUBJECT = (r"(?:[\w’'-]+\s+){0,6}[\w’'-]+['’]s\s+(?:" + FEELING_WORDS + r")\b")
 
 
-SELF_REPORT_PREFIX = (r"(?:i\s+(?:feel|felt|am feeling|was feeling)|i'm\s+feeling|"
+SELF_REPORT_PREFIX = (r"(?:i\s+(?:feel|felt|am feeling|was feeling|(?:started|began) to feel)|i'm\s+feeling|"
     r"i(?:'ve| have)\s+been feeling)")
 
 
@@ -313,9 +316,24 @@ def _stated_stages(text):
         if re.search(pattern, text, re.I)}
 
 
+def _requested_note_stage(text):
+    # Inspect raw source before clause splitting can remove its separator.
+    note = NOTE_REQUEST.match(text)
+    wrapper = re.search(r'\b(' + NOTE_STAGE + r')\s+(?:feeling|note)\b',
+                        text[:note.start(2)], re.I) if note else None
+    if wrapper:
+        label = wrapper[1].lower().replace(' ', '-')
+        return {'opening': 'open', 'entry': 'open', 'adding': 'add',
+                'add-entry': 'add', 'mid-trade': 'mid', 'closing': 'close'}[label]
+    return None
+
+
 def _ground_fragment_fields(args, text, *, confirmed_stage=None, affirmative=False):
     owned_text = ' '.join(_report_head(part) for _, _, part in _report_clauses(text))
     stages = _stated_stages(owned_text)
+    requested_stage = _requested_note_stage(text)
+    if requested_stage:
+        stages.add(requested_stage)
     expected = (confirmed_stage if affirmative else next(iter(stages)) if len(stages) == 1
                 else confirmed_stage if not stages else None)
     if expected is None or args.get('stage') != expected:
@@ -370,7 +388,9 @@ def _ground_report(args, guild, user):
                 full_report = explicit_note['feeling'] if explicit_note else text.strip()
                 if _normalize(phrase) != _normalize(full_report):
                     raise ValueError('Preserve the full original feeling note, including its qualifiers and changing confidence; do not extract an adjective.')
-                _ground_fragment_fields(args, full_report,
+                # A stage-qualified save request supplies its own stage, but
+                # never overrides a conflicting stage in the member's report.
+                _ground_fragment_fields(args, text if explicit_note else full_report,
                     confirmed_stage=prompt['stage'] if prompted else reply['stage'] if clarified else None)
                 phrase = full_report
             args['feeling'] = phrase

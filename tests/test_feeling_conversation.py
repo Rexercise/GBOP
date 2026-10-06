@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 WORDS = 'Felt relaxed on the first entry. Confidence started to fade after the later add.'
 NOTE = 'Note for Trade #1: ' + WORDS
 QUESTION = 'Should I record this as a mid-trade feeling for Trade #1?'
+QUALIFIED_WORDS = ('I felt very calm in the first test setup and calm in the second setup '
+    'because everything was quite orderly, but I started to feel a little less calm '
+    'after entering the second setup.')
+QUALIFIED_NOTE = 'Save this as a mid-trade feeling for Trade #2: ' + QUALIFIED_WORDS
 
 
 class FeelingConversationTests(unittest.TestCase):
@@ -347,10 +351,10 @@ class FeelingConversationTests(unittest.TestCase):
             client=client, BACKEND_MODEL='offline-test', BACKEND_PROMPT=coach.COACH_PROMPT,
             TOOLS=coach.COACH_TOOLS, run_tool=execute)
         exec(compile(ast.Module(body=[node], type_ignores=[]), path, 'exec'), env)
-        def turn(text, *, save=False):
+        def turn(text, *, save=False, arguments=None):
             if save:
                 queue.append(NS(output=[NS(type='function_call', name='record_trade_feeling',
-                    arguments=json.dumps(self.args()), call_id='synthetic')], output_text=''))
+                    arguments=json.dumps(arguments or self.args()), call_id='synthetic')], output_text=''))
             queue.append(NS(output=[], output_text='Saved.' if save else QUESTION))
             with patch('gbop_voice_web.market_conversation.TEXT_MARKET_CONTEXTS.get', return_value=self.context):
                 if path == 'bot.py':
@@ -364,6 +368,98 @@ class FeelingConversationTests(unittest.TestCase):
             self.context.complete_response(answer, completed=True)
             return deepcopy(outputs)
         return turn
+
+    def test_stage_qualified_note_keeps_full_changing_feeling_in_both_dispatchers(self):
+        for _ in range(2):
+            self.opened()
+        for path in ('bot.py', 'gbop_voice_web/server.py'):
+            with self.subTest(path=path):
+                self.context = MarketConversation((10, 20, path), auth_provider=(self.db, 10, 20))
+                count = len(self.metadata(2).get('feeling_history', []))
+                args = {**self.args(), 'trade_number': 2, 'feeling': QUALIFIED_WORDS}
+                outputs = self.dispatcher(path)(QUALIFIED_NOTE, save=True,
+                    arguments=args)
+                self.assertTrue(outputs[-1]['ok'], outputs)
+                self.assertTrue(self.run_save(args)['ok'])  # Same-turn retry is idempotent.
+                reports = self.metadata(2)['feeling_history']
+                self.assertEqual(len(reports), count + 1)
+                self.assertEqual(reports[-1]['feeling'], QUALIFIED_WORDS)
+                self.assertEqual(reports[-1]['stage'], 'mid')
+                self.assertIsNone(reports[-1]['reported_at'])
+                self.assertIsNone(reports[-1]['correction_of'])
+                for other in range(1, 2):
+                    self.assertNotIn('feeling_history', self.metadata(other))
+
+    def test_stage_qualified_note_requires_full_source_and_exact_target(self):
+        for _ in range(2):
+            self.opened()
+        args = {**self.args(), 'trade_number': 2, 'feeling': QUALIFIED_WORDS}
+        for changed in ({'feeling': 'very calm'}, {'feeling': 'a little less calm'},
+                {'feeling': QUALIFIED_WORDS.split(', but')[0]}, {'trade_number': 1}, {'stage': 'open'},
+                {'reported_at': '2026-01-01T12:00:00Z'}, {'correction_of': 1}):
+            with self.subTest(changed=changed):
+                self.context.begin_turn(QUALIFIED_NOTE)
+                self.assertFalse(self.run_save({**args, **changed})['ok'])
+        for number in range(1, 3):
+            self.assertNotIn('feeling_history', self.metadata(number))
+
+    def test_stage_qualified_wrappers_ground_each_stage_without_inventing_time(self):
+        self.opened()
+        words = 'I began to feel a little less confident.'
+        for label, stage in (('opening', 'open'), ('entry', 'open'), ('adding', 'add'),
+                ('add-entry', 'add'), ('mid-trade', 'mid'), ('closing', 'close')):
+            with self.subTest(label=label):
+                self.context.begin_turn(f'Save this as an {label} feeling for Trade #1: ' + words)
+                result = self.run_save({**self.args(), 'feeling': words, 'stage': stage})
+                self.assertTrue(result['ok'], result)
+                self.assertEqual(result['feeling']['feeling'], words)
+                self.assertEqual(result['feeling']['stage'], stage)
+                self.assertIsNone(result['feeling']['reported_at'])
+
+    def test_wrapper_and_body_stage_conflicts_require_clarification(self):
+        self.opened()
+        words = 'I started to feel uneasy at entry.'
+        for stage in ('mid', 'open'):
+            self.context.begin_turn('Save this as a mid-trade feeling for Trade #1: ' + words)
+            self.assertFalse(self.run_save({**self.args(), 'feeling': words, 'stage': stage})['ok'])
+        self.assertNotIn('feeling_history', self.metadata())
+
+    def test_wrapper_stage_survives_comma_and_dash_separators_and_prior_prompt(self):
+        words = 'I started to feel calm.'
+        for separator in (',', '-'):
+            for label, stage in (('opening', 'open'), ('adding', 'add'), ('closing', 'close')):
+                with self.subTest(separator=separator, label=label):
+                    number = self.opened()['trade_id']
+                    self.context.begin_turn(f'Save this as a {label} feeling for Trade #{number}{separator} ' + words)
+                    args = {**self.args(), 'trade_number': number, 'feeling': words}
+                    wrong_stage = 'open' if stage != 'open' else 'close'
+                    self.assertFalse(self.run_save({**args, 'stage': wrong_stage})['ok'])
+                    result = self.run_save({**args, 'stage': stage})
+                    self.assertTrue(result['ok'], result)
+                    self.assertEqual(self.metadata(number)['feeling_history'][0]['stage'], stage)
+
+    def test_stage_qualified_fragment_preserves_modifiers(self):
+        self.opened()
+        words = 'Felt a little uneasy.'
+        text = 'Save this as a mid-trade feeling for Trade #1: ' + words
+        self.context.begin_turn(text)
+        self.assertFalse(self.run_save({**self.args(), 'feeling': 'uneasy'})['ok'])
+        result = self.run_save({**self.args(), 'feeling': words})
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['feeling']['feeling'], words)
+        self.assertEqual(result['feeling']['stage'], 'mid')
+
+    def test_new_feeling_prefix_does_not_admit_other_people_or_nonfactual_reports(self):
+        self.opened()
+        for words in ('If I started to feel nervous.', 'I could have started to feel nervous.',
+                'I started to feel Bob was nervous.', 'I began to feel that my partner was nervous.',
+                'I started to feel calm and Bob felt nervous.', 'Did I start to feel nervous?',
+                'I started to feel nervous. Do not save this.', 'I started to feel nervous. Preview only.',
+                'My coach said "I started to feel nervous."'):
+            with self.subTest(words=words):
+                self.context.begin_turn('Save this as a mid-trade feeling for Trade #1: ' + words)
+                self.assertFalse(self.run_save({**self.args(), 'feeling': words})['ok'])
+        self.assertNotIn('feeling_history', self.metadata())
 
     def test_factual_reports_keep_hypothetical_and_person_context(self):
         self.opened()
