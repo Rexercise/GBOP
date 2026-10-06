@@ -149,9 +149,17 @@ def candidate_lifecycle_card(fact):
     structure = fact.get('super_soup_structure', {})
     card['super_soup'] = {'pre_csd_status': soup.get('status', 'not_assessed')}
     card['super_soup'].update(_pick(structure, ('structure_status', 'structural_quality',
-        'variants', 'structure_known_at_ny', 'csd_same_assigned_close',
+        'variants', 'variant_status', 'variant_explanation', 'completion_known_at_ny',
+        'completion_preserved_after_outside_close', 'structure_known_at_ny', 'csd_same_assigned_close',
         'local_crt_outcome', 'local_function_outcome', 'parent_function_outcome',
         'local_crt_invalidated_at_ny', 'local_function_window_end_ny')))
+    if structure.get('variants'):
+        # Reasons remain in variant_explanation; scope is shared by the labels.
+        card['super_soup']['variants'] = [_pick(v, ('code', 'name')) for v in structure['variants']]
+        card['super_soup']['variant_scope'] = 'Model 1 own CRT'
+    detail = card['super_soup'].get('variant_explanation', {})
+    if not structure.get('variants') and not detail.get('candidates') and detail.get('status') in ('unverified', 'not_established'):
+        card['super_soup'].pop('variant_explanation', None)
     if structure.get('event'):
         card['super_soup']['candle'] = _interval(structure['event'])
     if structure.get('purge_source_interval'):

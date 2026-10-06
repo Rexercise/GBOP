@@ -293,6 +293,8 @@ def _public(node, detail=False):
                 'status': 'assessed', 'timeframe': life['timeframe'],
                 'csd': life['csd'],
                 'super_soup': {k: soup[k] for k in ('structure_status', 'structural_quality',
+                    'variants', 'variant_status', 'variant_explanation', 'completion_known_at_ny',
+                    'completion_preserved_after_outside_close', 'csd_same_assigned_close',
                     'structure_known_at_ny', 'local_crt_outcome', 'local_function_outcome',
                     'local_crt_invalidated_at_ny') if k in soup},
                 'source_coverage_complete': life['source_coverage_complete'],

@@ -124,7 +124,10 @@ class RetainedMarketReplayTests(unittest.TestCase):
         self.assertGreater(30957.34, max(b['high'] for b in anchor))
         transitions = review['shift_story']['range_transitions']
         self.assertEqual([(t['from_anchor_ny'], t['to_anchor_ny'], t['confirmed_at_ny']) for t in transitions],
-                         [(ny('08:00'), ny('09:00'), ny('10:00'))])
+                         [(ny('08:00'), ny('09:00'), ny('10:00')),
+                          (ny('09:00'), ny('11:00'), ny('12:00'))])
+        self.assertEqual(transitions[-1]['reason'], 'opposing_objective_completed')
+        self.assertFalse(transitions[-1]['crt_established_by_handoff'])
         self.assertEqual(later['role'], 'selected_range')
         self.assertEqual(later['direction_observed'], 'bearish')
         self.assertEqual(later['selected_at_ny'], ny('10:00'))

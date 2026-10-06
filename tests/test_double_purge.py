@@ -85,6 +85,8 @@ class DoublePurgeTests(unittest.TestCase):
         self.assertEqual(seq['opposing_purge']['bar_open_ny'], ny('11:12'))
         self.assertEqual(seq['source_return_inside']['bar_open_ny'], ny('11:13'))
         self.assertEqual(seq['source_return_inside']['known_at_ny'], ny('11:14'))
+        self.assertEqual(seq['known_at_ny'], ny('12:00'))
+        self.assertEqual(seq['selected_timeframe_return_inside']['timeframe'], 'H1')
         self.assertEqual(seq['assigned_return_inside']['bar_open_ny'], ny('11:10'))
         self.assertEqual(seq['assigned_return_inside']['known_at_ny'], ny('11:15'))
         wick, body = out['opposite_identities'][:2]
@@ -103,7 +105,7 @@ class DoublePurgeTests(unittest.TestCase):
 
     def test_retained_rebound_uses_post_return_source_high_not_earlier_m5_high(self):
         out = self.assess(self.retained, '12:00')
-        mid = out['reversal_thesis']['objectives']['midpoint']
+        mid = out['reversal_development']['objectives']['midpoint']
         self.assertEqual(mid['closest_observed_price'], 30879.33)
         self.assertEqual(mid['closest_source_interval']['bar_open_ny'], ny('11:52'))
         self.assertEqual(mid['distance_price_points'], 33.2)
@@ -114,7 +116,7 @@ class DoublePurgeTests(unittest.TestCase):
         self.assertAlmostEqual(metric['boundary_to_target_reference']['progress_percent'], 60.02889477486155)
         self.assertIsNone(metric['numeric_inducement_threshold'])
         self.assertEqual(metric['inducement_classification'], 'requires_qualitative_context')
-        full = out['reversal_thesis']['objectives']['original_side']
+        full = out['reversal_development']['objectives']['original_side']
         self.assertEqual(full['distance_price_points'], 116.26)
 
     def test_stale_full_review_and_future_bars_cannot_leak_past_cutoff(self):
@@ -127,7 +129,9 @@ class DoublePurgeTests(unittest.TestCase):
         self.assertIsNone(no_return['sequence']['source_return_inside'])
         self.assertIsNone(no_return['sequence']['assigned_return_inside'])
         source = self.assess(self.retained, '11:14', full)
-        self.assertTrue(source['observed'])
+        self.assertFalse(source['observed'])
+        self.assertTrue(source['developing'])
+        self.assertIsNone(source['confirmed_at_ny'])
         self.assertIsNone(source['sequence']['assigned_return_inside'])
         self.assertEqual(source['opposite_identities'], [])
         wick = self.assess(self.retained, '11:15', full)
@@ -140,18 +144,18 @@ class DoublePurgeTests(unittest.TestCase):
         for reverse, expected_side, target, midpoint_extreme in [
                 (False, 'buy', 120, 'high'), (True, 'sell', 80, 'low')]:
             with self.subTest(reverse=reverse):
-                bars = fixture(reverse=reverse)
-                next(b for b in bars if b['time'] == t('10:10'))[midpoint_extreme] = 100
-                out = self.assess(bars)
+                bars = fixture('11:15', reverse=reverse)
+                next(b for b in bars if b['time'] == t('11:10'))[midpoint_extreme] = 100
+                out = self.assess(bars, '11:15')
                 thesis = out['reversal_thesis']
                 self.assertTrue(out['observed'])
                 self.assertEqual(thesis['objective_side'], expected_side)
                 self.assertEqual(thesis['objective_level'], target)
                 self.assertEqual(thesis['status'], 'midpoint_only')
                 self.assertEqual(thesis['objectives']['midpoint']['distance_price_points'], 0)
-                self.assertNotEqual(thesis['objectives']['original_side']['status'], 'observed_after_return')
-                next(b for b in bars if b['time'] == t('10:11'))[midpoint_extreme] = target
-                complete = self.assess(bars)['reversal_thesis']
+                self.assertNotEqual(thesis['objectives']['original_side']['status'], 'observed_after_confirmation')
+                next(b for b in bars if b['time'] == t('11:11'))[midpoint_extreme] = target
+                complete = self.assess(bars, '11:15')['reversal_thesis']
                 self.assertEqual(complete['status'], 'original_side_delivered')
                 self.assertEqual(complete['objectives']['original_side']['distance_price_points'], 0)
 
@@ -201,23 +205,25 @@ class DoublePurgeTests(unittest.TestCase):
         bars = fixture()
         bars = [b for b in bars if b['time'] != t('10:07')]
         out = self.assess(bars)
-        self.assertTrue(out['observed'])
-        mid = out['reversal_thesis']['objectives']['midpoint']
+        self.assertFalse(out['observed'])
+        self.assertTrue(out['developing'])
+        mid = out['reversal_development']['objectives']['midpoint']
         self.assertEqual(mid['observed_distance_price_points'], 1)
         self.assertIsNone(mid['distance_price_points'])
         next(b for b in bars if b['time'] == t('10:10'))['high'] = 120
-        full = self.assess(bars)['reversal_thesis']['objectives']['original_side']
+        full = self.assess(bars)['reversal_development']['objectives']['original_side']
         self.assertEqual(full['status'], 'observed_touch_validity_unverified')
         self.assertIsNone(full['distance_price_points'])
 
-    def test_later_gap_does_not_erase_verified_original_or_reverse_delivery(self):
+    def test_later_gap_preserves_original_and_preconfirmation_physical_delivery(self):
         bars = fixture()
         next(b for b in bars if b['time'] == t('10:08'))['high'] = 120
         bars = [b for b in bars if b['time'] != t('10:12')]
         out = self.assess(bars)
-        self.assertTrue(out['observed'])
+        self.assertFalse(out['observed'])
+        self.assertTrue(out['developing'])
         self.assertTrue(out['original_completion_preserved'])
-        self.assertEqual(out['reversal_thesis']['status'], 'original_side_delivered')
+        self.assertEqual(out['reversal_development']['objectives']['original_side']['status'], 'observed_after_return')
 
     def test_original_completion_survives_reverse_failure_and_later_invalidation(self):
         bars = fixture('11:02')
@@ -226,37 +232,40 @@ class DoublePurgeTests(unittest.TestCase):
         out = self.assess(bars, '11:02')
         self.assertEqual(out['original_outcome']['status'], 'opposing_liquidity_delivered')
         self.assertEqual(out['range_invalidated_at_ny'], ny('11:00'))
-        self.assertEqual(out['reversal_thesis']['status'], 'failed_before_objectives')
-        self.assertEqual(out['reversal_thesis']['objectives']['midpoint']['distance_price_points'], 1)
+        self.assertFalse(out['observed'])
+        self.assertEqual(out['status'], 'not_confirmed_before_range_invalidation')
+        self.assertEqual(out['reversal_development']['objectives']['midpoint']['distance_price_points'], 1)
         self.assertEqual(out['validity_cutoff_ny'], ny('11:00'))
 
     def test_same_invalidating_source_bar_target_is_unresolved_not_reverse_delivery(self):
         bars = fixture('11:02')
         next(b for b in bars if b['time'] == t('10:59')).update(open=90, high=125, low=70, close=75)
         out = self.assess(bars, '11:02')
-        thesis = out['reversal_thesis']
-        self.assertEqual(thesis['status'], 'unverified')
+        thesis = out['reversal_development']
+        self.assertFalse(out['observed'])
+        self.assertEqual(out['confirmation_status'], 'not_confirmed_before_range_invalidation')
         full = thesis['objectives']['original_side']
         self.assertEqual(full['status'], 'unverified_boundary_bar_order')
         self.assertIsNone(full['distance_price_points'])
         self.assertEqual(full['boundary_observations'][-1]['reason'], 'same_invalidating_close_source_bar')
         self.assertTrue(out['original_completion_preserved'])
 
-    def test_later_invalidation_does_not_erase_completed_reverse(self):
+    def test_preconfirmation_target_touch_does_not_override_first_own_tf_invalidation(self):
         bars = fixture('11:02')
         next(b for b in bars if b['time'] == t('10:10'))['high'] = 120
         next(b for b in bars if b['time'] == t('10:59')).update(open=90, high=95, low=70, close=75)
         out = self.assess(bars, '11:02')
-        self.assertEqual(out['reversal_thesis']['status'], 'original_side_delivered')
-        self.assertTrue(out['reversal_thesis']['earlier_delivery_preserved_after_invalidation'])
+        self.assertEqual(out['reversal_development']['objectives']['original_side']['status'], 'observed_after_return')
+        self.assertFalse(out['observed'])
         self.assertTrue(out['original_completion_preserved'])
 
     def test_source_return_bar_extremum_does_not_establish_post_return_target(self):
         bars = fixture()
         next(b for b in bars if b['time'] == t('10:06'))['high'] = 120
         out = self.assess(bars)
-        self.assertTrue(out['observed'])
-        full = out['reversal_thesis']['objectives']['original_side']
+        self.assertFalse(out['observed'])
+        self.assertTrue(out['developing'])
+        full = out['reversal_development']['objectives']['original_side']
         self.assertEqual(full['status'], 'unverified_boundary_bar_order')
         self.assertIsNone(full['evidence'])
 
@@ -270,7 +279,8 @@ class DoublePurgeTests(unittest.TestCase):
         reviewed['model1']['candles'] = []
         out = self.assess(bars, reviewed=reviewed)
         self.assertEqual(out['opposite_identities'], [])
-        self.assertTrue(out['observed'])  # Source sequence still belongs to the selected range.
+        self.assertFalse(out['observed'])
+        self.assertTrue(out['developing'])  # Source sequence still belongs to the selected range.
 
     def test_return_only_after_selected_range_invalidation_does_not_qualify(self):
         bars = fixture('11:02')
@@ -297,7 +307,8 @@ class DoublePurgeTests(unittest.TestCase):
         bars = fixture()
         next(b for b in bars if b['time'] == t('10:06'))['close'] = 80
         out = self.assess(bars)
-        self.assertTrue(out['observed'])
+        self.assertFalse(out['observed'])
+        self.assertTrue(out['developing'])
         self.assertEqual(out['sequence']['source_return_inside']['close'], 80)
         reviewed = review(bars)
         reviewed['anchor']['high'] = reviewed['anchor']['low']
@@ -319,7 +330,8 @@ class DoublePurgeTests(unittest.TestCase):
                    dict(time=t('10:05'), open=100, high=110, low=75, close=90),
                    dict(time=t('10:10'), open=90, high=99, low=85, close=95)]
         out = self.assess(coarse, step=300)
-        self.assertTrue(out['observed'])
+        self.assertFalse(out['observed'])
+        self.assertTrue(out['developing'])
         returned = out['sequence']['source_return_inside']
         self.assertEqual(returned['timeframe'], 'M5')
         self.assertEqual(returned['precision_seconds'], 300)

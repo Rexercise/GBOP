@@ -19,7 +19,7 @@ def confirms(candle, model, bearish):
 
 
 def wick_soup(candle, model, bearish):
-    """A wick beyond the other extreme that closes inside the Model 1 range."""
+    """Strict wick-only subset; completed own-CRT variants are assessed separately."""
     inside = model['low'] <= candle['close'] <= model['high']
     wick = (max(candle['open'], candle['close']) <= model['high'] < candle['high']
             if bearish else candle['low'] < model['low'] <= min(candle['open'], candle['close']))

@@ -4,7 +4,8 @@ import argparse
 import json
 import logging
 from logging.handlers import RotatingFileHandler
-from numbers import Integral
+import math
+from numbers import Integral, Real
 from pathlib import Path
 import ssl
 import time
@@ -17,6 +18,8 @@ ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURU
 MAX_CAPTURE_AGE_SECONDS = 180  # Receiver's existing capture-age allowance.
 MIN_WEEK_SECONDS = 6 * 86400
 MAX_WEEK_SECONDS = 8 * 86400
+NATIVE_H1_SOURCE = dict(source='MT5', timeframe='H1', method='copy_rates_from_pos')
+MAX_H1_BARS = 14 * 24
 
 
 def load_config(path):
@@ -71,6 +74,45 @@ def collect_weekly_periods(mt5, symbol, captured):
         return None
 
 
+def collect_native_h1(mt5, symbol, captured, *, backfill=True):
+    """Read bounded native H1 OHLC; never synthesize it from finer candles."""
+    try:
+        timeframe = getattr(mt5, 'TIMEFRAME_H1', None)
+        if timeframe is None:
+            return None
+        # Include position zero, which may be closed between broker sessions.
+        # One extra position allows for the currently forming hourly candle.
+        count = MAX_H1_BARS + 1 if backfill else 3
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
+        if rates is None or not len(rates):
+            return None
+        if len(rates) > count:
+            raise ValueError('Unexpected H1 source size.')
+        cutoff = captured - 14 * 86400 + MAX_CAPTURE_AGE_SECONDS
+        bars = []
+        for rate in rates:
+            t = rate['time']
+            if isinstance(t, bool) or not isinstance(t, Integral) or t <= 0 or t % 3600:
+                raise ValueError('Invalid H1 UTC source timestamp.')
+            if t < cutoff or t + 3600 > captured:
+                continue
+            prices = [rate[k] for k in ('open', 'high', 'low', 'close')]
+            if any(isinstance(p, bool) or not isinstance(p, Real) or not math.isfinite(p) or p <= 0 for p in prices):
+                raise ValueError('Invalid H1 source price.')
+            o, h, l, c = map(float, prices)
+            if not l <= min(o, c) <= max(o, c) <= h:
+                raise ValueError('Invalid H1 source OHLC.')
+            bars.append(dict(time=int(t), open=o, high=h, low=l, close=c))
+        bars.sort(key=lambda bar: bar['time'])
+        if len(bars) > MAX_H1_BARS or len({b['time'] for b in bars}) != len(bars):
+            raise ValueError('Duplicate or excessive H1 source candles.')
+        return bars or None
+    except Exception as exc:
+        # Optional evidence must not interrupt the established quote/M1/M5 feed.
+        logging.warning('Native H1 unavailable for %s (%s); retaining M1/M5 coverage', symbol, type(exc).__name__)
+        return None
+
+
 def collect(mt5, symbols, now=None, *, backfill=True):
     now = int(time.time() if now is None else now)
     # Keep the oldest bars valid for the full allowed upload age, including splits.
@@ -102,6 +144,10 @@ def collect(mt5, symbols, now=None, *, backfill=True):
         if not bars_m1:
             logging.warning('M1 history unavailable for %s; retaining M5 coverage', asset)
         item = dict(asset=asset, symbol=symbol, bid=float(tick.bid), ask=float(tick.ask), tick_time=int(tick.time), bars=bars, bars_m1=bars_m1)
+        bars_h1 = collect_native_h1(mt5, symbol, now, backfill=backfill)
+        if bars_h1 is not None:
+            item['bars_h1'] = bars_h1
+            item['native_h1_source'] = dict(NATIVE_H1_SOURCE)
         weekly_periods = collect_weekly_periods(mt5, symbol, now)
         if weekly_periods is not None:
             item['weekly_periods'] = weekly_periods

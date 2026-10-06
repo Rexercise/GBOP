@@ -10,7 +10,7 @@ from gbop_voice_web.candle_evidence import (
 from gbop_voice_web.candle_naming import objective_identity
 from gbop_voice_web import cisd_rule
 
-VERSION = 'super-soup-full-extreme-2026-10-03'
+VERSION = 'super-soup-canonical-crt-variants-2026-10-06'
 
 
 def relation(row, reference, bearish):
@@ -126,6 +126,26 @@ def functional_objectives(bars, after, model, bearish, step, local_invalid_at,
     return targets
 
 
+def nested_variants(model, sources, purge, targets, end, step, cutoff, eligible=True):
+    """Use the canonical CRT rules on the Model 1's own candle grid."""
+    from gbop_voice_web.shift_narrative import classify_structure
+    from gbop_voice_web.variant_explanation import variant_explanation
+    anchor = {**model, 'start_ny': model['bar_open_ny'], 'end_ny': model['bar_close_ny'],
+        'timeframe': model['timeframe'], 'midpoint': (model['high'] + model['low']) / 2, 'complete': True}
+    row = {'anchor': anchor,
+        'events': [{'kind': ('buy' if model['direction'] == 'bearish' else 'sell') + '_side_purge',
+                    **interval(purge, step)}],
+        'direction_observed': model['direction'], 'invalidated_at_ny': stamp(cutoff) if cutoff else None,
+        'objectives': [dict(value, objective=name) for name, value in targets.items()]}
+    variants = (classify_structure(row, sources, end, step, candle_timeframe=model['timeframe'])
+                if eligible else {'status': 'unresolved', 'labels': [],
+                    'reason': 'Prior local invalidation or opposite-side sweep blocks a clean CRT sequence.'})
+    row['variant_evidence'] = variants
+    explanation = (variant_explanation(row, sources, end, step, candle_timeframe=model['timeframe'])
+                   if eligible else {'status': 'unverified'})
+    return variants, explanation
+
+
 def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
     start = parse_time(model['bar_close_ny'])
     bearish = model['direction'] == 'bearish'
@@ -204,6 +224,21 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
             break
         prior.append(row)
     if event is None:
+        # A source-observed sweep inside a forming own-timeframe candle can
+        # support conditional paths, never an established Super Soup variant.
+        partial = next((r for r in later if r['forming'] and r.get('_bars')), None)
+        if not missing and not csd and partial and relation(partial, model, bearish)['initiating_side_swept']:
+            purge = next(b for b in partial['_bars']
+                         if (b['high'] > model['high'] if bearish else b['low'] < model['low']))
+            targets = objectives(sources, purge['time'], model, bearish, step, local_invalid_at, True)
+            eligible = not local_invalid_at and not any(
+                r['low'] < model['low'] if bearish else r['high'] > model['high'] for r in prior)
+            variants, explanation = nested_variants(model, sources, purge, targets, end, step,
+                                                     local_invalid_at, eligible)
+            soup.update(structure_status='developing', structural_quality='pending_own_timeframe_close',
+                variant_status=variants['status'], variant_explanation=explanation,
+                purge_source_interval=interval(purge, step),
+                candidate_candle_open_ny=partial['start_ny'], required_close_ny=stamp(partial['_end']))
         return result
 
     rel = relation(event, model, bearish)
@@ -235,38 +270,38 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
                 local_function_window_end_ny=stamp(end),
                 parent_function_outcome=(outcome(parent_targets, parent_invalid_at) if parent_validity
                                          else 'unverified_parent_validity'))
-    # Classify the Model 1 as the nested CRT anchor, never substitute the outer H1.
-    if clean:
-        all_inside = all(r['high'] <= model['high'] and r['low'] >= model['low'] for r in prior)
-        n = len(prior)
-        if all_inside and n:
-            soup['variants'].append({'code': 'V4' if n == 1 else 'V5',
-                                     'basis': f'{n} complete inside bars before the purge',
-                                     'scope': 'Model 1 own candle range'})
-        target = local_targets['opposing_liquidity']
-        if n == 0 and target['status'] == 'observed_after_purge':
-            t = parse_time(target['evidence']['bar_open_ny'])
-            index = next((i for i, r in enumerate(prefix) if r['_start'] <= t < r['_end']), None)
-            if index is not None:
-                count = index + 2  # Model 1 is candle one.
-                soup['variants'].append({'code': 'V2' if count == 2 else 'V1' if count == 3 else 'V3',
-                                         'basis': f'Opposing Model 1 liquidity reached in candle {count}',
-                                         'scope': 'Model 1 own candle range'})
-        # V6 requires re-soup of the manipulation extreme BEFORE distribution,
-        # not another touch of the original Model 1 boundary.
-        midpoint = local_targets['midpoint']
-        first_distribution = (parse_time(midpoint['evidence']['bar_open_ny'])
-                              if midpoint['evidence'] else end)
-        for row in prefix:
-            if row['_start'] < event['_end'] or row['_end'] > first_distribution:
-                continue
-            if local_cutoff is not None and row['_end'] >= local_cutoff:
-                continue
-            re_swept = row['high'] > event['high'] if bearish else row['low'] < event['low']
-            if re_swept and model['low'] <= row['close'] <= model['high']:
-                soup['variants'].append({'code': 'V6', 'basis': 'Later manipulation extreme re-souped before midpoint delivery',
-                                         'scope': 'Model 1 own candle range', 'evidence': fact(row)})
-                break
+    # The SAME canonical CRT engine applies to Model 1's own timeframe.
+    # In particular, completed V2 delivery can precede its outside close;
+    # that close does not turn the completed Super Soup into an unclean failure.
+    eligible = not previously_invalid and not wrong_side_first
+    variants, explanation = nested_variants(model, sources, purge_bar, local_targets,
+                                             end, step, local_cutoff, eligible)
+    soup['variant_status'] = ('not_established' if explanation.get('status') == 'not_established'
+                              else variants['status'])
+    if set(explanation) != {'status'}:
+        soup['variant_explanation'] = explanation
+    soup['variants'] = [{'code': item['code'], 'name': item['name'], 'basis': item['reason'],
+        'scope': 'Model 1 own candle range'} for item in variants['labels']]
+    if (not clean and eligible and 'unresolved' in local_targets['opposing_liquidity']['status']):
+        soup.update(structural_quality='unverified_source_order', variant_status='unresolved',
+                    variant_explanation={'status': 'unverified',
+                        'reason': 'Purge/objective order is unresolved at the source resolution.'})
+    completed = variants['status'] == 'distribution_observed' and bool(variants['labels'])
+    if completed:
+        completed_at = stamp(next_boundary(parse_time(variants['distribution_hour_ny']), model['timeframe']))
+        soup['completion_known_at_ny'] = completed_at
+        if explanation.get('known_at_ny') != completed_at:
+            explanation['structure_known_at_ny'] = explanation.get('known_at_ny')
+            explanation['known_at_ny'] = completed_at
+        explanation['known_candle_open_ny'] = variants['distribution_hour_ny']
+        explanation['known_timeframe'] = model['timeframe']
+        soup['completion_preserved_after_outside_close'] = bool(local_invalid_at)
+        if not clean:
+            soup['structural_quality'] = 'valid_completed_crt'
+        soup['occurrence_type'] = 'completed_crt_super_soup'
+        if csd_at == event['_end']:
+            soup['pre_csd'] = False
+            soup['occurrence_type'] = 'completed_crt_super_soup_same_csd_close'
     return result
 
 

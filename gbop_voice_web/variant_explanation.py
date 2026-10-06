@@ -5,7 +5,9 @@ never predict delivery, and never change selection, invalidation or execution.
 """
 from datetime import datetime
 
-from gbop_voice_web.candle_evidence import parse_time, stamp, summarize
+from gbop_voice_web.candle_evidence import parse_time, stamp, summarize, timeframe
+from gbop_voice_web.candle_naming import closure_label
+from gbop_voice_web.crt_variant_clock import variant_clock, containing_index
 
 NAMES = {'V1': 'Textbook', 'V2': 'Pattern Trader’s Kryptonite', 'V3': 'extended distribution',
          'V4': 'one inside bar', 'V5': 'multiple inside bars', 'V6': 're-soup'}
@@ -22,16 +24,20 @@ def _compact(result):
             and not (k == 'reason' and result['status'] in ('unverified', 'not_established'))}
 
 
-def variant_explanation(row, bars, end, step):
+def variant_explanation(row, bars, end, step, *, candle_timeframe=None):
     """Describe supported labels or bounded possibilities, without classifying."""
+    if row.get('validity_evidence_through_ny'):
+        end = min(end, parse_time(row['validity_evidence_through_ny']))
     evidence = row.get('variant_evidence', {})
     labels = evidence.get('labels', [])
     anchor = row['anchor']
     start = parse_time(anchor['start_ny'])
+    tf = timeframe(candle_timeframe or 'H1')
+    clock_rows = variant_clock(start, end, tf)
     result = {'status': 'unverified', 'candidates': [], 'reason': '', 'known_at_ny': None}
     opening = datetime.fromisoformat(anchor['start_ny'])
-    if not anchor.get('complete') or opening.minute or opening.second:
-        result['reason'] = 'Complete aligned H1 range evidence is missing.'
+    if not anchor.get('complete') or (candle_timeframe is None and tf == 'H1' and (opening.minute or opening.second)):
+        result['reason'] = f'Complete aligned {tf} range evidence is missing.'
         return _compact(result)
     bars = sorted((b for b in bars if start <= b['time'] and b['time'] + step <= end), key=lambda b: b['time'])
     purges = sorted((e for e in row.get('events', []) if e['kind'].endswith('_side_purge')
@@ -41,17 +47,20 @@ def variant_explanation(row, bars, end, step):
         result['reason'] = 'No ordered directional purge establishes a variant path.'
         return _compact(result)
     first = purges[0]
-    manipulation = parse_time(first['bar_open_ny']) // 3600 * 3600
-    closes = manipulation + 3600
+    manipulation_index = containing_index(clock_rows, parse_time(first['bar_open_ny']))
+    if manipulation_index is None or manipulation_index == 0:
+        result['reason'] = 'No post-range manipulation is available at the review cutoff.'
+        return _compact(result)
+    manipulation, closes = clock_rows[manipulation_index]
     # Use the complete prefix for absence/timing claims. Later bars after a gap
     # cannot rule out an earlier distribution or prove an inside-bar sequence.
-    prefix = start
-    for bar in bars:
+    prefix = parse_time(anchor['end_ny'])
+    for bar in (b for b in bars if b['time'] >= prefix):
         if bar['time'] != prefix:
             break
         prefix += step
     internal_gap = any(b['time'] > prefix for b in bars)
-    inside = [summarize(bars, t, t + 3600, step) for t in range(start + 3600, manipulation, 3600)]
+    inside = [summarize(bars, t, stop, step) for t, stop in clock_rows[1:manipulation_index]]
     clean_inside = all(c['complete'] and c['high'] <= anchor['high'] and c['low'] >= anchor['low'] for c in inside)
     invalid = row.get('invalidated_at_ny')
     invalid = invalid if invalid and parse_time(invalid) <= end else None
@@ -60,8 +69,10 @@ def variant_explanation(row, bars, end, step):
     if target and (parse_time(target['bar_close_ny']) > end or
                    (invalid and parse_time(target['bar_close_ny']) >= parse_time(invalid))):
         target = None
-    distribution = parse_time(target['bar_open_ny']) // 3600 * 3600 if target else None
-    count = (distribution - start) // 3600 + 1 if target else None
+    distribution_index = containing_index(clock_rows, parse_time(target['bar_open_ny'])) if target else None
+    distribution = clock_rows[distribution_index][0] if distribution_index is not None else None
+    distribution_end = clock_rows[distribution_index][1] if distribution_index is not None else None
+    count = distribution_index + 1 if distribution_index is not None else None
     man = summarize(bars, manipulation, closes, step)
     man_complete = closes <= end and man['complete']
     man_inside = man_complete and anchor['low'] <= man['close'] <= anchor['high']
@@ -70,19 +81,21 @@ def variant_explanation(row, bars, end, step):
     if man_inside and not invalid and not internal_gap and not any(v['code'] == 'V6' for v in labels):
         midpoint = next((o.get('evidence') for o in row.get('objectives', []) if o['objective'] == 'midpoint'), None)
         midpoint_start = parse_time(midpoint['bar_open_ny']) if midpoint and parse_time(midpoint['bar_close_ny']) <= end else float('inf')
-        for t in range(closes, min(prefix, end), 3600):
-            partial = summarize(bars, t, min(t + 3600, prefix, end), step)
+        for t, stop in clock_rows[manipulation_index + 1:]:
+            if t >= min(prefix, end):
+                break
+            partial = summarize(bars, t, min(stop, prefix, end), step)
             swept = (partial.get('high', man['high']) > man['high'] if direction == 'bearish'
                      else partial.get('low', man['low']) < man['low'])
-            if swept and t + 3600 > prefix and midpoint_start >= t + 3600:
+            if swept and stop > prefix and midpoint_start >= stop:
                 pending_resoup = {'code': 'V6', 'name': NAMES['V6'],
-                    'requires': f"{clock(stamp(t))} H1 must close inside before midpoint delivery after sweeping {man_name}'s extreme."}
+                    'requires': f"{clock(stamp(t))} {tf} must close inside before midpoint delivery after sweeping {man_name}'s extreme."}
                 break
     reasons = {}
     if labels:
         dist_name = clock(stamp(distribution)) if distribution is not None else None
         reasons['V1'] = f'{range_name} range, {man_name} manipulation back inside, {dist_name} distribution'
-        reasons['V2'] = f'{man_name} H1 manipulated then distributed the {range_name} range'
+        reasons['V2'] = f'{man_name} {tf} manipulated then distributed the {range_name} range'
         reasons['V3'] = f'{dist_name} distributed the {range_name} range on candle {count}'
         inside_names = '/'.join(clock(c['start_ny']) for c in inside)
         reasons['V4'] = f'{inside_names} was inside before {man_name} manipulation returned inside'
@@ -92,16 +105,19 @@ def variant_explanation(row, bars, end, step):
                          if resoup else '')
         result['reason'] = '; '.join(reasons[v['code']] for v in labels if reasons.get(v['code']))
         result['status'] = 'completed' if target and evidence.get('status') == 'distribution_observed' else 'structure_observed'
-        known = [distribution + 3600 for v in labels if v['code'] in ('V1', 'V2', 'V3') and distribution is not None]
+        known = [distribution_end for v in labels if v['code'] in ('V1', 'V2', 'V3') and distribution is not None]
         known += [closes for v in labels if v['code'] in ('V4', 'V5')]
         if any(v['code'] == 'V6' for v in labels) and resoup:
-            known.append(parse_time(resoup) + 3600)
+            known.append(clock_rows[containing_index(clock_rows, parse_time(resoup))][1])
         result['known_at_ny'] = stamp(max(known))
+        if tf != 'H1':
+            result['known_timeframe'] = tf
+            result['known_candle_open_ny'] = stamp(next(t for t, stop in clock_rows if stop == max(known)))
         if result['status'] != 'completed':
             result['remaining'] = (
                 'Opposing liquidity observed; gaps leave completed distribution classification unverified.'
                 if target and parse_time(target['bar_close_ny']) > prefix else
-                f'Opposing liquidity delivered; complete {clock(stamp(distribution))} H1 evidence still needed.'
+                f'Opposing liquidity delivered; complete {clock(stamp(distribution))} {tf} evidence still needed.'
                 if target else 'Range invalidated before full delivery.' if invalid else
                 'Ordered opposing-liquidity delivery remains pending or unverified.')
         if pending_resoup:
@@ -123,27 +139,27 @@ def variant_explanation(row, bars, end, step):
     def candidate(code, requires):
         result['candidates'].append({'code': code, 'name': NAMES[code], 'requires': requires})
     if inside:
-        result['reason'] = (f'{len(inside)} complete inside H1 ' + ('candle' if len(inside) == 1 else 'candles')
+        result['reason'] = (f'{len(inside)} complete inside {tf} ' + ('candle' if len(inside) == 1 else 'candles')
                             + f" preceded {man_name}'s purge")
-        candidate('V4' if len(inside) == 1 else 'V5', f'{man_name} H1 must close back inside; '
+        candidate('V4' if len(inside) == 1 else 'V5', f'{man_name} {tf} must close back inside; '
                   + ('opposing delivery is already observed.' if target else 'full delivery remains unconfirmed.'))
     elif target and parse_time(target['bar_close_ny']) <= prefix:
-        if manipulation == start + 3600 and (count == 2 or man_inside):
+        if manipulation_index == 1 and (count == 2 or man_inside):
             code = 'V2' if count == 2 else 'V1' if count == 3 else 'V3'
             result['reason'] = f'{man_name} manipulated; opposing liquidity was reached in candle {count}'
-            candidate(code, f'Complete {clock(stamp(distribution))} H1 evidence through its {clock(stamp(distribution + 3600))} close.')
-    elif manipulation == start + 3600:
-        result['reason'] = f'{man_name} purged the {range_name} range' + (' and closed back inside' if man_inside else '; its H1 close is unverified')
+            candidate(code, f'Complete {clock(stamp(distribution))} {tf} evidence through its own closure.')
+    elif manipulation_index == 1:
+        result['reason'] = f'{man_name} purged the {range_name} range' + (' and closed back inside' if man_inside else f'; its {tf} close is unverified')
         if not man_complete:
-            candidate('V2', 'Ordered opposing delivery in candle 2 with complete H1 evidence.')
+            candidate('V2', f'Ordered opposing delivery in candle 2 with complete {tf} evidence.')
         if not man_complete or man_inside:
-            if prefix < start + 3 * 3600:
-                candidate('V1', ('Ordered opposing delivery' if man_inside else 'Inside manipulation close, then opposing delivery') + ' in candle 3 with complete H1 evidence.')
-            candidate('V3', ('Ordered opposing delivery' if man_inside else 'Inside manipulation close, then opposing delivery') + ' after candle 3 with complete H1 evidence.')
+            if len(clock_rows) < 3 or prefix < clock_rows[2][1]:
+                candidate('V1', ('Ordered opposing delivery' if man_inside else 'Inside manipulation close, then opposing delivery') + f' in candle 3 with complete {tf} evidence.')
+            candidate('V3', ('Ordered opposing delivery' if man_inside else 'Inside manipulation close, then opposing delivery') + f' after candle 3 with complete {tf} evidence.')
     # Do not offer hypothetical future re-soups without the actual extreme sweep.
     if pending_resoup:
         result['candidates'].append(pending_resoup)
-        result['reason'] += '; ' + pending_resoup['requires'].split(' H1 must')[0] + f" swept {man_name}'s extreme"
+        result['reason'] += '; ' + pending_resoup['requires'].split(f' {tf} must')[0] + f" swept {man_name}'s extreme"
     if not result['candidates']:
         result.update(status='unverified', reason='Available candles do not establish a unique supported variant path.')
     elif prefix < end:
@@ -169,7 +185,9 @@ def variant_clause(variant, *, include_known=False):
         if detail.get('status') == 'structure_observed':
             text += '; ' + detail['remaining'].rstrip('.').lower()
         elif include_known and detail.get('known_at_ny'):
-            text += f"; established at {clock(detail['known_at_ny'])} H1 close"
+            text += '; established on ' + closure_label(
+                detail.get('known_candle_open_ny') or stamp(parse_time(detail['known_at_ny']) - 3600),
+                detail.get('known_timeframe', 'H1'))
         for pending in detail.get('candidates', []):
             text += f"; {_display_name(pending)} pending: {pending['requires'].rstrip('.')}"
         return text

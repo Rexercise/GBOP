@@ -19,8 +19,9 @@ class SpokenCandleNameTests(unittest.TestCase):
                         (100, 115, 95, 112), (112, 114, 106, 112)])
         story = review_shift(data, '2026-10-02', 'day', 300)
         summary = story['recap']['spoken_summary']
-        self.assertIn('The 8:00 AM range was invalidated by the closure of the 10:00 AM H1 candle', summary)
-        self.assertIn('10:00 AM range became selected on that candle\'s closure', summary)
+        self.assertIn("The 8:00 AM H1 range (9ate8)'s bearish directional outcome is unverified. The range invalidated on the closure of the 10:00 AM H1 candle", summary)
+        self.assertIn('10:00 AM H1 became the next range under review on the closure of the 10:00 AM H1 candle', summary)
+        self.assertIn('this is not automatic CRT confirmation', summary)
         self.assertNotIn('11:00 AM', summary)
         invalidation = next(e for e in story['ranges'][0]['events'] if e['kind'] == 'range_invalidated')
         self.assertEqual(invalidation['candle_open_ny'], '2026-10-02T10:00:00-04:00')
@@ -45,7 +46,7 @@ class SpokenCandleNameTests(unittest.TestCase):
                                      (106, 109, 89, 100), (100, 109, 91, 100)]),
                              '2026-10-02', 'day', 300)
         summary = story['recap']['spoken_summary']
-        self.assertIn('sell-side of the 8:00 AM H1 range during the 10:00 AM M5 candle', summary)
+        self.assertIn('The 8:00 AM H1 range (9ate8) completed its bearish sell-side objective in the 10:00 AM M5 candle', summary)
         self.assertNotIn('10:05 AM', summary)
         target = next(o for o in story['ranges'][0]['objectives'] if o['objective'] == 'opposing_liquidity')
         self.assertEqual(target['evidence']['bar_close_ny'], '2026-10-02T10:05:00-04:00')

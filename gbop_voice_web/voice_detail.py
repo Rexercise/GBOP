@@ -37,7 +37,19 @@ def _approach(value):
     return out
 
 
-def _double_purge(value, original):
+def _development_summary(value):
+    out = _pick(value, ('status', 'direction', 'window_start_ny', 'window_end_ny'))
+    out['objectives'] = {}
+    for name, target in value.get('objectives', {}).items():
+        out['objectives'][name] = _pick(target, ('status', 'level', 'evidence',
+            'distance_price_points', 'observed_distance_price_points', 'closest_observed_price',
+            'closest_source_interval', 'gtop_context'))
+    out['coverage'] = _pick(value.get('coverage', {}), ('complete', 'missing_bar_count'))
+    out['scope_note'] = 'Before official selected-timeframe confirmation only; not later delivery or execution.'
+    return out
+
+
+def _double_purge(value, original, *, preserve_development=False):
     """Separate the reversal evidence while sharing the original delivery."""
     out = {key: deepcopy(child) for key, child in value.items()
            if key not in ('response_contract', 'spoken_summary')}
@@ -60,14 +72,19 @@ def _double_purge(value, original):
                 if name in prior:
                     out['original_outcome'][name] = _pick(prior[name],
                         ('status', 'spoken_label', 'evidence', 'coverage_through_touch'))
-    thesis = out.get('reversal_thesis', {})
-    thesis.pop('window_rule', None)
-    for target in thesis.get('objectives', {}).values():
-        if target.get('approach'):
-            measured = _measurement(target['approach'])
-            # Named identity is already on the objective, immediately above.
-            measured.pop('target', None)
-            target['approach'] = measured
+    if out.get('reversal_development') and not preserve_development:
+        out['reversal_development'] = _development_summary(out['reversal_development'])
+    for key in (('reversal_thesis', 'reversal_development') if preserve_development else ('reversal_thesis',)):
+        thesis = out.get(key) or {}
+        thesis.pop('window_rule', None)
+        for target in thesis.get('objectives', {}).values():
+            if target.get('approach'):
+                measured = _measurement(target['approach'])
+                measured.pop('target', None)
+                target['approach'] = measured
+            for key in list(target):
+                if target[key] is None or target[key] == []:
+                    del target[key]
     return out
 
 
@@ -77,14 +94,21 @@ def _double_purge_summary(value, request):
         'review_cutoff_ny', 'validity_cutoff_ny', 'range_invalidated_at_ny',
         'source_resolution_seconds', 'exact_tick_time_known', 'original_outcome',
         'original_completion_preserved', 'original_first_purged_side', 'reverse_direction',
-        'original_coverage_through_touch'))
+        'original_coverage_through_touch', 'developing', 'confirmation_status', 'confirmed_at_ny',
+        'named_play_applicability'))
     for key in ('range_start_ny', 'range_timeframe', 'review_cutoff_ny',
                 'validity_cutoff_ny', 'range_invalidated_at_ny', 'reverse_direction'):
         out.pop(key, None)
     out['scope_note'] = 'Selected review anchor/cutoff; reversal validity and direction below.'
     out['sequence'] = _pick(value.get('sequence', {}), ('source_return_inside',
-        'assigned_return_inside', 'known_at_ny', 'coverage', 'coverage_through_return'))
-    for key in ('coverage', 'coverage_through_return'):
+        'assigned_return_inside', 'selected_timeframe_return_inside', 'developing_known_at_ny',
+        'known_at_ny', 'coverage', 'coverage_through_return', 'coverage_through_confirmation'))
+    for key in ('source_return_inside', 'assigned_return_inside', 'selected_timeframe_return_inside'):
+        if out['sequence'].get(key):
+            out['sequence'][key] = _pick(out['sequence'][key], ('bar_open_ny', 'bar_close_ny',
+                'known_at_ny', 'timeframe', 'close', 'confirmation_basis', 'ohlc_basis',
+                'source_coverage_complete', 'native_ohlc_provenance'))
+    for key in ('coverage', 'coverage_through_return', 'coverage_through_confirmation'):
         if key in out['sequence']:
             # Both begin at the selected range end. The enclosing selected
             # cutoff and source-return known-at provide their respective ends.
@@ -142,6 +166,13 @@ def _double_purge_summary(value, request):
                     for row in target['boundary_observations'])
             targets[name] = fact
     out['opposite_identity_count'] = len(value.get('opposite_identities', []))
+    if value.get('reversal_development'):
+        development = value['reversal_development']
+        out['reversal_development'] = _pick(development, ('status', 'window_start_ny', 'window_end_ny'))
+        out['reversal_development']['objectives'] = {
+            name: _pick(target, ('status', 'level', 'evidence', 'distance_price_points',
+                'closest_source_interval', 'gtop_context'))
+            for name, target in development.get('objectives', {}).items()}
     out['detail_omissions'] = ('Identity sequence/boundary rows omitted, not absent or ordered; use double_purge_detail_request.')
     out['double_purge_detail_request'] = deepcopy(request)
     out['double_purge_detail_request']['args'] = {k: v for k, v in request['args'].items()
@@ -262,7 +293,10 @@ def crt_voice_detail(result):
     if view.get('objective_approach'):
         view['objective_approach'] = _approach(view['objective_approach'])
     if view.get('double_purge'):
-        view['double_purge'] = _double_purge(view['double_purge'], review.get('directional_outcome', {}))
+        preserve_development = any(item.get('bar_open_ny') == selected
+            for item in view['double_purge'].get('opposite_identities', []))
+        view['double_purge'] = _double_purge(view['double_purge'], review.get('directional_outcome', {}),
+                                           preserve_development=preserve_development)
     if view.get('range_observation_coverage') == view.get('observation_coverage'):
         view['range_observation_coverage'] = {'same_evidence_as': '#/review/observation_coverage'}
     view['model1'] = _pick(review.get('model1', {}), ('status', 'assigned_timeframe',
@@ -408,10 +442,10 @@ def crt_voice_detail(result):
                 candle.clear()
                 candle.update(kept)
         out['voice_detail_page']['note'] = (
-            'Exact lifecycle; same_evidence_as resolves here. Keep scope/cutoff and targets separate. '
-            'Fetch identities with detail_candle_start_ny or next_request. backend_remaining_from_ny '
-            'marks unavailable deeper records, not a cursor. Raw/BT cursors are separate. '
-            'Missing detail proves no absence; source bars do not prove tick order or fills.')
+            'Exact lifecycle; same_evidence_as resolves here. Keep scope/cutoff and target scopes. '
+            'Query identities by detail_candle_start_ny or next_request. backend_remaining_from_ny '
+            'marks unavailable deeper records, not a cursor. Raw/BT cursors differ. '
+            'Omission is not absence; OHLC cannot prove tick order or fills.')
         _factor_review(out)
         _factor_intervals(out)
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:

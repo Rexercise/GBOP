@@ -166,7 +166,7 @@ async def deliver_alerts(db,guild_id,owner_id,sender,role_check,now=None):
 
 def prepare_next_shift(db,fingerprints,now=None):
     """One changed asset/shift per tick; bounded retention and no model calls."""
-    from gbop_voice_web.market_data import read_feed, market_tool, latest_available_shift_date, history_bars
+    from gbop_voice_web.market_data import read_feed, market_tool, latest_available_shift_date, history_bars, history_native_h1
     from gbop_voice_web.shift_availability import assess_shift, shift_bounds
     now=int(time.time() if now is None else now)
     with db() as conn:
@@ -184,14 +184,16 @@ def prepare_next_shift(db,fingerprints,now=None):
             continue
         opening,end=shift_bounds(day,shift)
         start=opening-7200
-        bars,step=history_bars(db,feed,start,end,day,shift,now)
-        availability=dict(asset=asset,**assess_shift(bars,day,shift,step,now))
+        native=history_native_h1(db,feed,start,min(end,now))
+        bars,step=history_bars(db,feed,start,end,day,shift,now,native_h1=native)
+        availability=dict(asset=asset,**assess_shift(bars,day,shift,step,now,native))
         if not availability['reviewable'] or availability['temporal_status'] != 'completed':
             continue
         key=(asset,day,shift)
         # A narrative/qualification change must rebuild derived summaries even
         # when candle bytes and the five-minute freshness bucket are unchanged.
-        token=(VERSION,asset,day,shift,hashlib.sha256(json.dumps(bars,separators=(',',':')).encode()).hexdigest(),now//300)
+        token=(VERSION,asset,day,shift,hashlib.sha256(json.dumps(
+            {'source_bars':bars,'native_h1':native},separators=(',',':')).encode()).hexdigest(),now//300)
         if fingerprints.get(key)==token:
             continue
         selected=(asset,day,shift,token,availability)
@@ -203,8 +205,10 @@ def prepare_next_shift(db,fingerprints,now=None):
     if not result.get('ok'):
         return None
     review=result['review']; story=review.get('shift_story',{})
+    availability=result.get('availability',availability)
     # Keep the prepared copy small; full evidence remains available on demand.
     brief={'as_of_ny':result.get('available_through_ny'),'availability':availability,'recap':story.get('recap'),
+           'shift_synopsis':review.get('shift_synopsis'),
            'range_transitions':story.get('range_transitions',[]),'paired_smt':review.get('paired_smt'),
            'paired_context':review.get('paired_context'),
            'selected_ranges':[{'anchor_start_ny':r.get('anchor_start_ny'),'variant_evidence':r.get('variant_evidence'),

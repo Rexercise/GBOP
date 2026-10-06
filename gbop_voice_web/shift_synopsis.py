@@ -14,31 +14,30 @@ from gbop_voice_web.smt_reference import closing_candle
 from gbop_voice_web.active_range_story import selected_range_story, shift_end_state, _double_context, _double_sentence
 from gbop_voice_web.variant_explanation import variant_clause
 from gbop_voice_web.target_approach import owner_inducement_example, inducement_clause
+from gbop_voice_web.chronological_context import (build_context_graph, compact_context_graph, context_sentence,
+    pending_range_facts, pending_sentence, pending_reversal_facts, pending_reversal_sentence,
+    transition_sentence, CONTRACT as CONTEXT_CONTRACT)
 
 
 SYNOPSIS_CONTRACT = (
     '9ate8 verdict, Young Lefty status, then selected chronology to shift_end. '
     'Continue after delivery with each evidenced later range and its own outcome; independent context is not a new selection. '
-    'Only next_selected_range changes anchors. Explain supplied variants/candidates and missing conditions. '
+    'Only recorded completion/invalidation handoffs change the range under review; selection does not establish a CRT. Explain supplied variants/candidates and missing conditions. '
     'Preserve earlier delivery and BUT induced 50% gap/path. Body is not thesis; no glossary/profit. '
     'Keep supplied same-range double-purge chronology and reversal separate from original delivery. '
-    'Use detail_request for Model 1/CISD/Soup; omission is not absence.')
+    'Primary body identity belongs to the original local direction, not a paired/boneless thesis. '
+    'Use detail_request for further Model 1/CISD/Soup; omission is not absence. ' + CONTEXT_CONTRACT)
 
 
 OTHER_RANGES_CONTRACT = (
-    'Use spoken_summary/ranges chronologically. Exclude discussed anchors from new opportunities, '
-    'even failed ones; bridge active_range_context without repeating them. Finish selected-range '
-    'manipulation/return/development/outcome before independent candidates. Body direction is not '
-    'an independent thesis. Only next_selected_range changes selection. continue_active_range '
-    'explains that anchor and actual successors, not other opportunities. Preserve shift_end/final '
-    'close. play=null is not absence. Keep each range\'s own direction/variant/targets/invalidation/role. '
-    'Independent context is no selection change; cutoff ranges have no later evidence. Name each '
-    'discussed H1 opening; retrieval alone is not completed discussion.')
+    'Follow mode and named ranges through GTOP shift end. Exclude discussed opportunities; retain their bridge. '
+    'Under review is not CRT confirmation. Keep primary/own CRT/CISD, parent, re-purges, variant and DOL separate. '
+    'Body is not thesis; omission is not absence. Retrieval is not discussion.')
 
 
 def negative_claim_guard(young_status, story):
     """Presentation scope only; this does not classify an aggregate shift outcome."""
-    unverified = ['Young Lefty'] if young_status in (None, 'unverified') else []
+    unverified = ['Young Lefty'] if young_status in (None, 'unverified', 'context_dependent') else []
     if not story.get('coverage', {}).get('complete') or not story.get('progression_complete'):
         unverified.append('affected shift ranges')
     if not unverified:
@@ -52,11 +51,18 @@ def negative_claim_guard(young_status, story):
 def _missing_young_anchor(young):
     """Explain seven's missing evidence separately from whole-shift coverage."""
     anchor = (young or {}).get('anchor', {})
-    if not anchor or anchor.get('complete'):
+    if not anchor or (anchor.get('complete') and anchor.get('source_coverage_complete') is not False):
         return {}, None
     coverage = {key: deepcopy(anchor[key]) for key in (
         'start_ny', 'end_ny', 'complete', 'source_resolution_seconds', 'bar_count',
-        'missing_bar_count', 'missing_intervals', 'missing_interval_count', 'coverage_note') if key in anchor}
+        'missing_bar_count', 'missing_intervals', 'missing_interval_count', 'coverage_note',
+        'ohlc_complete', 'ohlc_basis', 'source_coverage_complete', 'native_h1_status',
+        'native_ohlc_provenance') if key in anchor}
+    if anchor.get('native_h1_status') == 'conflicting_ohlc':
+        return coverage, (f"Young Lefty: unverified; native H1 and source candles disagree on "
+                          f"the {_clock(anchor['start_ny'])} range.")
+    if anchor.get('complete'):
+        return coverage, None
     missing = anchor.get('missing_bar_count')
     step = anchor.get('source_resolution_seconds')
     if not missing or not step or not anchor.get('start_ny'):
@@ -89,14 +95,14 @@ def _active_context(story, records, anchor_start_ny=None, asset=None):
             raise ValueError('The named range is independent context; retrieve its exact range detail '
                              'instead of changing the selected-range story.')
         return None
-    fact = _paired_fact(row, records, _local_fact(row))
+    fact = _paired_fact(row, records, _local_fact(row), story['end_ny'])
     return selected_range_story(story, row, fact, asset)
 
 
 def _continuity_bridge(context):
     """Short reference for an already-discussed anchor, preserving its key ending."""
     name = f"{_clock(context['anchor_start_ny'])} H1 range"
-    parts = [f'The selected {name} remains the reference for this sequence.']
+    parts = [f'The {name} remains the under-review reference for this sequence.']
     for hour in context['hourly_development']:
         actions = []
         if hour.get('purge'):
@@ -113,13 +119,13 @@ def _continuity_bridge(context):
             parts.append(f"The {_clock(hour['candle_start_ny'])} H1 candle " + ' and '.join(actions) + '.')
     parts.append(variant_clause(context.get('variant', {}), include_known=True) + '.')
     if context.get('invalidated_at_ny'):
-        parts.append(f"The range was invalidated at {_clock(context['invalidated_at_ny'])}"
+        parts.append(f"The range was invalidated on {closing_candle(context['invalidated_at_ny'])['spoken_label']}"
                      + (' after recorded delivery.' if context['conclusion']['status'] == 'opposing_liquidity_delivered' else '.'))
     if context.get('next_selected_range'):
         nxt = context['next_selected_range']
-        parts.append(f"Only then did {_clock(nxt['to_anchor_ny'])} H1 become selected at {_clock(nxt['confirmed_at_ny'])}.")
+        parts.append(transition_sentence(nxt))
     elif context['still_selected_at_cutoff']:
-        parts.append('No later selected range replaced it in this shift.')
+        parts.append('No later range replaced it under review in this GTOP shift.')
     if context.get('double_purge'):
         parts.append(_double_sentence(context['double_purge'], short=True))
     return ' '.join(parts)
@@ -128,7 +134,8 @@ def _continuity_bridge(context):
 def _short_selected_summary(context):
     """Default answer is short; source purge/return detail remains structured."""
     name = f"{_clock(context['anchor_start_ny'])} H1 range"
-    parts = [f'The {name} stayed selected.']
+    parts = [transition_sentence(context['review_handoff']) if context.get('review_handoff')
+             else f'The {name} remained under review.']
     for hour in context['hourly_development']:
         actions = []
         if hour.get('purge'):
@@ -146,16 +153,17 @@ def _short_selected_summary(context):
             parts.append(f"{_clock(hour['candle_start_ny'])} H1 " + ', '.join(actions) + '.')
     parts.append(variant_clause(context.get('variant', {}), include_known=True) + '.')
     if context['conclusion']['status'] == 'pending_at_review_cutoff':
-        parts.append('Its outcome remains pending at the cutoff.')
+        parts.append('Full DOL remains pending.')
     elif context['conclusion']['status'] == 'unverified':
-        parts.append('Its outcome remains unverified.')
+        parts.append('DOL unverified.')
     if context.get('invalidated_at_ny'):
-        parts.append(f"Invalidated at {_clock(context['invalidated_at_ny'])}"
+        parts.append(f"Invalidated on {closing_candle(context['invalidated_at_ny'])['spoken_label']}"
                      + (' after recorded delivery.' if context['conclusion']['status'] == 'opposing_liquidity_delivered' else '.'))
     if context.get('next_selected_range'):
         nxt = context['next_selected_range']
-        parts.append(f"{_clock(nxt['to_anchor_ny'])} H1 then became selected at {_clock(nxt['confirmed_at_ny'])}"
-                     + ('; no later evidence before the cutoff.' if nxt.get('at_review_cutoff') else '.'))
+        parts.append(transition_sentence(nxt))
+        if nxt.get('at_review_cutoff'):
+            parts.append('No later evidence before the end of the GTOP shift.')
     if context.get('double_purge'):
         parts.append(_double_sentence(context['double_purge'], short=True))
     return ' '.join(parts)
@@ -202,23 +210,24 @@ def _objective(value, level=None):
 
 
 def compact_double_purge(row):
-    """Carry verified same-anchor reversal facts without copying the audit tree."""
+    """Carry confirmation facts; first purge stays on the enclosing range fact."""
     evidence = row.get('double_purge', {})
-    if not evidence.get('observed'):
+    if not evidence.get('observed') and not evidence.get('developing'):
         return None
     out = _pick(evidence, ('status', 'observed', 'original_first_purged_side',
-        'original_completion_preserved'))
+        'original_completion_preserved', 'developing', 'confirmed_at_ny'))
     out['original_outcome'] = _pick(evidence.get('original_outcome', {}), ('direction', 'status'))
     sequence = evidence.get('sequence', {})
     out['sequence'] = {}
-    for name in ('first_purge', 'opposing_purge', 'source_return_inside', 'assigned_return_inside'):
+    for name in ('opposing_purge', 'source_return_inside', 'assigned_return_inside',
+                 'selected_timeframe_return_inside'):
         event = sequence.get(name)
         keys = ('bar_open_ny', 'bar_close_ny') if name.endswith('purge') else (
-            'bar_open_ny', 'bar_close_ny', 'timeframe', 'known_at_ny', 'close')
+            'bar_open_ny', 'timeframe', 'known_at_ny', 'close')
         out['sequence'][name] = _pick(event, keys) if event else None
     thesis = evidence.get('reversal_thesis', {})
     out['reversal_thesis'] = _pick(thesis, ('direction', 'status', 'objective_side',
-        'objective_level', 'midpoint_level', 'midpoint_role'))
+        'objective_level', 'midpoint_level', 'midpoint_role', 'window_start_ny'))
     out['reversal_thesis']['objectives'] = {}
     for name, target in thesis.get('objectives', {}).items():
         fact = _pick(target, ('status', 'distance_price_points'))
@@ -260,16 +269,30 @@ def _local_fact(row, play=None):
     double = compact_double_purge(row) if play == '9ate8' and row.get('role') == 'selected_range' else None
     if double:
         fact['double_purge'] = double
+    if play == 'Young Lefty' and row.get('young_lefty_context'):
+        from gbop_voice_web.young_lefty_context import compact_young_context, neutral_thesis_fact
+        fact['young_lefty_context'] = compact_young_context(row['young_lefty_context'])
+        neutral_thesis_fact(fact)
+    pending = None if fact.get('young_lefty_context') else pending_range_facts(row, fact)
+    if pending:
+        fact['pending_range'] = pending
+    reversal = None if fact.get('young_lefty_context') else pending_reversal_facts(row)
+    if reversal:
+        fact['pending_reversal'] = reversal
     return fact
 
 
-def _paired_fact(row, records, local):
+def _paired_fact(row, records, local, through_ny=None):
     # Reconciliation has already rejected same-interval dual purges and scoped
     # objectives to this asset. Never use another asset's target or a later
     # opposite local attempt to overwrite the qualifying paired thesis.
     record = next((r for r in records if r.get('anchor_start_ny') == local['anchor_start_ny']
                    and r.get('asset_role') in ('boneless leg', 'potential boneless leg')), None)
     if not record:
+        return local
+    setup = record.get('setup_interval', {})
+    known = setup.get('qualified_at_ny') or setup.get('end_ny')
+    if through_ny and known and parse_time(known) > parse_time(through_ny):
         return local
     own = record.get('objective_status', {})
     full = own.get('opposing_liquidity', {})
@@ -330,6 +353,9 @@ def _delivery_text(fact):
 
 
 def _sentence(fact, *, young=False, compact=False):
+    if fact.get('young_lefty_context'):
+        from gbop_voice_web.young_lefty_context import young_context_sentence
+        return young_context_sentence(fact['young_lefty_context'])
     name = f"{fact['play']} ({_clock(fact['anchor_start_ny'])} H1 range)" if fact.get('play') else f"The {_clock(fact['anchor_start_ny'])} H1 range"
     intro = (('failed ' if fact['verdict'] in ('failed', 'boneless_failed') else '')
              + (fact.get('direction') or 'direction unverified'))
@@ -348,8 +374,7 @@ def _sentence(fact, *, young=False, compact=False):
         text += '; ' + variant_clause(fact['variant'])
     if fact.get('invalidated_at_ny'):
         later = 'later ' if fact['outcome'] == 'opposing_liquidity_delivered' else ''
-        text += '; ' + later + ('invalidated at ' + _clock(fact['invalidated_at_ny']) + ' H1 close'
-            if compact else 'invalidated on ' + closing_candle(fact['invalidated_at_ny'])['spoken_label'])
+        text += '; ' + later + 'invalidated on ' + closing_candle(fact['invalidated_at_ny'])['spoken_label']
     alternative = fact.get('paired_alternative')
     if alternative:
         state = ('potential, qualification pending' if alternative['verdict'] == 'boneless_potential' else
@@ -418,7 +443,7 @@ def _independent_later_sentence(fact):
     text += '; ' + (outcome or _delivery_text(fact))
     if fact.get('invalidated_at_ny'):
         text += ('; later invalidated ' if fact['outcome'] == 'opposing_liquidity_delivered'
-                 else '; invalidated ') + _clock(fact['invalidated_at_ny'])
+                 else '; invalidated ') + 'on ' + closing_candle(fact['invalidated_at_ny'])['spoken_label']
     labels = fact.get('variant', {}).get('labels', [])
     if labels:
         text += '; ' + variant_clause({'labels': labels})
@@ -431,7 +456,7 @@ def _independent_later_sentence(fact):
         if all(c.get('requires') in timing for c in candidates):
             names = variant_clause({'labels': candidates})
             when = '/'.join(timing[c['requires']] for c in candidates)
-            text += f'; {names} candidate: ordered opposing delivery {when} candle 3, complete H1 required'
+            text += f"; {names} candidate because {fact['variant']['explanation']['reason']}: ordered opposing delivery {when} candle 3, complete H1 required"
         else:
             text += '; ' + variant_clause(fact['variant'])
     return text + '.'
@@ -448,7 +473,7 @@ def build_shift_synopsis(review, asset=None):
                 'negative_claim_guard': negative_claim_guard('unverified', story),
                 'response_contract': SYNOPSIS_CONTRACT}
     records = story.get('recap', {}).get('paired_interpretation', [])
-    lead = _paired_fact(opening, records, _local_fact(opening, '9ate8'))
+    lead = _paired_fact(opening, records, _local_fact(opening, '9ate8'), story['end_ny'])
     lead_sentence = _sentence(lead, compact=True)
     approach = opening.get('objective_approach', {}).get('objectives', {}).get('midpoint', {})
     annotation = owner_inducement_example(asset, opening['anchor'], lead['direction'], approach)
@@ -479,20 +504,29 @@ def build_shift_synopsis(review, asset=None):
                  and start + 3600 <= parse_time(e['bar_open_ny']) < start + 3 * 3600]
         if early:
             item = _local_fact(young, 'Young Lefty')
-            item['opposes_9ate8'] = bool(item['direction'] and lead['direction'] and item['direction'] != lead['direction'])
+            item['opposes_9ate8'] = (None if item.get('young_lefty_context') else
+                bool(item['direction'] and lead['direction'] and item['direction'] != lead['direction']))
             facts.append(item)
             young_sentence = _sentence(item, young=True, compact=True)
-            young_status = item['verdict']
+            if item.get('pending_range'):
+                young_sentence += ' ' + pending_sentence(item['pending_range'])
+            if item.get('pending_reversal'):
+                young_sentence += ' ' + pending_reversal_sentence(item['pending_reversal'], item['anchor_start_ny'])
+            young_status = 'context_dependent' if item.get('young_lefty_context') else item['verdict']
             young_relevant = True
         elif young.get('observation_coverage', {}).get('complete'):
             young_status = 'absent'
             young_sentence = 'Young Lefty: absent; no early seven-range purge by eight/nine.'
     sentences.append(young_sentence)
+    if lead.get('pending_range'):
+        sentences.append(pending_sentence(lead['pending_range']))
+    if lead.get('pending_reversal'):
+        sentences.append(pending_reversal_sentence(lead['pending_reversal'], lead['anchor_start_ny']))
     cutoff_transitions_spoken = set()
     for row in ranges:
         if row is opening:
             continue
-        item = _paired_fact(row, records, _local_fact(row))
+        item = _paired_fact(row, records, _local_fact(row), story['end_ny'])
         relevance = _later_range_relevance(story, row, item)
         if not relevance:
             continue
@@ -504,11 +538,19 @@ def build_shift_synopsis(review, asset=None):
             item.update(verdict='unverified', outcome='unverified',
                         observation_status='no_post_close_evidence_at_cutoff')
             if item['anchor_start_ny'] not in cutoff_transitions_spoken:
-                sentences.append(f"{_clock(item['anchor_start_ny'])} H1 range became selected at "
-                    f"{_clock(story['end_ny'])} cutoff; later setup/delivery unknown.")
+                transition = next(t for t in story['range_transitions'] if t['to_anchor_ny'] == item['anchor_start_ny'])
+                sentences.append(transition_sentence(transition) + ' At the end of the GTOP shift, later setup/delivery is unknown.')
         else:
             continuity = selected_range_story(story, row, item, asset)
             sentences.append(_short_selected_summary(continuity) if continuity else _independent_later_sentence(item))
+            if continuity and item.get('paired_setup'):
+                known = item['paired_setup'].get('qualified_at_ny') or item['paired_setup'].get('end_ny')
+                sentences.append(f"Its {item['direction']} boneless from paired setup by {_clock(known)}: "
+                                 + _delivery_text(item) + '.')
+            if item.get('pending_range'):
+                sentences.append(pending_sentence(item['pending_range']))
+            if item.get('pending_reversal'):
+                sentences.append(pending_reversal_sentence(item['pending_reversal'], item['anchor_start_ny']))
             if continuity and (continuity.get('next_selected_range') or {}).get('at_review_cutoff'):
                 cutoff_transitions_spoken.add(continuity['next_selected_range']['to_anchor_ny'])
     if not story.get('coverage', {}).get('complete') or not story.get('progression_complete'):
@@ -524,12 +566,16 @@ def build_shift_synopsis(review, asset=None):
                   'anchor_timeframe': 'H1', 'through_ny': story['end_ny']}}}
              for start, label, role in sorted(anchors)]
     ending = shift_end_state(story)
+    graph = build_context_graph(story, young)
+    if context_sentence(graph):
+        sentences.append(context_sentence(graph))
     sentences.append(ending['spoken_summary'])
     guard = negative_claim_guard(young_status, story)
     return {'spoken_summary': ' '.join(sentences), 'ranges': facts, 'range_index': index,
             **({'negative_claim_guard': guard} if guard else {}),
             **({'young_lefty_coverage': young_coverage} if young_coverage else {}),
             'active_range_context': _compact_active_context(_active_context(story, records, asset=asset)),
+            'chronological_context': compact_context_graph(graph),
             'shift_end': {k: v for k, v in ending.items() if k != 'spoken_summary'},
             'young_lefty_evaluated': True, 'young_lefty_relevant': young_relevant,
             'young_lefty_status': young_status,
@@ -562,7 +608,7 @@ def build_other_ranges(review, asset=None, discussed=(), *, continue_active=Fals
         return {'mode': 'continue_active_range', 'spoken_summary': ' '.join(
                     [active['spoken_summary']] + [r['spoken_summary'] for r in path] + [ending['spoken_summary']]),
                 'ranges': [], 'active_range_context': active, 'next_selected_context': path,
-                'shift_end': ending, 'excluded_discussed_anchors': sorted(excluded),
+                'shift_end': {k: v for k, v in ending.items() if k != 'spoken_summary'}, 'excluded_discussed_anchors': sorted(excluded),
                 'all_ranges_discussed': False, 'through_ny': story['end_ny'],
                 'coverage_complete': story.get('coverage', {}).get('complete', False),
                 'response_contract': OTHER_RANGES_CONTRACT}
@@ -583,7 +629,7 @@ def build_other_ranges(review, asset=None, discussed=(), *, continue_active=Fals
     facts = [deepcopy(row) for row in synopsis['ranges'] if row.get('play') == 'Young Lefty']
     for row in story.get('ranges', []):
         play = row.get('label') if row.get('label') in {'9ate8', 'Young Lefty'} else None
-        facts.append(_paired_fact(row, records, _local_fact(row, play)))
+        facts.append(_paired_fact(row, records, _local_fact(row, play), story['end_ny']))
     index = {row['anchor_start_ny']: row for row in synopsis['range_index']}
     remaining, sentences = [], []
     if active and active['anchor_start_ny'] in excluded:
@@ -606,6 +652,10 @@ def build_other_ranges(review, asset=None, discussed=(), *, continue_active=Fals
                     _sentence(fact, young=fact.get('play') == 'Young Lefty'))
             if fact['role'] == 'independent_range_context' and not fact.get('play'):
                 text = 'Separately, treating this candle as an independent range: ' + text
+            if fact.get('pending_range'):
+                text += ' ' + pending_sentence(fact['pending_range'])
+            if fact.get('pending_reversal'):
+                text += ' ' + pending_reversal_sentence(fact['pending_reversal'], fact['anchor_start_ny'])
         remaining.append(fact)
         sentences.append(text)
     if not remaining:
@@ -617,7 +667,7 @@ def build_other_ranges(review, asset=None, discussed=(), *, continue_active=Fals
         # continuity bridge; keep its complete structured evidence only once.
         active.pop('spoken_summary', None)
     return {'mode': 'other_ranges', 'spoken_summary': ' '.join(sentences), 'ranges': remaining,
-            'active_range_context': active, 'shift_end': ending,
+            'active_range_context': active, 'shift_end': {k: v for k, v in ending.items() if k != 'spoken_summary'},
             'excluded_discussed_anchors': sorted(excluded),
             'all_ranges_discussed': not remaining,
             'through_ny': story['end_ny'], 'coverage_complete': story.get('coverage', {}).get('complete', False),

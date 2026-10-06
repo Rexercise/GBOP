@@ -1,6 +1,6 @@
 # GBOP Market Bridge
 
-Read-only MT5 market feed for GBOP. Sends bid/ask, original tick timestamps and up to 2,304 closed M5 candles per configured instrument every 30 seconds. Stores only the latest bounded snapshot per asset in the existing database. No broker password, account balance, position history, order submission, paid API, or added hosting service is used.
+Read-only MT5 market feed for GBOP. Sends bid/ask, original tick timestamps and bounded closed M1/M5 candles per configured instrument every 30 seconds, with optional native H1 candles and source W1 boundaries. Stores the latest snapshot and symbol-scoped candle history in the existing database. No broker password, account balance, position history, order submission, paid API, or added hosting service is used.
 
 ## Windows setup
 
@@ -20,7 +20,7 @@ No inbound bridge port is required. Only outbound HTTPS to GBOP and MT5's broker
 - `get_market_price`: broker quote, original tick timestamp, feed capture age. A fresh upload cannot make an old tick “live.” Quotes older than 120 seconds are stale, including closed markets.
 - `review_market_session`: New York time with DST; complete closed M5 bars aggregated into the 7/8/9 hourly ranges for day/night sessions. Reports 9ate8 and Young Lefty range-sweep candidates, both-side ambiguity, insufficient candles, and closure invalidation. Follows later complete 10/11 hourly closes for invalidation.
 - Does **not** confirm CSD, Super Soup, Blessed Thief execution, SMT, all six CRT variants, GCT, CBDR, Monday's Range, or target-hit order. It does not automatically update member trades or send unsolicited alerts.
-- Historical review covers only the rolling candles retained by the bridge (up to eight trading days, hard-capped at 14 calendar days). It is not a permanent historical market archive.
+- Initial candle backfill is hard-capped at 14 calendar days. The receiver retains up to 90 calendar days as captures accumulate; it is not a permanent historical market archive.
 
 ## Operations
 
@@ -192,3 +192,70 @@ Sources verified on 2026-10-04:
 
 Focused checks: `python -m unittest discover -s tests -p 'test_weekly_periods.py'`
 and `python -m unittest discover -s tests -p 'test_market_bridge.py'`.
+
+## Optional native H1 evidence
+
+The collector can now read native H1 candles for every configured asset using the
+same exact broker symbol already used for its M1/M5 quotes and candles. No asset
+or symbol mapping is added or changed. It requests at most 337 H1 positions at
+startup and hourly (336 hours plus the possible forming bar), then three positions
+for overlap between backfills. Position zero is included because it can already
+be closed between broker sessions. The existing 180-second upload headroom also
+applies to H1. Only actual returned candles on UTC hour boundaries whose hour has
+closed by capture are sent; timestamps and missing hours are never manufactured.
+
+The optional wire fields are supplied together on the instrument:
+
+```json
+{
+  "bars_h1": [
+    {"time": 1791266400, "open": 100, "high": 105, "low": 95, "close": 101}
+  ],
+  "native_h1_source": {
+    "source": "MT5",
+    "timeframe": "H1",
+    "method": "copy_rates_from_pos"
+  }
+}
+```
+
+This is a synthetic format example, not a live quote. The receiver requires the
+exact three-field source metadata above, exact OHLC fields, positive finite
+prices, valid OHLC ordering, sorted unique whole UTC hours, closure at capture,
+the existing receipt-relative 14-day age limit, and at most 336 H1 bars. A missing
+optional H1 feed, unavailable MT5 timeframe, failed request or malformed H1 source
+response omits both fields in the collector and leaves quote/M1/M5 collection
+working. Malformed H1 submitted to the receiver rejects the entire capture
+atomically. Older collectors remain valid and provide no native-H1 claim.
+
+Native hours are retained under step 3600 in the existing history table, isolated
+by canonical asset, exact broker symbol and UTC day. Their JSON payload is an
+envelope containing the whitelisted source metadata and bars with each bar's
+accepted capture timestamp. Legacy M1/M5 rows keep their existing list format.
+No schema migration, external provider, cross-symbol merge or inferred H1 candle
+is involved. The ordinary M1/M5 history query explicitly excludes step 3600.
+
+`read_feed` exposes `bars_h1` and `native_h1_source`, defaulting to `[]` and `null`
+when absent. `history_native_h1(db, feed, start, end)` separately returns closed
+H1 bars with `provenance` containing the source, timeframe, method, asset, exact
+symbol and accepted capture timestamp. It validates stored provenance and
+limits closure to the requested end and current feed capture. A later capture
+may legitimately retrieve a historical hour that had already closed at the
+requested end; that retrieval time is retained honestly. Native history remains
+available after a later snapshot temporarily lacks H1, but never crosses a
+changed broker symbol. Without a database, the same accessor validates and
+labels the current native snapshot.
+
+Native H1 establishes only the broker's reported closed hourly OHLC. It does
+not prove all 60 minutes exist, any intrahour event time or order, an M1/M5
+confirmation, or execution. It must remain separate from fine-grained coverage
+and confirmation logic; a native hour never fills a missing minute.
+
+Deploy the receiver before upgrading the existing Windows collector: older
+receivers reject the new fields. A server deployment alone cannot enable native
+H1 on Windows. No collector installation, restart, production capture or live
+verification is performed by these local changes. Run the synthetic checks with
+`python -m unittest discover -s tests -p 'test_native_h1_feed.py'`.
+
+Source reference: [MetaQuotes bounded position-based history API](https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesfrompos_py),
+with [UTC time and H1 timeframe definitions](https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesfrom_py).

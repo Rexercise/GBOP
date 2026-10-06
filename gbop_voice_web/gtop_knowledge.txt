@@ -62,7 +62,7 @@ Turtle Wick Soup = purge without a body through the level on the assigned timefr
 Turtle Body Soup / Model 1 is the Tier 2 entry classification. The qualifying candle on the assigned timeframe whose real body crosses and closes through the selected range's liquidity IS the Model 1 candle. It is not a candidate.
 Model 1 candle identification is separate from subsequent CSD/CISD confirmation. Identity survives absent confirmation or failure. CISD uses the full opposing extreme, as defined below.
 Blessed Thief uses a selected candle's OPENING PRICE, not its opening TIME. It applies to subsequent candles after manipulation while the CRT remains valid, until drawn liquidity is achieved. See BLESSED THIEF below.
-Super Soup = after Model 1 purge on correlated timeframe, seek Turtle Soup of that Model 1 candle on the same timeframe as a pre-confirmation entry.
+Super Soup evaluates Model 1's own CRT on its timeframe. Entry timing may precede CSD; structure follows canonical V1–V6.
 Super Soup of a Turtle Body Soup / Model 1 candle is Tier 1, taken before CSD; anticipatory timing does not make it Tier 3.
 Turtle Wick Soup can perform the same functional role as CSD even without a body, but it carries different probability.
 Typical Turtle Wick Soup objective = 50% of the range.
@@ -244,10 +244,10 @@ The candle's identity does NOT depend on later CSD/CISD confirmation, successful
 
 Two subsequent events must be assessed separately:
 
-A) SUPER SOUP — BEFORE CSD
+A) SUPER SOUP — MODEL 1 OWN CRT
 [GTOP EXCLUSIVE / GTOP REFINEMENT]
 Before CSD confirmation, GTOP may Turtle Soup the Model 1 candle itself on the same correlated/assigned timeframe.
-Super Soup is a pre-CISD wick above Model 1 HIGH bearish, below LOW bullish, closing inside its range. Body purges remain separate; same-CISD-candle sweep order is unresolved.
+Classify Model 1 own CRT with canonical V1–V6. Ordered opposing delivery preserves completed V2 despite candle 2 closing beyond its target; SS/CISD can confirm together.
 A Super Soup market occurrence and a member's Super Soup execution are separate facts. Absence of a saved/confirmed execution does not establish that no Super Soup occurred.
 Super Soup is an anticipatory / risk-entry framework.
 

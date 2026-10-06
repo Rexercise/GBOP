@@ -11,7 +11,7 @@ from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.shift_review import review_shift
 from gbop_voice_web.shift_synopsis import build_shift_synopsis
 from gbop_voice_web.shift_availability import shift_bounds, assess_shift, choice, alternative_message
-from gbop_voice_web.candle_evidence import parse_time, stamp, candle_query, crt_review, summarize, next_boundary
+from gbop_voice_web.candle_evidence import parse_time, stamp, candle_query, crt_review, summarize, next_boundary, h1_anchor
 from gbop_voice_web.smt_evidence import compare_ranges
 from gbop_voice_web.candle_lifecycle import lifecycle_review
 from gbop_voice_web.market_context import PAIRINGS, enrich_smt, LIFECYCLE_PROMPT
@@ -29,6 +29,8 @@ ALIASES = {'NAS': 'NAS100', 'USTEC': 'NAS100', 'NASDAQ': 'NAS100', 'DJI': 'US30'
 MAX_BYTES = 4_000_000
 MIN_WEEK_SECONDS = 6 * 86400
 MAX_WEEK_SECONDS = 8 * 86400
+NATIVE_H1_SOURCE = dict(source='MT5', timeframe='H1', method='copy_rates_from_pos')
+MAX_H1_BARS = 14 * 24
 CREATE_SQL = '''CREATE TABLE IF NOT EXISTS gbop_market_feed (
     asset TEXT PRIMARY KEY, captured_at BIGINT NOT NULL, received_at BIGINT NOT NULL,
     payload TEXT NOT NULL)'''
@@ -101,6 +103,50 @@ def validate_weekly_periods(periods, captured):
     return normalized
 
 
+def validate_native_h1_source(source):
+    if not isinstance(source, dict) or source != NATIVE_H1_SOURCE:
+        raise ValueError('Native H1 requires exact MT5 H1 copy_rates_from_pos provenance.')
+    return dict(NATIVE_H1_SOURCE)
+
+
+def _native_h1_bar(bar, captured):
+    """Validate one actual closed native hour, without inferring minute coverage."""
+    if not isinstance(bar, dict) or set(bar) != {'time', 'open', 'high', 'low', 'close'}:
+        raise ValueError('Invalid native H1 candle fields.')
+    t = epoch(bar['time'])
+    o, h, l, c = [number(bar[k]) for k in ('open', 'high', 'low', 'close')]
+    if t % 3600 or t + 3600 > captured:
+        raise ValueError('Native H1 candles must be closed UTC hours at capture.')
+    if not l <= min(o, c) <= max(o, c) <= h:
+        raise ValueError('Invalid native H1 candle OHLC.')
+    return dict(time=t, open=o, high=h, low=l, close=c)
+
+
+def _native_h1_bucket(payload, day, captured):
+    """Fail closed for unlabelled, foreign or malformed retained H1 evidence."""
+    try:
+        envelope = json.loads(payload)
+        if not isinstance(envelope, dict) or set(envelope) != {'source', 'bars'}:
+            return []
+        validate_native_h1_source(envelope['source'])
+        records = envelope['bars']
+        if not isinstance(records, list) or len(records) > 24:
+            return []
+        clean, previous = [], 0
+        for record in records:
+            if not isinstance(record, dict) or set(record) != {'time', 'open', 'high', 'low', 'close', 'captured_at'}:
+                return []
+            accepted = epoch(record['captured_at'])
+            bar = _native_h1_bar({k: v for k, v in record.items() if k != 'captured_at'}, accepted)
+            if accepted > captured or bar['time'] // 86400 * 86400 != day or bar['time'] <= previous:
+                return []
+            clean.append(dict(bar, captured_at=accepted))
+            previous = bar['time']
+        return clean
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return []
+
+
 def validate_payload(data, now=None):
     now = int(time.time() if now is None else now)
     if not isinstance(data, dict) or set(data) != {'captured_at', 'instruments'}:
@@ -113,7 +159,7 @@ def validate_payload(data, now=None):
         raise ValueError(f'Expected 1–{len(ASSETS)} instruments.')
     clean, seen = [], set()
     for item in instruments:
-        if not isinstance(item, dict) or not {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars'} <= set(item) or set(item) - {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars', 'bars_m1', 'weekly_periods'}:
+        if not isinstance(item, dict) or not {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars'} <= set(item) or set(item) - {'asset', 'symbol', 'bid', 'ask', 'tick_time', 'bars', 'bars_m1', 'weekly_periods', 'bars_h1', 'native_h1_source'}:
             raise ValueError('Unexpected instrument fields.')
         asset = asset_name(item['asset'])
         if asset in seen:
@@ -145,6 +191,21 @@ def validate_payload(data, now=None):
             normalized_sets[key] = normalized
         if 'weekly_periods' in item:
             normalized_sets['weekly_periods'] = validate_weekly_periods(item['weekly_periods'], captured)
+        if 'bars_h1' in item or 'native_h1_source' in item:
+            if not {'bars_h1', 'native_h1_source'} <= set(item):
+                raise ValueError('Native H1 candles and source metadata must be supplied together.')
+            source = validate_native_h1_source(item['native_h1_source'])
+            bars_h1 = item['bars_h1']
+            if not isinstance(bars_h1, list) or len(bars_h1) > MAX_H1_BARS:
+                raise ValueError(f'At most {MAX_H1_BARS} closed native H1 bars allowed.')
+            normalized, previous = [], 0
+            for bar in bars_h1:
+                bar = _native_h1_bar(bar, captured)
+                if bar['time'] <= previous or bar['time'] < now - 14 * 86400:
+                    raise ValueError('Native H1 candles must be sorted, unique and within 14 days.')
+                normalized.append(bar)
+                previous = bar['time']
+            normalized_sets.update(bars_h1=normalized, native_h1_source=source)
         clean.append(dict(asset=asset, symbol=symbol, bid=bid, ask=ask, tick_time=tick, **normalized_sets))
     return captured, clean
 
@@ -157,16 +218,24 @@ def ingest(db, data, now=None):
             current = conn.execute('SELECT captured_at FROM gbop_market_feed WHERE asset=?', (item['asset'],)).fetchone()
             if current and current['captured_at'] >= captured:
                 continue
-            for key, step in [('bars', 300), ('bars_m1', 60)]:
+            for key, step in [('bars', 300), ('bars_m1', 60), ('bars_h1', 3600)]:
                 days = {}
                 for bar in item.get(key, []):
                     days.setdefault(bar['time'] // 86400 * 86400, []).append(bar)
                 for day, incoming in days.items():
                     identity = (item['asset'], item['symbol'], step, day)
                     old = conn.execute('SELECT payload FROM gbop_market_history WHERE asset=? AND symbol=? AND step=? AND day_utc=?', identity).fetchone()
-                    merged = {b['time']: b for b in json.loads(old['payload'])} if old else {}
-                    merged.update({b['time']: b for b in incoming})
-                    payload = json.dumps(sorted(merged.values(), key=lambda b: b['time']), separators=(',', ':'))
+                    if step == 3600:
+                        retained = _native_h1_bucket(old['payload'], day, captured) if old else []
+                        merged = {b['time']: b for b in retained}
+                        merged.update({b['time']: dict(b, captured_at=captured) for b in incoming})
+                        contents = dict(source=item['native_h1_source'],
+                                        bars=sorted(merged.values(), key=lambda b: b['time']))
+                    else:
+                        merged = {b['time']: b for b in json.loads(old['payload'])} if old else {}
+                        merged.update({b['time']: b for b in incoming})
+                        contents = sorted(merged.values(), key=lambda b: b['time'])
+                    payload = json.dumps(contents, separators=(',', ':'))
                     if not old or old['payload'] != payload:
                         conn.execute("""INSERT INTO gbop_market_history(asset,symbol,step,day_utc,payload)
                             VALUES (?,?,?,?,?) ON CONFLICT(asset,symbol,step,day_utc) DO UPDATE SET payload=excluded.payload""", identity + (payload,))
@@ -202,11 +271,15 @@ def read_feed(db, asset, now=None):
             'received_at_utc': datetime.fromtimestamp(row['received_at'], timezone.utc).isoformat(),
             'received_age_seconds': now - row['received_at'],
             'bars': payload['bars'], 'bars_m1': payload.get('bars_m1', []),
+            **({'bars_h1': payload['bars_h1'], 'native_h1_source': payload['native_h1_source']}
+               if 'bars_h1' in payload else {}),
             'weekly_periods': payload.get('weekly_periods', [])}
 
 
 def attach_lifecycle(review, bars, end, step):
     """One conversational view; retain raw sequel facts without duplicate verdicts."""
+    if review.get('validity_evidence_through_ny'):
+        end = min(end, parse_time(review['validity_evidence_through_ny']))
     invalid = review.get('invalidated_at_ny')
     view = lifecycle_review(bars, review['anchor'], review.get('assigned_timeframe', 'M5'),
                             end, step, parse_time(invalid) if invalid else None)
@@ -247,22 +320,40 @@ def attach_lifecycle(review, bars, end, step):
     review['objective_approach'] = objective_approach(review, bars, end, step)
     from gbop_voice_web.double_purge import double_purge_evidence
     review['double_purge'] = double_purge_evidence(review, bars, end, step)
+    from gbop_voice_web.young_lefty_context import young_lefty_context
+    context = young_lefty_context(review, bars, end, step)
+    if context:
+        review['young_lefty_context'] = context
+        from gbop_voice_web.young_lefty_context import compact_young_context, young_context_sentence
+        neutral = young_context_sentence(compact_young_context(context))
+        review.setdefault('recap', {}).update(headline=neutral, spoken_summary=neutral,
+            evidence_precedence='conditional_young_lefty_context_before_physical_path_audit')
+        for outcome in (review['directional_outcome'], review['double_purge'].get('original_outcome')):
+            if not outcome:
+                continue
+            outcome['play_context'] = None
+            outcome['direction_scope'] = 'physical_first_purge_not_selected_named_thesis'
+            summary = outcome.get('spoken_summary', '').replace(' (Young Lefty)', '')
+            outcome['spoken_summary'] = (summary if summary.startswith('Physical first-purge audit: ')
+                                         else 'Physical first-purge audit: ' + summary)
+        review['variant_evidence']['scope'] = 'physical_first_purge_not_selected_named_thesis'
+        review['double_purge']['named_play_applicability'] = 'context_dependent_not_selected_young_lefty'
     return review
 
 
-def session_review(bars, day, shift, step=300):
+def session_review(bars, day, shift, step=300, native_h1=None):
     """H1 structure plus independently timestamped assigned-candle lifecycle."""
     if shift not in ('day', 'night'):
         raise ValueError('shift must be day or night.')
     day = date.fromisoformat(day)
     base = 0 if shift == 'day' else 12
+    shift_end = int((datetime(day.year, day.month, day.day, base + 9, tzinfo=NY) + timedelta(hours=3)).timestamp())
     def hour(h):
         start = int(datetime(day.year, day.month, day.day, h, tzinfo=NY).timestamp())
-        subset = [b for b in bars if start <= b['time'] < start + 3600]
-        if [b['time'] for b in subset] != list(range(start, start + 3600, step)):
+        candle = h1_anchor(bars, start, step, native_h1, shift_end)
+        if not candle['complete']:
             return None
-        return dict(time=start, open=subset[0]['open'], high=max(b['high'] for b in subset),
-                    low=min(b['low'] for b in subset), close=subset[-1]['close'])
+        return dict(time=start, **{k: candle[k] for k in ('open', 'high', 'low', 'close')})
     nine = hour(base + 9)
     results = []
     for play, anchor_h in [('9ate8', base + 8), ('Young Lefty', base + 7)]:
@@ -300,15 +391,23 @@ def session_review(bars, day, shift, step=300):
                         result['primary_target'] = None
                         break
         anchor_start = int(datetime(day.year, day.month, day.day, anchor_h, tzinfo=NY).timestamp())
-        shift_end = int((datetime(day.year, day.month, day.day, base + 9, tzinfo=NY) + timedelta(hours=3)).timestamp())
-        available_end = min(shift_end, max((b['time'] + step for b in bars), default=anchor_start + 3600))
+        available_end = min(shift_end, max(
+            [b['time'] + step for b in bars] + [b['time'] + 3600 for b in (native_h1 or [])],
+            default=anchor_start + 3600))
         if available_end >= anchor_start + 3600:
-            result['evidence'] = attach_lifecycle(crt_review(bars, anchor_start, available_end, 'H1', step), bars, available_end, step)
+            result['evidence'] = attach_lifecycle(crt_review(bars, anchor_start, available_end, 'H1', step,
+                                                           native_h1=native_h1), bars, available_end, step)
+        if result.get('evidence'):
+            from gbop_voice_web.chronological_context import attach_qualification, attach_phase_coverage
+            attach_qualification(result['evidence'], bars, available_end, step, native_h1)
+            attach_phase_coverage(result['evidence'], bars, available_end, step)
         results.append(result)
-    story = review_shift(bars, day.isoformat(), shift, step)
+    story = review_shift(bars, day.isoformat(), shift, step, native_h1=native_h1)
     cutoff = parse_time(story['end_ny'])
     for row in story['ranges']:
         attach_lifecycle(row, bars, cutoff, step)
+        from gbop_voice_web.chronological_context import attach_phase_coverage
+        attach_phase_coverage(row, bars, cutoff, step)
     story['recap']['candle_timeline'] = [
         {'anchor_start_ny': row['anchor_start_ny'], 'summary': row['candle_lifecycle'].get('spoken_summary', ''),
          'evidence_ref': 'shift_story.ranges[].candle_lifecycle'}
@@ -316,10 +415,14 @@ def session_review(bars, day, shift, step=300):
     review = {'date_ny': day.isoformat(), 'shift': shift, 'timezone': 'America/New_York',
             'shift_story': story, 'observations': results,
             'source_resolution_seconds': step,
-            'limits': 'Closed source candles aggregated to H1. Event times identify source bars, not ticks. '
+            'limits': 'H1 bounds use complete source aggregation or separately proven closed native broker H1. '
+                      'Native OHLC does not fill source gaps or establish intrahour timing. Event times identify source bars, not ticks. '
                       'Use variant_evidence for H1 structure and candle_lifecycle for wick/body, CSD, Super Soup and reference retests. '
                       'Neither proves a member execution. paired_smt and paired_context evaluate relative behavior separately. '
                       'Missing/unfinished hours are not evidence of no setup.'}
+    from gbop_voice_web.chronological_context import build_context_graph
+    young = next((o.get('evidence') for o in results if o.get('play') == 'Young Lefty'), None)
+    story['chronological_context'] = build_context_graph(story, young)
     review['shift_synopsis'] = build_shift_synopsis(review)
     return review
 
@@ -418,7 +521,7 @@ familiar GTOP terminology. Examples: 'did 988 happen today?', 'you seen today’
 'I took the Super Soup on NAS today', 'when was that high purged?', 'when did it
 invalidate?', 'last Wednesday’s low', or a timeframe-specific CRT review. These are
 not definition questions. Delegate first; never invent today’s candle behavior.
-Current/what-do-you-see requests use review_current_market directly, not completed-shift choices. Keep current_scope cutoff until explicit refresh. State as-of/observed-through and freshness: forming is not closed; periodic snapshots are not instant ticks.
+Current requests use review_current_market. Keep cutoff until explicit refresh. State as-of/observed-through and freshness; forming is not closed, snapshots are not instant ticks.
 'What did price do this shift/today?' uses the SHORT shift_synopsis.spoken_summary.
 Lead with 9ate8 direction/verdict, supported variant or pending, and 50%/opposing
 outcome/invalidation. Automatically name supported variants and pending candidates with candle-specific why and what each still needs. Distinguish touch/H1-close times.
@@ -426,13 +529,13 @@ Then always state Young Lefty's independent status before later ranges.
 Young Lefty needs an actual early 7-boundary purge by 8/9: say absent only with complete
 evidence of no early purge, otherwise unverified. Never omit its status or infer absence from
 failed 9ate8. Its direction can oppose 9ate8; use its own objectives. Keep later delivery after
-failed 9ate8; omit unrelated candidate lists. Model 1/Soup detail is for exact-range followups. Usually 2-4 sentences;
+failed 9ate8; omit unrelated candidate lists. Pending ranges include supplied primary body Model 1, own CRT and strict CISD status. Retrieve omitted detail. Usually 2-4 sentences;
 add only what relevant evidence needs. Full shift_story.recap is for requested walkthroughs.
 For 'other relevant GTOP plays/ranges', delegate review_other_market_ranges in the same
 asset/date/shift with followup_mode=other_ranges. For 'what happened next', 'continue that range',
 or 'how did it finish', use followup_mode=continue_active_range with context_action=continue.
 Continue the verified selected anchor through its frozen cutoff, even if previously discussed.
-A new hour does not reset selection; an explicitly chosen independent range needs its exact detail.
+A new hour alone does not reset review. Full opposing delivery or an outside H1 close hands off on that candle's closure to the next range UNDER REVIEW, not automatically a valid CRT. An explicitly chosen independent range needs its exact detail.
 Tool retrieval does not mean a range was spoken. Exclude only its supplied
 discussed anchors, even if failed; include unbranded hourly CRTs, independent failures and
 cutoff limits. Never require a branded play or a win. Say each actual H1 range opening.
@@ -461,29 +564,28 @@ automatic PD-array recognition is not required.
 
 MARKET_RESPONSE_CONTRACT = """
 NAMED-RANGE ANSWERS
-For outcome questions, first name the range and direction, and state the verdict in the first sentence: full opposing delivery,
-midpoint only, pending, failed before objective, or unverified. Then give mechanism.
+Use shift_synopsis.chronological_context: under-review handoffs are not CRT confirmation. Keep source/H1 returns distinct; count distinct event-time ranges, not Soup/closure votes or probability. End with the GTOP day/night shift boundary. Name whose boundary closes outside.
+Outcomes: first name the range and direction, then full delivery, midpoint only, pending, failed or unverified; then mechanism.
 Use directional_outcome/variant_evidence; later invalidation preserves earlier V2 delivery.
 A later opposite-direction Model 1 cannot replace the earlier wick setup or paired
 thesis. Name both directions and targets. A double purge needs the same range's
-ordered original purge, opposite purge and return inside; its reversal objective
+ordered purges and its OWN timeframe close inside. Source/assigned returns are
+developing only. Keep pre-confirmation movement separate; never imply hindsight
+execution. Its reversal objective
 is the original first-purged boundary, with midpoint progress separate. Use the
 double_purge evidence, never a bare opposite Model 1. Complete shift, neither target reached:
 failed to deliver objectives by shift end, distinct from structural invalidation/live pending.
-Ordinary recaps have no inline inducement glossary: verdict then BUT induced 50% with verified
-gap/path progress and supported context; no universal numeric threshold, inferred intent/profit.
+Speak 'closure of the [opening time] candle'; keep known-at timestamps structured,
+without adding its next-clock close time unless asked. Do not repeat past corrections in recaps.
+Recaps: verdict then BUT induced 50% with verified gap/path/context. No glossary, universal threshold, inferred intent/profit.
 Only own-timeframe closes invalidate: M5 CISD outside H1 alone cannot invalidate H1.
-Exact Model 1 questions need the selected
-range's assigned candle/open first, source purge and CSD separately. Follow detail_request.
+Exact Model 1: assigned candle/open first, source purge and CSD separate. Follow detail_request.
 No qualifying body Model 1 does not mean no setup: verified Turtle Wick Soup has its
 own midpoint/full outcomes, never a body Model 1 or Super Soup. Forming/missing is unverified.
 Say 'boneless' clearly, as bone-less: partner purged, this asset did not in that interval.
-Potential/pending boneless may exist before delivery; completion is separate. Both
-same-hour matching purges mean both bones, no boneless. Use setup_interval.qualified_smt;
+Pending boneless is separate from delivery. Same-hour matching purges mean both bones, no boneless. Use setup_interval.qualified_smt;
 forming qualification is provisional. Partner purge alone is not CSD or peer CSD.
-Contextual 'what about Young Lefty?' needs backend evidence for the same asset/date's
-7AM day / 7PM night range, not a definition or a chart request. Historical delivery
-does not prove HTF permission, pre-9 execution, member fills or profit.
+Young Lefty followups need same-asset/date 7AM day/7PM night evidence. Historical delivery proves no HTF permission, pre-9 execution, member fills or profit.
 """.strip()
 
 MARKET_PROMPT += '\n\n' + MARKET_RESPONSE_CONTRACT
@@ -494,16 +596,74 @@ def market_clock():
     return 'CURRENT NEW YORK DATE/TIME: ' + datetime.now(NY).isoformat()
 
 
+def history_native_h1(db, feed, start, end):
+    """Separate native H1 evidence; never use it to fill M1/M5 coverage gaps.
+
+    Return standard OHLC plus per-bar provenance for this exact asset/symbol.
+    A later retrieval of an already-closed historical hour is valid, but no bar
+    may close beyond the requested end or the enclosing feed's capture.
+    """
+    try:
+        captured = datetime.fromisoformat(feed['captured_at_utc'])
+        if captured.tzinfo is None:
+            return []
+        captured = epoch(captured.timestamp())
+        asset, symbol = asset_name(feed['asset']), feed['symbol']
+        if not isinstance(symbol, str) or not symbol:
+            return []
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return []
+    cutoff = min(end, captured)
+    if start >= cutoff:
+        return []
+    by_time = {}
+    try:
+        validate_native_h1_source(feed.get('native_h1_source'))
+        bars = feed.get('bars_h1', [])
+        if not isinstance(bars, list) or len(bars) > MAX_H1_BARS:
+            raise ValueError('Invalid native H1 snapshot size.')
+        previous, snapshot = 0, []
+        for bar in bars:
+            bar = _native_h1_bar(bar, captured)
+            if bar['time'] <= previous:
+                raise ValueError('Native H1 snapshot must be sorted and unique.')
+            snapshot.append(dict(bar, captured_at=captured))
+            previous = bar['time']
+        by_time.update({b['time']: b for b in snapshot})
+    except (ValueError, TypeError, KeyError, OverflowError):
+        pass  # A legacy/absent snapshot does not erase retained native evidence.
+    if db is not None:
+        with db() as conn:
+            rows = conn.execute("""SELECT day_utc,payload FROM gbop_market_history
+                WHERE asset=? AND symbol=? AND step=3600 AND day_utc>=? AND day_utc<=?
+                ORDER BY day_utc""", (asset, symbol, start // 86400 * 86400,
+                                      cutoff // 86400 * 86400)).fetchall()
+        for row in rows:
+            for bar in _native_h1_bucket(row['payload'], row['day_utc'], captured):
+                current = by_time.get(bar['time'])
+                if current is None or bar['captured_at'] >= current['captured_at']:
+                    by_time[bar['time']] = bar
+    result = []
+    for bar in sorted(by_time.values(), key=lambda b: b['time']):
+        if start <= bar['time'] and bar['time'] + 3600 <= cutoff:
+            provenance = dict(NATIVE_H1_SOURCE, asset=asset, symbol=symbol,
+                              captured_at=bar['captured_at'])
+            result.append(dict({k: v for k, v in bar.items() if k != 'captured_at'}, provenance=provenance))
+    return result
+
+
 def _history_sets(db, feed, start, end):
     by_step = {300: {b['time']: b for b in feed.get('bars', [])},
                60: {b['time']: b for b in feed.get('bars_m1', [])}}
     if db is not None:
         with db() as conn:
             rows = conn.execute("""SELECT step,payload FROM gbop_market_history
-                WHERE asset=? AND symbol=? AND day_utc>=? AND day_utc<=? ORDER BY day_utc""",
+                WHERE asset=? AND symbol=? AND step IN (60,300)
+                AND day_utc>=? AND day_utc<=? ORDER BY day_utc""",
                 (feed['asset'], feed['symbol'], start // 86400 * 86400, end // 86400 * 86400)).fetchall()
         for row in rows:
-            by_step[row['step']].update({b['time']: b for b in json.loads(row['payload'])})
+            if row['step'] in by_step:
+                by_step[row['step']].update({b['time']: b for b in json.loads(row['payload'])})
     return {step: sorted((b for b in data.values() if start <= b['time'] < end), key=lambda b: b['time'])
             for step, data in by_step.items()}
 
@@ -518,24 +678,41 @@ def _select_history(sets, start, end):
     return coarse, 300
 
 
-def _select_shift_history(sets, day, shift, now):
+def _select_shift_history(sets, day, shift, now, native_h1=None):
     start, end = shift_bounds(day, shift)
+    anchors = [t for t in (start - 7200, start - 3600) if t + 3600 <= now]
+    native_times = {b['time'] for b in (native_h1 or [])}
+    use_native = any(t in native_times for t in anchors)
     candidates = []
     for step, data in sets.items():
         bars = [b for b in data if start - 7200 <= b['time'] and b['time'] + step <= min(end, now)]
-        availability = assess_shift(bars, day, shift, step, now)
+        availability = assess_shift(bars, day, shift, step, now, native_h1 if use_native else None)
         score = (availability['review_scope'] == 'full', availability['reviewable'],
                  len(availability['complete_hours_ny']), availability['anchor_complete'],
                  availability['closed_bar_count'] * step, -step)
+        if use_native:
+            resolved = [h1_anchor(bars, t, step, native_h1, now) for t in anchors]
+            # Native seven can replace its OHLC, never eight's actual purge
+            # ordering. Compare real source coverage from seven's close onward.
+            post_start = start - 3600
+            post_end = min(end, now) // step * step
+            post = summarize(bars, post_start, max(post_start, post_end), step)
+            score = (not any(c.get('native_h1_status') == 'conflicting_ohlc' for c in resolved),
+                     sum(c['complete'] for c in resolved), post['complete'],
+                     availability['review_scope'] == 'full', availability['reviewable'],
+                     len(availability['complete_hours_ny']), post['bar_count'] * step, -step)
         candidates.append((score, bars, step))
     _, bars, step = max(candidates, key=lambda candidate: candidate[0])
     return bars, step
 
 
-def history_bars(db, feed, start, end, shift_date=None, shift=None, now=None):
+def history_bars(db, feed, start, end, shift_date=None, shift=None, now=None, native_h1=None):
     sets = _history_sets(db, feed, start, end)
     if shift_date is not None:
-        return _select_shift_history(sets, shift_date, shift, int(time.time() if now is None else now))
+        now = int(time.time() if now is None else now)
+        if native_h1 is None:
+            native_h1 = history_native_h1(db, feed, start, min(end, now))
+        return _select_shift_history(sets, shift_date, shift, now, native_h1)
     return _select_history(sets, start, end)
 
 
@@ -550,6 +727,7 @@ def shift_catalog(db, feed, now, requested_day=None, requested_only=False):
         local = datetime.combine(date.fromisoformat(requested_day), datetime.min.time(), NY)
         first, last = int(local.timestamp()), min(now, int((local + timedelta(days=1)).timestamp()))
     sets = _history_sets(db, feed, first, last)
+    native_h1 = history_native_h1(db, feed, first, last)
     daily = {}
     for step, bars in sets.items():
         for bar in bars:
@@ -562,8 +740,8 @@ def shift_catalog(db, feed, now, requested_day=None, requested_only=False):
     rows = []
     for day, sources in sorted(daily.items(), reverse=True):
         for shift in ('night', 'day'):
-            bars, step = _select_shift_history(sources, day, shift, now)
-            rows.append(dict(asset=feed['asset'], **assess_shift(bars, day, shift, step, now)))
+            bars, step = _select_shift_history(sources, day, shift, now, native_h1)
+            rows.append(dict(asset=feed['asset'], **assess_shift(bars, day, shift, step, now, native_h1)))
     return rows
 
 
@@ -692,6 +870,7 @@ def market_tool(db, name, args, now=None):
             return shift_choices(db, result, args.get('date_ny'), now)
         if name == 'get_market_price':
             result.pop('bars', None); result.pop('bars_m1', None)
+            result.pop('bars_h1', None); result.pop('native_h1_source', None)
             return result
         if name == 'review_market_session':
             shift = args.get('shift', 'day')
@@ -714,21 +893,42 @@ def market_tool(db, name, args, now=None):
         if not 0 < end - start <= 90 * 86400 + 3600:
             raise ValueError('Request a positive window no longer than 90 days.')
         source_feed = dict(result)
-        bars, step = (history_bars(db, result, start, end, day.isoformat(), shift, now)
-                      if name == 'review_market_session' else history_bars(db, result, start, end))
+        native_requested = (name == 'review_market_session' or
+            name == 'review_market_crt' and str(args.get('anchor_timeframe', '')).upper() in ('H1', '1H') or
+            name == 'inspect_market_candles' and str(args.get('timeframe', '')).upper() in ('H1', '1H'))
+        native_h1 = history_native_h1(db, result, start, min(end, now)) if native_requested else []
+        if name == 'review_market_session':
+            bars, step = history_bars(db, result, start, end, day.isoformat(), shift, now, native_h1)
+        else:
+            # Exact H1 detail must use the same verified source as current/scan.
+            # Other tools/timeframes retain their established history selection.
+            from gbop_voice_web.candle_evidence import timeframe
+            native_anchors = []
+            if native_h1 and name in ('review_market_crt', 'inspect_market_candles'):
+                requested_tf = args.get('timeframe') if name == 'inspect_market_candles' else args.get('anchor_timeframe')
+                if timeframe(requested_tf) == 'H1':
+                    native_anchors = ([start] if name == 'review_market_crt' else
+                                      list(range(start, min(end, now) - 3599, 3600))[:120])
+            if any(b['time'] in native_anchors for b in native_h1):
+                from gbop_voice_web.current_market import _current_precision
+                bars, step = _current_precision(_history_sets(db, result, start, end), start,
+                                                min(end, now), native_h1, native_anchors)
+            else:
+                bars, step = history_bars(db, result, start, end)
         if name == 'review_market_session':
             bars = [b for b in bars if b['time'] + step <= now]
         result.pop('bars', None); result.pop('bars_m1', None)
+        result.pop('bars_h1', None); result.pop('native_h1_source', None)
         result.pop('bid', None); result.pop('ask', None)
         result['available_precision_seconds'] = step
         result['available_from_ny'] = stamp(bars[0]['time']) if bars else None
         result['available_through_ny'] = stamp(bars[-1]['time'] + step) if bars else None
         if name == 'review_market_session':
-            availability = dict(asset=result['asset'], **assess_shift(bars, day.isoformat(), shift, step, now))
+            availability = dict(asset=result['asset'], **assess_shift(bars, day.isoformat(), shift, step, now, native_h1))
             if not availability['reviewable']:
                 return unavailable_shift(db, source_feed, availability, now)
             result['availability'] = availability
-            result['review'] = session_review(bars, day.isoformat(), shift, step)
+            result['review'] = session_review(bars, day.isoformat(), shift, step, native_h1=native_h1)
             result['review']['availability'] = availability
             peer = PAIRINGS.get(result['asset'])
             if peer:
@@ -760,11 +960,11 @@ def market_tool(db, name, args, now=None):
                 following_from_ny=args.get('following_from_ny'),
                 detail=name == 'inspect_market_fractal_node')
         elif name == 'inspect_market_candles':
-            result['review'] = candle_query(bars, start, end, args['timeframe'], step)
+            result['review'] = candle_query(bars, start, end, args['timeframe'], step, native_h1=native_h1)
         else:
             result['review'] = attach_lifecycle(crt_review(bars, start, end, args['anchor_timeframe'],
                 step, args.get('confirmation_timeframe'), args.get('blessed_thief_timeframe'),
-                args.get('blessed_thief_from_ny')), bars, end, step)
+                args.get('blessed_thief_from_ny'), native_h1=native_h1), bars, end, step)
             peer = PAIRINGS.get(result['asset'])
             if peer:
                 result['review']['paired_smt'] = paired_market_review(
@@ -782,7 +982,9 @@ def market_tool(db, name, args, now=None):
                 if annotation:
                     target['gtop_context'] = annotation
             double = review.get('double_purge', {})
-            for target in double.get('reversal_thesis', {}).get('objectives', {}).values():
+            double_targets = list(double.get('reversal_thesis', {}).get('objectives', {}).values())
+            double_targets += list((double.get('reversal_development') or {}).get('objectives', {}).values())
+            for target in double_targets:
                 annotation = owner_inducement_example(result['asset'], review['anchor'],
                     double.get('reverse_direction'), target)
                 if annotation:

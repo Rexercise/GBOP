@@ -23,9 +23,10 @@ class ShiftNarrativeTests(unittest.TestCase):
         recap = r['recap']
         self.assertTrue(recap['headline'].startswith('The 9:00 AM H1 range completed its bullish buy-side objective'))
         self.assertNotIn('9ate8 failed', recap['headline'])
-        self.assertEqual(len(recap['selected_range_chapters']), 2)
+        self.assertEqual(len(recap['selected_range_chapters']), 3)
+        self.assertIn('no remaining shift candles', recap['selected_range_chapters'][-1]['text'])
         text = recap['selected_range_chapters'][1]['text']
-        for fact in ['10:00 AM', 'selected range', 'sell-side', 'buy-side of the 9:00 AM H1 range', 'V1 Textbook']:
+        for fact in ['10:00 AM', 'range under review', 'sell-side', 'buy-side of the 9:00 AM H1 range', 'V1 Textbook']:
             self.assertIn(fact, text)
         self.assertIn('final H1 closed', recap['closing'])
         self.assertFalse(r['ranges'][1]['variant_evidence']['entry_confirmed'])

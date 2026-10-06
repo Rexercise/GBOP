@@ -59,7 +59,8 @@ class ShiftSynopsisTests(unittest.TestCase):
         self.assertTrue(text.startswith('9ate8'))
         self.assertIn('opposite 9ate8', text)
         self.assertNotIn('Model 1', text)
-        self.assertLess(len(text.split()), 150)
+        # Required chronological context remains bounded even without a body Model 1.
+        self.assertLess(len(text.split()), 240)
 
     def test_real_nas_failure_keeps_later_named_v1_delivery(self):
         synopsis = self.replay(retained.RetainedMarketReplayTests).tool('NAS100')['review']['shift_synopsis']
@@ -71,14 +72,15 @@ class ShiftSynopsisTests(unittest.TestCase):
         self.assertEqual(synopsis['young_lefty_status'], 'failed')
         self.assertEqual(young_rows(synopsis)[0]['verdict'], 'failed')
         self.assertLess(synopsis['spoken_summary'].index('Young Lefty'),
-                        synopsis['spoken_summary'].index('The 9:00 AM H1 range'))
+                        synopsis['spoken_summary'].index('the 9:00 AM H1 became the next range under review'))
         self.assertEqual(synopsis['ranges'][0]['midpoint_approach']['gtop_context']['basis'],
                          'explicit_owner_characterization')
         later = next(r for r in synopsis['ranges'] if r['anchor_start_ny'] == retained.ny('09:00'))
         self.assertEqual((later['direction'], later['outcome']), ('bearish', 'opposing_liquidity_delivered'))
         self.assertEqual([v['code'] for v in later['variant']['labels']], ['V1'])
-        self.assertLess(synopsis['spoken_summary'].find('9ate8'), synopsis['spoken_summary'].find('The 9:00 AM H1 range'))
-        self.assertNotIn('11:15', synopsis['spoken_summary'])  # opposite Model 1 belongs in detail
+        self.assertLess(synopsis['spoken_summary'].find('9ate8'), synopsis['spoken_summary'].find('the 9:00 AM H1 became the next range under review'))
+        self.assertIn('9:00 AM bullish double-purge reversal, primary body Model 1 is the 11:15 AM M5 candle', synopsis['spoken_summary'])
+        self.assertEqual(later['pending_reversal']['primary_body_model1']['bar_open_ny'], retained.ny('11:15'))
 
     def test_retained_crypto_keeps_local_bones_and_earlier_opposed_young_lefty(self):
         replay = self.replay(crypto.CryptoShiftReplayTests)
@@ -265,7 +267,9 @@ class ShiftSynopsisTests(unittest.TestCase):
                 # range, inside the unchanged 12k limit with metadata margin.
                 self.assertLess(len(json.dumps(payload, separators=(',', ':'))),
                                 SHIFT_SYNOPSIS_TARGET_CHARS - 300)
-                self.assertLess(len(payload['review']['shift_synopsis']['spoken_summary'].split()), 160)
+                # Official confirmation and pre-confirmation observations must remain distinct.
+                # Handoffs, concurrent DOL and primary Model 1 are required in the default.
+                self.assertLess(len(payload['review']['shift_synopsis']['spoken_summary'].split()), 360)
 
     def test_default_ignores_unbounded_legacy_prose_but_bounds_unknown_metadata(self):
         source = self.replay(retained.RetainedMarketReplayTests).tool('NAS100')
@@ -287,7 +291,8 @@ class ShiftSynopsisTests(unittest.TestCase):
             self.assertIn('Young Lefty', prompt)
             self.assertIn("always state Young Lefty's independent status", prompt)
             self.assertNotIn('Omit absent/uninitiated', prompt)
-            self.assertIn('Ordinary recaps have no inline inducement glossary', prompt)
+            self.assertIn('Recaps: verdict then BUT induced 50%', prompt)
+            self.assertIn('No glossary, universal threshold, inferred intent/profit', prompt)
             self.assertNotIn('4-7 concise sentences', prompt)
 
 

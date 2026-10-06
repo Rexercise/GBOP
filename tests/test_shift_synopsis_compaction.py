@@ -12,6 +12,7 @@ from gbop_voice_web.shift_synopsis import build_shift_synopsis
 from gbop_voice_web import voice_payload as transport
 from test_market_conversation import function
 from test_shift_double_purge_voice import fixture, ny, result
+from test_chronological_transport import expand as expand_facts
 
 
 def size(value):
@@ -69,7 +70,7 @@ class ShiftSynopsisCompactionTests(unittest.TestCase):
         self.assertLessEqual(size(wire), 12000)
         self.assertEqual(wire['voice_view']['character_budget'], 12000)
         expected = build_shift_synopsis(source['review'], source['asset'])
-        actual = wire['review']['shift_synopsis']
+        actual = expand_facts(wire)['review']['shift_synopsis']
         self.assertEqual(expanded_index(actual), expected['range_index'])
         # Exact structural equality covers all selected/relevant ranges, ordered
         # double purges, original/reversal objectives, variants, known-at times,
@@ -120,7 +121,9 @@ class ShiftSynopsisCompactionTests(unittest.TestCase):
     def test_under_budget_payload_keeps_original_navigation_and_contract(self):
         context, source = captured(session())
         retained = deepcopy(context.evidence)
-        wire = transport.voice_tool_payload('review_market_session', source)
+        # Keep this test focused on the no-compaction branch as required facts grow.
+        with patch.object(transport, 'SHIFT_SYNOPSIS_TARGET_CHARS', 99999):
+            wire = transport.voice_tool_payload('review_market_session', source)
         self.assertEqual(wire['review']['shift_synopsis'],
                          build_shift_synopsis(source['review'], source['asset']))
         self.assertNotIn('range_detail_request', wire['review']['shift_synopsis'])
@@ -128,7 +131,8 @@ class ShiftSynopsisCompactionTests(unittest.TestCase):
 
     def test_request_scope_mismatch_is_not_factored_or_guessed(self):
         _, source = captured(session())
-        base = transport.voice_tool_payload('review_market_session', source)
+        with patch.object(transport, 'SHIFT_SYNOPSIS_TARGET_CHARS', 99999):
+            base = transport.voice_tool_payload('review_market_session', source)
         for mutation in ('asset', 'through_ny', 'anchor_timeframe', 'anchor_start_ny', 'future_arg'):
             with self.subTest(mutation=mutation):
                 wire = deepcopy(base)
@@ -139,7 +143,8 @@ class ShiftSynopsisCompactionTests(unittest.TestCase):
 
     def test_nonidentical_json_argument_types_and_missing_anchors_are_not_factored(self):
         _, source = captured(session())
-        base = transport.voice_tool_payload('review_market_session', source)
+        with patch.object(transport, 'SHIFT_SYNOPSIS_TARGET_CHARS', 99999):
+            base = transport.voice_tool_payload('review_market_session', source)
         for missing in (False, True):
             wire = deepcopy(base)
             rows = wire['review']['shift_synopsis']['range_index']

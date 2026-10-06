@@ -76,7 +76,9 @@ class OtherRangeReplayTests(unittest.TestCase):
         self.assertIn('no later setup or delivery evidence', result['spoken_summary'])
         for row in result['ranges']:
             self.assertEqual(row['detail_request']['args']['through_ny'], ny('12:00'))
-        self.assertEqual(len(self.review['shift_story']['range_transitions']), 1)
+        self.assertEqual(len(self.review['shift_story']['range_transitions']), 2)
+        self.assertEqual(eleven['role'], 'selected_range')
+        self.assertIsNone(eleven['direction'])
 
 
 class OtherRangeConversationTests(unittest.TestCase):

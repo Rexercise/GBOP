@@ -4,6 +4,7 @@ import json
 import time
 from types import SimpleNamespace as NS
 import unittest
+from test_chronological_transport import expand as expand_facts
 from unittest.mock import Mock
 
 from gbop_voice_web.candle_evidence import parse_time
@@ -44,15 +45,18 @@ class ShiftDoublePurgeVoiceTests(unittest.TestCase):
         self.assertEqual((fact['direction'], fact['outcome']), ('bearish', 'opposing_liquidity_delivered'))
         double = fact['double_purge']
         self.assertTrue(double['observed'])
+        self.assertEqual(double['confirmed_at_ny'], ny('22:00'))
         self.assertTrue(double['original_completion_preserved'])
         self.assertEqual(double['original_first_purged_side'], 'buy')
         sequence = double['sequence']
-        self.assertEqual(sequence['first_purge']['bar_open_ny'], ny('21:01'))
+        self.assertEqual(fact['first_purge_interval']['bar_open_ny'], ny('21:01'))
         self.assertEqual(sequence['opposing_purge']['bar_open_ny'], ny('21:40'))
         self.assertEqual(sequence['source_return_inside']['known_at_ny'], ny('21:42'))
         self.assertEqual(sequence['source_return_inside']['timeframe'], 'M1')
         self.assertEqual(sequence['assigned_return_inside']['known_at_ny'], ny('21:45'))
         self.assertEqual(sequence['assigned_return_inside']['timeframe'], 'M5')
+        self.assertEqual(sequence['selected_timeframe_return_inside']['bar_open_ny'], ny('21:00'))
+        self.assertEqual(sequence['selected_timeframe_return_inside']['known_at_ny'], ny('22:00'))
         reverse = double['reversal_thesis']
         self.assertEqual((reverse['direction'], reverse['status']), ('bullish', 'midpoint_only'))
         self.assertEqual((reverse['objective_side'], reverse['objective_level']), ('buy', 120))
@@ -64,11 +68,13 @@ class ShiftDoublePurgeVoiceTests(unittest.TestCase):
         raw = result()
         before = deepcopy(raw)
         wire = voice_tool_payload('review_market_session', raw)
-        synopsis = wire['review']['shift_synopsis']
+        synopsis = expand_facts(wire)['review']['shift_synopsis']
         self.assert_double(synopsis['ranges'][0])
         self.assertIn('same-range double-purge bullish reversal delivered 50% only', synopsis['spoken_summary'])
         self.assertIn('sell-side delivered', synopsis['spoken_summary'])
-        self.assertEqual(synopsis['shift_end']['active_anchor_ny'], ny('20:00'))
+        self.assertIn('closure of the 9:00 PM H1 candle', synopsis['spoken_summary'])
+        self.assertNotIn('confirmed at 10:00 PM', synopsis['spoken_summary'])
+        self.assertEqual(synopsis['shift_end']['active_anchor_ny'], ny('21:00'))
         self.assertLess(len(json.dumps(wire, separators=(',', ':'))), SHIFT_SYNOPSIS_TARGET_CHARS)
         self.assertEqual(raw, before)
 
@@ -78,7 +84,7 @@ class ShiftDoublePurgeVoiceTests(unittest.TestCase):
             if b['time'] >= parse_time(ny('21:40')):
                 b.update(open=90, high=100, low=85, close=90)
         wire = voice_tool_payload('review_market_session', result(bars))
-        synopsis = wire['review']['shift_synopsis']
+        synopsis = expand_facts(wire)['review']['shift_synopsis']
         self.assertNotIn('double_purge', synopsis['ranges'][0])
         self.assertNotIn('double-purge', synopsis['spoken_summary'])
 
@@ -112,7 +118,7 @@ class ShiftDoublePurgeVoiceTests(unittest.TestCase):
                    if isinstance(x, dict) and x.get('type') == 'function_call_output']
         self.assertEqual(len(outputs), 1)
         wire = json.loads(outputs[0]['output'])
-        self.assert_double(wire['review']['shift_synopsis']['ranges'][0])
+        self.assert_double(expand_facts(wire)['review']['shift_synopsis']['ranges'][0])
 
 
 if __name__ == '__main__':

@@ -60,11 +60,16 @@ class ActiveRangeRoutingTests(unittest.TestCase):
         self.assertEqual(followup['ranges'], [])
         return followup['active_range_context']
 
-    def test_whole_shift_followup_selects_verified_active_nine_not_default_eight(self):
+    def test_whole_shift_followup_selects_final_range_under_review_after_completion(self):
         self.assertEqual(self.context.selected['anchor_start_ny'], ny('08:00'))
         result = self.continue_story()
-        self.assertEqual(self.active(result)['anchor_start_ny'], ny('09:00'))
-        self.assertEqual(result['market_context']['selection']['anchor_start_ny'], ny('09:00'))
+        self.assertEqual(self.active(result)['anchor_start_ny'], ny('11:00'))
+        self.assertEqual(result['market_context']['selection']['anchor_start_ny'], ny('11:00'))
+        self.assertEqual(self.active(result)['selected_at_ny'], ny('12:00'))
+        self.assertEqual(self.active(result)['hourly_development'], [])
+        self.assertEqual(self.active(result)['selection_status'], 'range_under_review')
+        self.assertEqual(self.active(result)['variant'], {'status': 'unverified', 'labels': []})
+        self.assertIsNone(self.active(result)['direction'])
         self.assertEqual(self.context.selected['through_ny'], ny('12:00'))
         self.assertEqual(self.context.pending, self.context.selected)
         self.assertEqual(self.provider.calls[-1], ('review_market_session', DAY))
@@ -75,7 +80,7 @@ class ActiveRangeRoutingTests(unittest.TestCase):
                      'Then what happened?', 'Resume the story.', 'Continue the active range.'):
             with self.subTest(text=text):
                 result = self.continue_story(text)
-                self.assertEqual(self.active(result)['anchor_start_ny'], ny('09:00'))
+                self.assertEqual(self.active(result)['anchor_start_ny'], ny('11:00'))
                 self.assertFalse(self.context._required_other)
 
     def test_discussed_active_range_can_continue_without_becoming_another_play(self):
@@ -83,14 +88,14 @@ class ActiveRangeRoutingTests(unittest.TestCase):
         self.assertIn(ny('09:00'), self.context.discussion_context()['discussed_anchors'])
         before = deepcopy(self.context.discussion_context()['discussed_anchors'])
         result = self.continue_story()
-        self.assertEqual(self.active(result)['anchor_start_ny'], ny('09:00'))
+        self.assertEqual(self.active(result)['anchor_start_ny'], ny('11:00'))
         self.assertEqual(self.context.discussion_context()['discussed_anchors'], before)
 
     def test_text_prefetch_supplies_active_story_for_no_tool_model_reply(self):
         generation = self.context.begin_turn('How did it finish?')
         supplied = prefetch_market_evidence(self.context, self.provider, generation)
         payload = json.loads(supplied[supplied.index('{'):])
-        self.assertEqual(self.active(payload)['anchor_start_ny'], ny('09:00'))
+        self.assertEqual(self.active(payload)['anchor_start_ny'], ny('11:00'))
         self.assertEqual(payload['market_context']['selection']['through_ny'], ny('12:00'))
         self.assertLess(len(json.dumps(payload, separators=(',', ':'))), SHIFT_SYNOPSIS_TARGET_CHARS)
 
@@ -99,7 +104,7 @@ class ActiveRangeRoutingTests(unittest.TestCase):
         result = self.context.run('review_other_market_ranges', {
             'asset': 'XAUUSD', 'date_ny': '2026-10-01', 'shift': 'night',
             'context_action': 'switch', 'followup_mode': 'other_ranges'}, self.provider)
-        self.assertEqual(self.active(result)['anchor_start_ny'], ny('09:00'))
+        self.assertEqual(self.active(result)['anchor_start_ny'], ny('11:00'))
         self.assertEqual(result['asset'], 'NAS100')
         self.assertEqual(self.provider.calls[-1], ('review_market_session', DAY))
 
@@ -116,7 +121,7 @@ class ActiveRangeRoutingTests(unittest.TestCase):
         self.context.begin_turn()
         self.assertIsNone(self.context.required_evidence_request())
         result = self.context.run('review_other_market_ranges', ACTIVE, self.provider)
-        self.assertEqual(self.active(result)['anchor_start_ny'], ny('09:00'))
+        self.assertEqual(self.active(result)['anchor_start_ny'], ny('11:00'))
         self.assertIsNone(self.context._client_text)
         self.assertIsNone(self.context.intent)
         payload = voice_tool_payload('review_other_market_ranges', result)
