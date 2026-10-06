@@ -6974,7 +6974,8 @@ class GBOPRealtimeSession:
                 return
         self.tool_output_pending = True
         if (result.get('ok') and (
-                name == 'review_market_session'
+                name == 'review_market_contexts'
+                or name == 'review_market_session'
                 and voice_result.get('voice_view', {}).get('kind') == 'shift_overview'
                 or name == 'review_other_market_ranges'
                 and voice_result.get('voice_view', {}).get('kind') == 'other_range_followup')):

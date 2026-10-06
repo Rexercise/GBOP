@@ -261,7 +261,10 @@ class ShiftSynopsisTests(unittest.TestCase):
                 source = replay.tool(asset)
                 payload = voice_tool_payload('review_market_session', source)
                 self.assertTrue(payload['ok'])
-                self.assertLess(len(json.dumps(payload, separators=(',', ':'))), 9000)
+                # Verified two-sided chronology is now retained per selected
+                # range, inside the unchanged 12k limit with metadata margin.
+                self.assertLess(len(json.dumps(payload, separators=(',', ':'))),
+                                SHIFT_SYNOPSIS_TARGET_CHARS - 300)
                 self.assertLess(len(payload['review']['shift_synopsis']['spoken_summary'].split()), 160)
 
     def test_default_ignores_unbounded_legacy_prose_but_bounds_unknown_metadata(self):

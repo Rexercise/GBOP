@@ -6,7 +6,7 @@ import unittest
 from gbop_voice_web.candle_evidence import crt_review, parse_time
 from gbop_voice_web.market_data import attach_lifecycle, market_tool
 from gbop_voice_web.shift_synopsis import build_other_ranges
-from gbop_voice_web.voice_payload import voice_tool_payload
+from gbop_voice_web.voice_payload import voice_tool_payload, SHIFT_SYNOPSIS_TARGET_CHARS
 import test_retained_market_replays as retained
 
 
@@ -36,7 +36,10 @@ class TermsIntegrationTests(unittest.TestCase):
         self.assertNotIn('inducement in GTOP terms', text)
         self.assertNotIn('remained pending', text)
         self.assertLess(len(text.split()), 160)
-        self.assertLess(len(json.dumps(payload, separators=(',', ':'))), 9000)
+        self.assertIn('Independent 10:00 AM H1 range: bullish', text)
+        # Retain newly requested later-range and double-purge evidence inside
+        # the unchanged production cap, with the existing transport margin.
+        self.assertLess(len(json.dumps(payload, separators=(',', ':'))), SHIFT_SYNOPSIS_TARGET_CHARS - 300)
         nine = next(r for r in synopsis['ranges'] if r['anchor_start_ny'] == retained.ny('09:00'))
         self.assertEqual(nine['outcome'], 'opposing_liquidity_delivered')
         self.assertEqual(nine['direction'], 'bearish')

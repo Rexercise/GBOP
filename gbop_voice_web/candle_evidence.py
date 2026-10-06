@@ -74,6 +74,24 @@ def summarize(bars, start, end, step):
     return result
 
 
+def missing_source_intervals(bars, start, end, step, limit=3):
+    """Bounded absent source-bar openings, never invented price/closure evidence."""
+    if start % step or end % step:
+        return {}
+    present = {b['time'] for b in bars if start <= b['time'] and b['time'] + step <= end}
+    missing = [t for t in range(start, end, step) if t not in present]
+    groups = []
+    for t in missing:
+        if groups and t == groups[-1][-1] + step:
+            groups[-1].append(t)
+        else:
+            groups.append([t])
+    return {'missing_intervals': [
+                {'first_bar_open_ny': stamp(group[0]), 'last_bar_open_ny': stamp(group[-1]),
+                 'bar_count': len(group)} for group in groups[:limit]],
+            'missing_interval_count': len(groups)}
+
+
 def candle_query(bars, start, end, tf, step):
     tf = timeframe(tf)
     if not 0 < end - start <= 90 * 86400 + 3600:
@@ -236,6 +254,8 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
                         'Model 1 candle identity is independent of later CSD, Super Soup and execution.'}
     from gbop_voice_web.blessed_thief_evidence import blessed_thief_review
     if not anchor['complete']:
+        if tf == 'H1':
+            anchor.update(missing_source_intervals(bars, start, anchor_end, step))
         result['blessed_thief'] = blessed_thief_review(
             bars, anchor, tf, end, step, candle_tf=blessed_thief_tf, page_from=blessed_thief_from)
         result['model1'] = model1_evidence(bars, anchor, mapped, end, step)

@@ -7,7 +7,7 @@ from datetime import datetime
 
 from gbop_voice_web.candle_evidence import parse_time, stamp, summarize
 
-NAMES = {'V1': 'Textbook', 'V2': 'Kryptonite', 'V3': 'extended distribution',
+NAMES = {'V1': 'Textbook', 'V2': 'Pattern Trader’s Kryptonite', 'V3': 'extended distribution',
          'V4': 'one inside bar', 'V5': 'multiple inside bars', 'V6': 're-soup'}
 
 
@@ -151,24 +151,31 @@ def variant_explanation(row, bars, end, step):
     return _compact(result)
 
 
+def _display_name(variant):
+    """Use the canonical V2 name without changing codes or saved evidence."""
+    if variant['code'] == 'V2':
+        return 'V2 — ' + NAMES['V2']
+    return variant['code'] + ' ' + variant['name']
+
+
 def variant_clause(variant, *, include_known=False):
     """One brief explanatory clause; candidates are explicitly conditional."""
     detail = variant.get('explanation', {})
     labels = variant.get('labels', [])
     reason = detail.get('reason')
     if labels:
-        text = '/'.join(v['code'] + ' ' + v['name'] for v in labels)
+        text = '/'.join(_display_name(v) for v in labels)
         text += ' because ' + reason if reason else ''
         if detail.get('status') == 'structure_observed':
             text += '; ' + detail['remaining'].rstrip('.').lower()
         elif include_known and detail.get('known_at_ny'):
             text += f"; established at {clock(detail['known_at_ny'])} H1 close"
         for pending in detail.get('candidates', []):
-            text += f"; {pending['code']} {pending['name']} pending: {pending['requires'].rstrip('.')}"
+            text += f"; {_display_name(pending)} pending: {pending['requires'].rstrip('.')}"
         return text
     candidates = detail.get('candidates', [])
     if candidates:
-        names = '/'.join(v['code'] + ' ' + v['name'] for v in candidates)
+        names = '/'.join(_display_name(v) for v in candidates)
         needs = ' '.join(v['code'] + ': ' + v['requires'] for v in candidates)
         text = f'{names} pending because {reason}; {needs.rstrip(".")}'
         if detail.get('coverage_limit'):

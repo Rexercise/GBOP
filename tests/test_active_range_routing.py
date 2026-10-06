@@ -154,13 +154,17 @@ class ActiveRangeRoutingTests(unittest.TestCase):
         self.assertEqual(self.context.selected['anchor_start_ny'], ny('07:00'))
 
     def test_genuine_other_request_cannot_be_replaced_by_active_mode(self):
-        self.context.complete_response(self.initial['review']['shift_synopsis']['spoken_summary'])
+        spoken = self.initial['review']['shift_synopsis']['spoken_summary']
+        self.assertIn('Independent 10:00 AM H1 range: bullish', spoken)
+        self.context.complete_response(spoken)
         self.context.begin_turn('What other ranges were relevant?')
         result = self.context.run('review_other_market_ranges', ACTIVE, self.provider)
         self.assertTrue(result['ok'], result)
         followup = result['review']['other_range_followup']
         self.assertNotEqual(followup.get('mode'), 'continue_active_range')
-        self.assertEqual([r['anchor_start_ny'] for r in followup['ranges']], [ny('10:00'), ny('11:00')])
+        # Ten is now actually discussed by the delivered synopsis. Eleven is
+        # still unspoken; retrieved-only ranges are not counted as discussion.
+        self.assertEqual([r['anchor_start_ny'] for r in followup['ranges']], [ny('11:00')])
 
     def test_other_and_focused_detail_phrases_stay_distinct(self):
         for text in ('Any other relevant ranges?', 'What is the next range?', 'More GTOP plays?'):

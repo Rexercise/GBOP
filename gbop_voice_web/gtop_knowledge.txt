@@ -49,7 +49,7 @@ Close below = lower pricing.
 
 CRT VARIANTS
 V1 Textbook: Candle 1 range, Candle 2 manipulation, Candle 3 distribution.
-V2 Kryptonite: two candles; Candle 2 manipulates and distributes.
+V2 — Pattern Trader’s Kryptonite: two candles; Candle 2 manipulates and distributes. Use this full name in reviews and explanations.
 V3: distribution takes more than three candles.
 V4: one inside bar before manipulation.
 V5: two or more inside bars before manipulation.

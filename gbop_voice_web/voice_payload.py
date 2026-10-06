@@ -407,6 +407,20 @@ def current_voice_overview(result):
 
 def voice_tool_payload(name, result):
     """Select a bounded presentation after authoritative context capture."""
+    if name == 'review_market_contexts':
+        return deepcopy(result)  # Already bounded; never omit one requested member.
+    if name == 'select_market_context' and result.get('ok'):
+        try:
+            selected = voice_tool_payload(result['source_tool'], result)
+        except (KeyError, TypeError, ValueError):
+            return _bounded_error({'ok': False, 'status': 'selected_context_payload_invalid',
+                'market_context': result.get('market_context'),
+                'message': 'The retained evidence cannot be presented safely. Retrieve its exact range again; no outcome was supplied.'})
+        if _encoded_size(selected) > SHIFT_OVERVIEW_TARGET_CHARS:
+            return _bounded_error({'ok': False, 'status': 'selected_context_payload_budget_exceeded',
+                'market_context': result.get('market_context'),
+                'message': 'The selected evidence exceeds the output budget; request one exact range and candle. No outcome was supplied.'})
+        return selected
     if name == 'scan_young_lefty':
         if _encoded_size(result) > 28000:
             return {'ok': False, 'status': 'scan_payload_budget_exceeded',
