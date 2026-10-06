@@ -24,8 +24,8 @@ def fixture(outcome='pending', shift='day'):
              (100, 110, 90, 100), (100, 110, 90, 100), (110, 115, 105, 110)]
     bars = [dict(time=start + hour * 3600 + minute * 60, open=o, high=h, low=l, close=c)
             for hour, (o, h, l, c) in enumerate(hours) for minute in range(60)]
-    # Eight delivers by 9:41. Ten only becomes relevant at the 11:00 purge,
-    # while eight remains selected, so completion never changes the anchor.
+    # Eight delivers by 9:41 and hands off to nine at the 9:00 candle close.
+    # Ten becomes independent context at the 11:00 purge; nine stays under review.
     bars[121].update(open=115, high=125, low=110, close=115)
     bars[160].update(open=100, high=105, low=75, close=100)
     if outcome == 'failed':
@@ -59,7 +59,13 @@ class LaterShiftRangeTests(unittest.TestCase):
             for outcome, expected in statuses.items():
                 with self.subTest(shift=shift, outcome=outcome):
                     review, synopsis = self.synopsis(fixture(outcome, shift), shift)
-                    lead, later = synopsis['ranges']
+                    by_anchor = {row['anchor_start_ny']: row for row in synopsis['ranges']}
+                    self.assertEqual(list(by_anchor), [ny(hour, shift) for hour in ('08:00', '09:00', '10:00')])
+                    lead, handed_off, later = (by_anchor[ny(hour, shift)] for hour in ('08:00', '09:00', '10:00'))
+                    self.assertEqual(handed_off['anchor_start_ny'], ny('09:00', shift))
+                    self.assertEqual(handed_off['role'], 'selected_range')
+                    self.assertEqual(handed_off['verdict'], 'not_initiated')
+                    self.assertEqual(handed_off['outcome'], 'unverified')
                     self.assertEqual(lead['outcome'], 'opposing_liquidity_delivered')
                     self.assertEqual(lead['opposing_liquidity']['source_interval']['bar_close_ny'], ny('09:41', shift))
                     self.assertEqual(later['anchor_start_ny'], ny('10:00', shift))
@@ -68,7 +74,7 @@ class LaterShiftRangeTests(unittest.TestCase):
                     self.assertEqual(later['first_purge_interval']['bar_open_ny'], ny('11:00', shift))
                     self.assertEqual(later['relevance'], {
                         'basis': 'post_close_purge', 'known_at_ny': ny('11:01', shift),
-                        'purged_side': 'buy', 'selected_anchor_ny': ny('08:00', shift)})
+                        'purged_side': 'buy', 'selected_anchor_ny': ny('09:00', shift)})
                     text = synopsis['spoken_summary']
                     self.assertIn('Independent ' + ('10:00 AM' if shift == 'day' else '10:00 PM') + ' H1 range', text)
                     self.assertIn('buy-side purge', text)
@@ -77,8 +83,13 @@ class LaterShiftRangeTests(unittest.TestCase):
                     if outcome == 'unverified':
                         self.assertIsNone(synopsis['active_range_context'])
                     else:
-                        self.assertEqual(synopsis['active_range_context']['anchor_start_ny'], ny('08:00', shift))
-                    self.assertEqual(review['shift_story']['range_transitions'], [])
+                        self.assertEqual(synopsis['active_range_context']['anchor_start_ny'], ny('09:00', shift))
+                    self.assertEqual(len(review['shift_story']['range_transitions']), 1)
+                    transition = review['shift_story']['range_transitions'][0]
+                    self.assertEqual((transition['from_anchor_ny'], transition['to_anchor_ny'], transition['confirmed_at_ny']),
+                                     (ny('08:00', shift), ny('09:00', shift), ny('10:00', shift)))
+                    self.assertEqual(transition['reason'], 'opposing_objective_completed')
+                    self.assertFalse(transition['crt_established_by_handoff'])
                     self.assertEqual(synopsis['through_ny'], ny('12:00', shift))
                     wire = voice_tool_payload('review_market_session', {'ok': True, 'asset': 'NAS100', 'review': review})
                     self.assertTrue(wire['ok'])
@@ -86,7 +97,9 @@ class LaterShiftRangeTests(unittest.TestCase):
 
     def test_untouched_hours_and_unobserved_final_anchor_are_not_automatic_theses(self):
         _, synopsis = self.synopsis(fixture('untouched'))
-        self.assertEqual([row['anchor_start_ny'] for row in synopsis['ranges']], [ny('08:00')])
+        self.assertEqual([row['anchor_start_ny'] for row in synopsis['ranges']], [ny('08:00'), ny('09:00')])
+        self.assertEqual(synopsis['ranges'][1]['verdict'], 'not_initiated')
+        self.assertEqual(synopsis['ranges'][1]['outcome'], 'unverified')
         self.assertEqual(len(synopsis['range_index']), 5)
         self.assertNotIn('Independent', synopsis['spoken_summary'])
         self.assertNotIn('11:00 AM H1 range', synopsis['spoken_summary'])
@@ -114,8 +127,8 @@ class LaterShiftRangeTests(unittest.TestCase):
         self.assertEqual((last['verdict'], last['outcome']), ('unverified', 'unverified'))
         self.assertEqual(last['observation_status'], 'no_post_close_evidence_at_cutoff')
         self.assertEqual(last['relevance'], {'basis': 'selected_range_transition', 'known_at_ny': ny('12:00')})
-        self.assertIn('11:00 AM H1 range became selected', synopsis['spoken_summary'])
-        self.assertIn('later setup/delivery unknown', synopsis['spoken_summary'])
+        self.assertIn('11:00 AM H1 became the next range under review on the closure of the 11:00 AM H1 candle', synopsis['spoken_summary'])
+        self.assertIn('No later evidence before the end of the GTOP shift', synopsis['spoken_summary'])
 
     def test_appended_post_cutoff_bars_cannot_create_a_later_range_or_outcome(self):
         bars = fixture()
@@ -137,14 +150,19 @@ class LaterShiftRangeTests(unittest.TestCase):
         lead, later = synopsis['ranges']
         self.assertEqual(lead['outcome'], 'opposing_liquidity_delivered')
         self.assertEqual((later['verdict'], later['outcome']), ('boneless_pending', 'pending_at_review_cutoff'))
-        self.assertEqual(later['relevance']['basis'], 'paired_setup')
+        self.assertEqual(later['relevance'], {'basis': 'selected_range_transition', 'known_at_ny': ny('10:00')})
+        self.assertEqual(later['paired_setup']['end_ny'], ny('11:00'))
+        self.assertTrue(later['paired_setup']['qualified_smt'])
         self.assertNotEqual(later['direction'], lead['direction'])
-        self.assertEqual(later['relevance']['selected_anchor_ny'], lead['anchor_start_ny'])
+        self.assertEqual(later['anchor_start_ny'], ny('09:00'))
+        self.assertEqual(later['role'], 'selected_range')
         self.assertIn('bullish boneless from paired setup by 11:00 AM', synopsis['spoken_summary'])
-        self.assertIn('50%/buy-side pending', synopsis['spoken_summary'])
+        self.assertIn('50%/buy-side delivery pending', synopsis['spoken_summary'])
         review['shift_story']['recap']['paired_interpretation'][0]['setup_interval']['end_ny'] = ny('12:01')
         bounded = build_shift_synopsis(review, 'NAS100')
-        self.assertEqual([row['anchor_start_ny'] for row in bounded['ranges']], [ny('08:00')])
+        self.assertEqual([row['anchor_start_ny'] for row in bounded['ranges']], [ny('08:00'), ny('09:00')])
+        self.assertNotIn('paired_setup', bounded['ranges'][1])
+        self.assertEqual(bounded['ranges'][1]['verdict'], 'not_initiated')
 
     def test_independent_later_range_renders_legacy_v2_with_canonical_full_name(self):
         review, _ = self.synopsis(fixture('delivered'))

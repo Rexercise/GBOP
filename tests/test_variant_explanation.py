@@ -74,10 +74,10 @@ class VariantExplanationTests(unittest.TestCase):
         before = deepcopy(source)
         text = source['shift_synopsis']['spoken_summary']
         for phrase in ('V1 Textbook because 9:00 AM range', '10:00 AM manipulation back inside',
-                       '11:00 AM distribution', 'established at 12:00 PM H1 close'):
+                       '11:00 AM distribution', 'established on the closure of the 11:00 AM H1 candle'):
             self.assertIn(phrase, text)
         self.assertLess(text.index('9ate8'), text.index('Young Lefty'))
-        self.assertLess(text.index('Young Lefty'), text.index('The 9:00 AM H1 range'))
+        self.assertLess(text.index('Young Lefty'), text.index('the 9:00 AM H1 became the next range under review'))
         voice = voice_tool_payload('review_market_session', {'ok': True, 'review': source})
         self.assertTrue(voice['ok'])
         self.assertEqual(voice['review']['shift_synopsis']['spoken_summary'], text)
@@ -97,6 +97,7 @@ class VariantExplanationTests(unittest.TestCase):
         text = variant_clause(row['variant_evidence'])
         self.assertIn('pending because', text)
         self.assertNotIn('established at', text)
+        self.assertNotIn('established on the closure', text)
 
     def test_closed_manipulation_leaves_v1_or_v3_not_v2(self):
         data = base(); data[12]['high'] = 112
@@ -121,7 +122,7 @@ class VariantExplanationTests(unittest.TestCase):
         self.assertEqual(row['directional_outcome']['status'], 'opposing_liquidity_delivered')
         self.assertEqual(row['variant_evidence']['labels'], [])
         self.assertEqual(candidates(row), ['V2'])
-        self.assertIn('10:00 AM close', detail(row).get('candidates', [])[0]['requires'])
+        self.assertIn('Complete 9:00 AM H1 evidence through its own closure', detail(row).get('candidates', [])[0]['requires'])
         self.assertIsNone(detail(row).get('known_at_ny'))
         complete = review(data, '10:00')
         self.assertEqual(detail(complete)['status'], 'completed')
@@ -132,7 +133,7 @@ class VariantExplanationTests(unittest.TestCase):
         row = review(data, '10:30')
         self.assertEqual(row['directional_outcome']['opposing_liquidity']['evidence']['bar_close_ny'], ny('10:10'))
         self.assertEqual(candidates(row), ['V1'])
-        self.assertIn('11:00 AM close', detail(row).get('candidates', [])[0]['requires'])
+        self.assertIn('Complete 10:00 AM H1 evidence through its own closure', detail(row).get('candidates', [])[0]['requires'])
         complete = review(data, '11:00')
         self.assertEqual(detail(complete)['known_at_ny'], ny('11:00'))
         self.assertEqual(complete['variant_evidence']['labels'][0]['code'], 'V1')

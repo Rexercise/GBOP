@@ -46,12 +46,10 @@ def _voice_market_context(context, *, evidence_ref=None):
         out.pop('discussion_context', None)
     elif isinstance(out.get('discussion_context'), dict):
         out['discussion_context']['response_contract'] = (
-            'Only completed delivery marks discussion. other_ranges excludes discussed opportunities; '
-            'continue_active_range retains the selected story. Keep this asset/date/shift/cutoff.')
+            'Only completed playback marks discussion. Follow scope, mode and discussed anchors.')
     if evidence_ref:
         out['evidence_ref'] = evidence_ref
-        out['snapshot_note'] = ('Repeated conversation recap/outcomes omitted; use the supplied review '
-                                'within its declared coverage and paging limits.')
+        out['snapshot_note'] = ('Use the supplied scoped review; repeated recap omitted.')
     else:
         out.pop('evidence_ref', None)
         out['snapshot_note'] = ('Evidence details were not supplied on this page. Scope/provenance '
@@ -272,7 +270,7 @@ def _budget_overview(out):
         # selected-range narrative. Exact Blessed Thief detail is still queryable.
         for row in ranges:
             row.get('blessed_thief', {}).pop('summary', None)
-        out['voice_view']['additional_detail_omitted'] = 'Blessed Thief prose; use each exact range detail_request.'
+        out['voice_view']['additional_detail_omitted'] = 'Blessed Thief prose; use detail_request.'
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         recap = out['review']['shift_recap']
         for key in ('headline', 'closing'):
@@ -283,8 +281,7 @@ def _budget_overview(out):
         out['review'].pop('limits', None)
         out['review']['shift_story'].pop('limits', None)
         out['voice_view']['consolidated_limits'] = (
-            'Closed OHLC; same-bar order unknown. Gaps/forming are unverified and block promotion; independent ranges are not selected. '
-            'Model 1 differs from CSD/Soup/fills. Later delivery never restores invalid CRTs.')
+            'Same-bar order unknown; gaps block handoffs. Under review is not CRT confirmation. Later delivery never restores validity.')
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         # Identical paired qualification/evidence is emitted once. References
         # resolve within this same payload, never through another API request.
@@ -308,7 +305,7 @@ def _budget_overview(out):
             if key in out['review']:
                 out['review'][key] = factor(out['review'][key], '#/review/' + key)
         out['voice_view']['reference_format'] = (
-            'same_evidence_as points to identical evidence within this payload.')
+            'same_evidence_as is an in-payload pointer.')
     out['voice_view']['character_budget'] = SHIFT_OVERVIEW_TARGET_CHARS
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         recap = out['review']['shift_recap']
@@ -327,16 +324,25 @@ def _budget_overview(out):
         recap.pop('range_summaries', None)
         out['voice_view'].pop('hourly_summary_reference', None)
         out['voice_view']['range_recap_prose_omitted'] = (
-            'Duplicate prose omitted; named evidence/detail_request remain. Preserve earlier delivery.')
+            'Duplicate prose omitted; evidence remains.')
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         out['voice_view']['note'] = (
-            'All Model 1 bodies, first initiating lifecycle and first wick/direction remain; own/parent/paired scopes differ. '
-            'Do not infer absence: use detail_request. Source bars differ from assigned closes; no fills/restored validity.')
+            'Model 1 bodies/initiating lifecycle retained. Do not infer absence; use detail_request. Own/parent/paired scopes differ.')
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         for row in ranges:
             row['blessed_thief'] = {**_pick(row['blessed_thief'], ('status', 'timeframe', 'source_gap_at_ny')),
                 'detail_omitted': True}
     if size() > VOICE_COMPACTION_TARGET_CHARS:
+        # These are duplicate transport instructions, not analytical evidence.
+        # Each omitted BT card and each in-payload reference remains explicit.
+        out['voice_view'].pop('additional_detail_omitted', None)
+        out['voice_view'].pop('reference_format', None)
+        if 'range_recap_prose_omitted' in out['voice_view']:
+            out['voice_view']['range_recap_prose_omitted'] = True
+        out['voice_view'].pop('consolidated_limits', None)
+        out['voice_view']['note'] = (
+            'Keep own/parent/paired scopes distinct. Do not infer absence; use detail_request. '
+            'same_evidence_as resolves here. Gaps/order uncertain; no fills/restored validity.')
         _factor_review(out)
     if size() > SHIFT_OVERVIEW_TARGET_CHARS:
         # Fail explicitly rather than serialize an unbounded request or pretend
@@ -383,11 +389,61 @@ def _compact_synopsis_navigation(out):
     # Consolidate the two synopsis instruction copies. Every structured fact,
     # spoken_summary, coverage caveat and negative-claim guard stays unchanged.
     synopsis['response_contract'] = (
-        'State 9ate8, Young Lefty and all later range outcomes through shift_end, even after delivery. '
-        'Only next_selected_range changes selection; independent context is not selection. '
-        'Explain variant/candidate reasons and missing conditions. Preserve earlier delivery, '
-        'BUT induced 50% gap/path and ordered double-purge reversal separately. '
-        'Body is not thesis; no glossary/profit. Use range_detail_request for Model 1/CISD/Soup; omission is not absence.')
+        'Name each range through GTOP shift end. Under review is not CRT confirmation. Explain variants/DOL. '
+        'Keep primary body, own CRT/CISD, parent, re-purges, prior delivery, DP and induced 50% distinct. '
+        'Context counts are event-time ranges, not Soup/closure votes or probability. Omission is not absence; use range_detail_request.')
+
+
+
+def _compact_synopsis_facts(out):
+    """Lossless small-table encoding for dense concurrent range summaries."""
+    synopsis = out['review']['shift_synopsis']
+    rows = synopsis.get('ranges', [])
+    defaults = {}
+    for key in ('anchor_timeframe', 'play', 'role', 'direction', 'verdict', 'outcome',
+                'invalidated_at_ny', 'coverage_complete'):
+        if not rows or not all(key in row and (row[key] is None or isinstance(row[key], (str, int, float, bool))) for row in rows):
+            continue
+        choices = {}
+        for row in rows:
+            encoded = json.dumps(row[key], sort_keys=True)
+            choices.setdefault(encoded, []).append(row)
+        encoded, matching = max(choices.items(), key=lambda item: len(item[1]))
+        if len(matching) < 2:
+            continue
+        defaults[key] = deepcopy(matching[0][key])
+        for row in matching:
+            del row[key]
+    if defaults:
+        synopsis['range_defaults'] = defaults
+    columns = ('bar_open_ny', 'bar_close_ny', 'precision_seconds')
+    count = 0
+    objective_count = 0
+    objective_columns = ('status', 'level', 'liquidity_side', 'source_interval')
+    def intervals(value):
+        nonlocal count, objective_count
+        if isinstance(value, dict):
+            for key, child in list(value.items()):
+                if key in ('source_interval', 'first_purge_interval') and isinstance(child, dict) and set(child) == set(columns):
+                    value[key] = [child[column] for column in columns]
+                    count += 1
+                else:
+                    intervals(child)
+                    if (key in ('midpoint', 'opposing_liquidity') and isinstance(child, dict)
+                            and set(child) in (set(objective_columns), set(objective_columns[:3]))):
+                        value[key] = [child[column] for column in objective_columns if column in child]
+                        objective_count += 1
+        elif isinstance(value, list):
+            for child in value:
+                intervals(child)
+    intervals(synopsis)
+    if count:
+        synopsis['source_interval_columns'] = list(columns)
+    if objective_count:
+        synopsis['objective_columns'] = list(objective_columns)
+    out['voice_view']['fact_tables'] = ('ranges inherit range_defaults; explicit values win. Interval/target arrays use source_interval_columns/objective_columns; absent trailing cells remain absent.')
+    synopsis['response_contract'] = ('Under review is not CRT confirmation. Keep primary/own/parent identities separate. '
+        'Use distinct event-time range contexts, never probability votes. Omission is not absence; use exact detail requests.')
 
 
 def shift_voice_synopsis(result):
@@ -411,8 +467,17 @@ def shift_voice_synopsis(result):
                 'Omission is not absence; range_index retrieves Model 1/CISD/Soup detail.'}
     synopsis = out['review']['shift_synopsis']
     range_index = deepcopy(synopsis['range_index'])
-    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+    # Factor repeated navigation before the hard ceiling, leaving room for
+    # conversation scope and the newly required concurrent/pending evidence.
+    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS * .75:
         _compact_synopsis_navigation(out)
+    if (_encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS
+            or _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS * .75
+            and any(row.get('pending_reversal') for row in synopsis.get('ranges', []))):
+        _compact_synopsis_facts(out)
+    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+        _factor_review(out)
+        out['voice_view']['fact_references'] = 'same_evidence_as is an in-payload pointer.'
     if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
         return _bounded_error({'ok': False, 'status': 'voice_synopsis_budget_exceeded',
             'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),
@@ -484,11 +549,17 @@ def voice_tool_payload(name, result):
         out['market_context'] = _voice_market_context(out.get('market_context'), evidence_ref='#/review')
         out['voice_view'] = {'kind': 'other_range_followup', 'detail_omitted': True,
                             'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
-                            'note': 'Follow the supplied mode: continue_active_range retains the active story; '
-                                    'other_ranges adds distinct opportunities after the continuity bridge. '
-                                    'Preserve active_range_context, genuine transitions and shift_end. '
-                                    'Independent range thesis differs from candle body direction. Speak explicit range openings. '
-                                    'Retrieval is not discussion; completed playback is acknowledged separately.'}
+                            'note': 'Follow mode: continue_active_range retains the story; other_ranges adds opportunities after the bridge. '
+                                    'Preserve phase identities, transitions and GTOP shift end. Body is not thesis; retrieval is not discussion.'}
+        if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+            # The same selected-range narrative also exists in structured
+            # active context and the top-level follow-up summary. Keep phase
+            # evidence (including official double-purge confirmation) rather
+            # than paying for the second full prose rendering.
+            active = out.get('review', {}).get('other_range_followup', {}).get('active_range_context')
+            if isinstance(active, dict) and active.get('spoken_summary'):
+                active.pop('spoken_summary')
+                out['voice_view']['secondary_prose_omitted'] = 'Active-range prose; structured chronology and follow-up summary remain.'
         if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
             return _bounded_error({'ok': False, 'status': 'voice_other_ranges_budget_exceeded',
                 'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),

@@ -17,7 +17,7 @@ def _stamp(t):
     return datetime.fromtimestamp(t, NY).isoformat()
 
 
-def assess_shift(bars, day, shift, step, now):
+def assess_shift(bars, day, shift, step, now, native_h1=None):
     """A complete M5 is a useful limited review, not a complete H1 shift story.
 
     The 8 o'clock anchor is required for full coverage; 7 is optional context.
@@ -30,6 +30,10 @@ def assess_shift(bars, day, shift, step, now):
     times = {b['time'] for b in bars if start - 3600 <= b['time']
              and b['time'] + step <= min(end, now) and b['time'] % step == 0}
     anchor = set(range(start - 3600, start, step)) <= times
+    source_anchor = anchor
+    if native_h1:
+        from gbop_voice_web.candle_evidence import h1_anchor
+        anchor = h1_anchor(bars, start - 3600, step, native_h1, now)['complete']
     observed = sorted(t for t in times if start <= t < end)
     complete_hours = [t for t in range(start, end, 3600)
                       if set(range(t, t + 3600, step)) <= times]
@@ -57,7 +61,8 @@ def assess_shift(bars, day, shift, step, now):
     elif temporal == 'in_progress':
         message = f'The {label} window for {day} is still in progress; only available closed candles can be reviewed.'
     elif full:
-        message = f'The {label} review for {day} has complete anchor and shift candle coverage.'
+        message = (f'The {label} review for {day} has complete anchor and shift candle coverage.' if source_anchor else
+                   f'The {label} review for {day} has a closed native H1 anchor and complete shift source candles; anchor-minute gaps remain separate.')
     else:
         message = f'Only a limited {label} candle review is available for {day}; full anchor/shift coverage is incomplete.'
     return {'date_ny': day, 'shift': shift, 'status': status, 'reviewable': useful,
@@ -65,6 +70,7 @@ def assess_shift(bars, day, shift, step, now):
             'temporal_status': temporal, 'market_closure': 'unverified',
             'start_ny': _stamp(start), 'end_ny': _stamp(end),
             'anchor_start_ny': _stamp(start - 3600), 'anchor_complete': anchor,
+            **({'anchor_source_coverage_complete': source_anchor} if native_h1 else {}),
             'shift_complete': len(complete_hours) == 3,
             'source_resolution_seconds': step, 'closed_bar_count': len(observed),
             'expected_bar_count': (end - start) // step,

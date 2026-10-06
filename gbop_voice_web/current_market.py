@@ -101,10 +101,13 @@ def current_session(now):
             'broker_closure_inferred': False}
 
 
-def _anchor_state(bars, start, tf, cutoff, step):
+def _anchor_state(bars, start, tf, cutoff, step, native_h1=None):
     end = next_boundary(start, tf)
     observed = min(end, cutoff)
     value = summarize(bars, start, max(start, observed), step)
+    if tf == 'H1' and end <= cutoff and native_h1:
+        from gbop_voice_web.candle_evidence import h1_anchor
+        value = h1_anchor(bars, start, step, native_h1, cutoff)
     complete = value['complete'] and end <= cutoff
     last = max((b['time'] + step for b in bars
                 if start <= b['time'] and b['time'] + step <= observed), default=None)
@@ -149,7 +152,9 @@ def _range_fact(evidence, role, play, asset, cutoff, tf, assigned):
             'assigned_timeframe': assigned, 'role': role, 'play': play,
             'anchor': _pick(anchor, ('start_ny', 'end_ny', 'timeframe', 'status', 'complete', 'forming',
                                    'open', 'high', 'low', 'close', 'midpoint', 'observed_through_ny',
-                                   'bar_count', 'missing_bar_count', 'source_resolution_seconds')),
+                                   'bar_count', 'missing_bar_count', 'source_resolution_seconds',
+                                   'source_coverage_complete', 'ohlc_complete', 'ohlc_basis',
+                                   'native_h1_status', 'native_ohlc_provenance')),
             'setup_status': state, 'range_status': evidence.get('status'),
             'direction': outcome.get('direction'), 'outcome': outcome.get('status'),
             'invalidated_at_ny': evidence.get('invalidated_at_ny'),
@@ -174,15 +179,33 @@ def _range_fact(evidence, role, play, asset, cutoff, tf, assigned):
             'through_ny': stamp(cutoff), 'confirmation_timeframe': assigned,
             'blessed_thief_timeframe': None, 'blessed_thief_from_ny': None,
             'detail_candle_start_ny': None, 'detail_from_ny': None}}
+    if evidence.get('young_lefty_context'):
+        from gbop_voice_web.young_lefty_context import compact_young_context, young_context_sentence, neutral_thesis_fact
+        fact['young_lefty_context'] = compact_young_context(evidence['young_lefty_context'])
+        neutral_thesis_fact(fact)
+        fact['spoken_summary'] = young_context_sentence(fact['young_lefty_context'])
     return fact
 
 
-def _current_precision(sets, start, cutoff):
-    """Prefer the newest observed end, then coverage, then finer source bars."""
+def _current_precision(sets, start, cutoff, native_h1=None, anchor_starts=None):
+    """Prefer consistent closed references, then freshness and real coverage."""
+    anchors = [t for t in (anchor_starts if anchor_starts is not None else [start])
+               if t + 3600 <= cutoff]
+    native_times = {b['time'] for b in (native_h1 or [])}
+    use_native = any(t in native_times for t in anchors)
     candidates = []
     for step, source in sets.items():
         bars = [b for b in source if start <= b['time'] and b['time'] + step <= cutoff]
-        score = (max((b['time'] + step for b in bars), default=0), len(bars) * step, -step)
+        observed = max((b['time'] + step for b in bars), default=0)
+        score = (observed, len(bars) * step, -step)
+        if use_native:
+            resolved = [_anchor_state(bars, t, 'H1', cutoff, step, native_h1) for t in anchors]
+            post_start = min(anchors) + 3600
+            post_end = cutoff // step * step
+            post = summarize(bars, post_start, max(post_start, post_end), step)
+            score = (not any(c.get('native_h1_status') == 'conflicting_ohlc' for c in resolved),
+                     sum(c['complete'] for c in resolved), observed, post['complete'],
+                     post['bar_count'] * step, -step)
         candidates.append((score, bars, step))
     _, bars, step = max(candidates, key=lambda item: item[0])
     return bars, step
@@ -190,7 +213,7 @@ def _current_precision(sets, start, cutoff):
 
 def review_current_market(db, feed, args, now):
     # Local imports avoid a market_data -> current_market -> market_data cycle.
-    from gbop_voice_web.market_data import _history_sets, attach_lifecycle, read_feed
+    from gbop_voice_web.market_data import _history_sets, attach_lifecycle, read_feed, history_native_h1
     from gbop_voice_web.market_context import PAIRINGS, enrich_smt
     from gbop_voice_web.smt_evidence import compare_ranges
 
@@ -227,8 +250,9 @@ def review_current_market(db, feed, args, now):
     received = int(datetime.fromisoformat(feed['received_at_utc']).timestamp())
     source_cutoff = min(cutoff, capture // 60 * 60, received // 60 * 60)
     sets = _history_sets(db, feed, start, cutoff)
-    bars, step = _current_precision(sets, start, source_cutoff)
-    states = {t: _anchor_state(bars, t, tf, cutoff, step) for t in starts}
+    native_h1 = history_native_h1(db, feed, start, source_cutoff) if tf == 'H1' else []
+    bars, step = _current_precision(sets, start, source_cutoff, native_h1, starts if tf == 'H1' else [])
+    states = {t: _anchor_state(bars, t, tf, cutoff, step, native_h1) for t in starts}
     progression = 'explicit_anchor' if explicit else 'off_shift_hourly_reference'
     if not explicit and session['phase'] == 'in_shift':
         progression = 'verified_through_closed_hours'
@@ -252,7 +276,7 @@ def review_current_market(db, feed, args, now):
         anchor = states[t]
         if anchor['complete']:
             row = attach_lifecycle(crt_review(bars, t, source_cutoff, tf, step,
-                                             args.get('confirmation_timeframe')), bars, source_cutoff, step)
+                                             args.get('confirmation_timeframe'), native_h1=native_h1), bars, source_cutoff, step)
             row['anchor'].update({k: anchor[k] for k in ('status', 'forming', 'observed_through_ny')})
         else:
             row = {'anchor': anchor, 'assigned_timeframe': assigned,
@@ -318,7 +342,8 @@ def review_current_market(db, feed, args, now):
     elif peer:
         paired = {'status': 'pending_complete_reference_or_observation', 'comparison_asset': peer}
     review['paired_context'] = paired
-    result = {k: deepcopy(v) for k, v in feed.items() if k not in ('bars', 'bars_m1', 'bid', 'ask')}
+    result = {k: deepcopy(v) for k, v in feed.items() if k not in (
+        'bars', 'bars_m1', 'bars_h1', 'native_h1_source', 'bid', 'ask')}
     result.update(review=review, available_precision_seconds=step,
                   available_from_ny=stamp(bars[0]['time']) if bars else None,
                   available_through_ny=freshness['observed_through_ny'])

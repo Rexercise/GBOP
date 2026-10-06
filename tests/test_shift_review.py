@@ -26,8 +26,11 @@ class ShiftTests(unittest.TestCase):
 
     def test_failed_8_promotes_9_and_later_setup_delivers(self):
         r = self.review()
-        self.assertEqual(len(r['range_transitions']), 1)
-        self.assertIn('09:00', r['active_anchor_ny'])
+        self.assertEqual(len(r['range_transitions']), 2)
+        self.assertIn('11:00', r['active_anchor_ny'])
+        self.assertEqual(r['range_transitions'][1]['reason'], 'opposing_objective_completed')
+        self.assertIn('12:00', r['range_transitions'][1]['confirmed_at_ny'])
+        self.assertFalse(r['range_transitions'][1]['crt_established_by_handoff'])
         self.assertIn('10:00', r['range_transitions'][0]['confirmed_at_ny'])
         later = r['ranges'][1]
         self.assertEqual(later['role'], 'selected_range')
@@ -122,7 +125,9 @@ class ShiftTests(unittest.TestCase):
         for day, offset in [('2026-10-02','-04:00'),('2026-12-02','-05:00')]:
             r=self.review(day=day,shift='night')
             self.assertTrue(r['end_ny'].endswith('T00:00:00'+offset))
-            self.assertIn('21:00', r['active_anchor_ny'])
+            self.assertIn('23:00', r['active_anchor_ny'])
+            self.assertEqual(r['range_transitions'][-1]['confirmed_at_ny'], r['end_ny'])
+            self.assertFalse(r['range_transitions'][-1]['crt_established_by_handoff'])
             self.assertEqual(r['ranges'][1]['objectives'][1]['status'],'observed_after_purge')
 
     def test_m1_and_m5_agree_on_progression_and_body_cross(self):

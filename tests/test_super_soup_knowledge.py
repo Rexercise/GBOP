@@ -7,13 +7,15 @@ from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE, KNOWLEDGE_FILES
 class SuperSoupKnowledgeTests(unittest.TestCase):
     def test_shared_canon_keeps_structure_separate_from_outcome(self):
         self.assertIn('gtop_super_soup.txt', KNOWLEDGE_FILES)
-        for term in ('Cleanliness describes STRUCTURE', 'delivery describes OUTCOME',
-                     'do NOT require an immediate-next-candle Super Soup',
-                     'clean-but-failed', 'not-clean-but-function-delivered',
-                     'model1.lifecycle', 'NOT continuous monitoring'):
+        for term in ('canonical V1–V6', 'V4/V5 allow inside bars',
+                     'V6 re-soups the manipulation extreme', 'valid completed Super Soup',
+                     'no inside close is required after full delivery',
+                     'SS and CISD may confirm on the same assigned close',
+                     'Same-source-bar order stays unverified', 'model1.lifecycle'):
             self.assertIn(term, CANONICAL_KNOWLEDGE)
-        for term in ('local_crt_outcome', 'local_function_outcome', 'local_function_objectives',
-                     'relative_to_model1_invalidation', 'never restores CRT validity'):
+        for term in ('local_function delivery, parent objectives, CISD and execution separate',
+                     'Later delivery never restores a previously failed CRT',
+                     'relative_to_model1_invalidation', 'No fills, profits, superiority, probability'):
             self.assertIn(term, CANONICAL_KNOWLEDGE)
 
     def test_shift_reuses_enriched_model1_evidence(self):

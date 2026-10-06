@@ -49,7 +49,7 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(tool.call_count,1)
     def test_prior_version_is_not_served_and_is_rebuilt_with_same_candles(self):
         from gbop_voice_web.market_watch import VERSION
-        old='tab-watch-shift-availability-2026-10-03'
+        old='tab-watch-corrected-chronology-2026-10-03'
         self.assertNotEqual(VERSION,old)
         cache={}
         with patch('gbop_voice_web.market_data.read_feed',return_value=self.feed),patch('gbop_voice_web.market_data.market_tool',return_value=self.result) as tool:
@@ -76,6 +76,22 @@ class PreparationTests(unittest.TestCase):
         selected=saved['review']['selected_ranges'][0]
         self.assertEqual(first(selected)['super_soup_structure'],first(actual)['super_soup_structure'])
         self.assertEqual(selected['candle_lifecycle_summary'],actual['candle_lifecycle']['spoken_summary'])
+    def test_native_evidence_change_refreshes_same_source_bars_and_bucket(self):
+        cache={}
+        self.result['review']['shift_synopsis']={'young_lefty_status':'context_dependent',
+            'young_lefty_coverage':{'ohlc_basis':'native_broker_H1','source_coverage_complete':False}}
+        higher={'time':T-7200,'open':100,'high':110,'low':90,'close':100,
+            'provenance':{'source':'MT5','timeframe':'H1','method':'copy_rates_from_pos',
+                          'asset':'NAS100','symbol':'USTECm','captured_at':T+8*3600}}
+        with patch('gbop_voice_web.market_data.read_feed',return_value=self.feed), \
+             patch('gbop_voice_web.market_data.market_tool',return_value=self.result) as tool, \
+             patch('gbop_voice_web.market_data.history_native_h1',return_value=[]) as native:
+            self.assertIsNotNone(prepare_next_shift(self.db,cache,T+8*3600))
+            native.return_value=[higher]
+            self.assertIsNotNone(prepare_next_shift(self.db,cache,T+8*3600+30))
+            self.assertEqual(tool.call_count,2)
+        saved=watch_tool(self.db,1,42,42,'get_prepared_market_brief',{'asset':'NAS','shift':'day'},T+8*3600+30)
+        self.assertEqual(saved['review']['shift_synopsis'],self.result['review']['shift_synopsis'])
     def test_oversized_prepared_brief_keeps_function_summary_when_details_are_paged_out(self):
         from test_super_soup_function import review, MODEL, INVALID, LOCAL_TARGET
         actual=review([MODEL,INVALID,LOCAL_TARGET],authoritative=True)

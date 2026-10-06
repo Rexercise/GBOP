@@ -8,6 +8,8 @@ from datetime import datetime
 
 from gbop_voice_web.candle_evidence import parse_time, stamp
 from gbop_voice_web.candle_naming import candle_label, source_timeframe
+from gbop_voice_web.chronological_context import transition_sentence
+from gbop_voice_web.smt_reference import closing_candle
 from gbop_voice_web.variant_explanation import variant_clause
 from gbop_voice_web.target_approach import owner_inducement_example, inducement_clause
 
@@ -26,16 +28,22 @@ def _event_label(event):
 
 def _double_context(row, asset=None, story=None):
     evidence = row.get('double_purge', {})
-    if not evidence.get('observed'):
+    if not evidence.get('observed') and not evidence.get('developing'):
         return None
     reversal = evidence['reversal_thesis']
+    direction = evidence['reverse_direction']
+    side = evidence['original_first_purged_side']
     value = {'original_direction': evidence['original_outcome']['direction'],
+        'range_start_ny': row['anchor']['start_ny'],
         'original_outcome': evidence['original_outcome']['status'],
-        'reversal_direction': reversal['direction'], 'reversal_outcome': reversal['status'],
-        'full_objective_side': reversal['objective_side'], 'full_objective_level': reversal['objective_level'],
+        'reversal_direction': direction, 'reversal_outcome': reversal['status'],
+        'full_objective_side': side, 'full_objective_level': row['anchor']['high' if side == 'buy' else 'low'],
+        'confirmed_at_ny': evidence.get('confirmed_at_ny'), 'developing': evidence.get('developing', False),
+        'confirmation_timeframe': evidence.get('range_timeframe'),
         'source_return_inside': deepcopy(evidence['sequence']['source_return_inside']),
         'assigned_return_inside': deepcopy(evidence['sequence']['assigned_return_inside']),
-        'objectives': {}}
+        'selected_timeframe_return_inside': deepcopy(evidence['sequence'].get('selected_timeframe_return_inside')),
+        'objectives': {}, 'pre_confirmation_objectives': {}}
     # The engine's cutoff-relative status is unchanged. Only a fully observed
     # completed shift can turn a still-valid pending reversal into a historical
     # non-delivery verdict; missing/live evidence must stay pending/unverified.
@@ -48,18 +56,42 @@ def _double_context(row, asset=None, story=None):
         and all(t['status'] == 'not_observed_by_review_cutoff'
                 for t in reversal['objectives'].values())
         else reversal['status'])
-    for name, target in reversal['objectives'].items():
-        result = {k: deepcopy(target[k]) for k in ('status', 'level', 'distance_price_points',
-            'observed_distance_price_points', 'closest_observed_price', 'closest_source_interval') if k in target}
-        if result.get('closest_source_interval'):
-            result['closest_source_interval'] = _interval(result['closest_source_interval'])
-        approach = target.get('approach') or {}
-        result['full_range_reference'] = deepcopy(approach.get('full_range_reference'))
-        result['boundary_to_target_reference'] = deepcopy(approach.get('boundary_to_target_reference'))
-        annotation = owner_inducement_example(asset, row['anchor'], reversal['direction'], target)
-        if annotation:
-            result['gtop_context'] = annotation
-        value['objectives'][name] = result
+    if evidence.get('observed') and evidence.get('confirmed_at_ny') == evidence.get('review_cutoff_ny'):
+        value['presentation_outcome'] = 'no_post_confirmation_evidence'
+    for key, source in (('objectives', reversal),
+                        ('pre_confirmation_objectives', evidence.get('reversal_development') or {})):
+        for name, target in source.get('objectives', {}).items():
+            result = {k: deepcopy(target[k]) for k in ('status', 'level', 'distance_price_points',
+                'observed_distance_price_points', 'closest_observed_price', 'closest_source_interval') if k in target}
+            if result.get('closest_source_interval'):
+                result['closest_source_interval'] = _interval(result['closest_source_interval'])
+            approach = target.get('approach') or {}
+            result['full_range_reference'] = deepcopy(approach.get('full_range_reference'))
+            result['boundary_to_target_reference'] = deepcopy(approach.get('boundary_to_target_reference'))
+            annotation = owner_inducement_example(asset, row['anchor'], direction, target)
+            if annotation:
+                result['gtop_context'] = annotation
+            result = {k: v for k, v in result.items() if v is not None}
+            if not annotation:
+                # These geometric ratios are only spoken for supported inducement context.
+                # The exact target, distance and source interval remain; full audit is on the range.
+                result.pop('boundary_to_target_reference', None)
+                result.pop('full_range_reference', None)
+            if key == 'pre_confirmation_objectives':
+                # Development is a separate phase, not another full audit tree.
+                result = {k: v for k, v in result.items() if k in (
+                    'status', 'level', 'distance_price_points', 'closest_source_interval',
+                    'gtop_context', 'boundary_to_target_reference', 'full_range_reference') and v is not None}
+                if not annotation:
+                    result.pop('boundary_to_target_reference', None)
+                    result.pop('full_range_reference', None)
+            value[key][name] = result
+    for key in ('source_return_inside', 'assigned_return_inside', 'selected_timeframe_return_inside'):
+        event = value.get(key)
+        if event:
+            value[key] = {k: v for k, v in event.items() if k in ('bar_open_ny', 'known_at_ny',
+                'timeframe', 'close', 'confirmation_basis', 'ohlc_basis', 'source_coverage_complete',
+                'native_ohlc_provenance')}
     return value
 
 
@@ -67,17 +99,30 @@ def _double_sentence(value, short=False):
     if not value:
         return ''
     side, direction = value['full_objective_side'], value['reversal_direction']
+    if value.get('developing'):
+        return ('Potential same-range ' + direction + ' double purge; awaiting the '
+                + str(value['confirmation_timeframe']) + ' candle\'s close inside.')
     outcome = value.get('presentation_outcome', value['reversal_outcome'])
     state = {'original_side_delivered': 'delivered the original ' + side + '-side',
         'midpoint_only': 'delivered 50% only', 'unverified': 'has an unverified outcome',
         'failed_before_objectives': 'failed before its objectives on structural invalidation',
         'failed_to_deliver_objectives_by_shift_end': 'failed to deliver objectives by shift end',
+        'no_post_confirmation_evidence': 'has no post-confirmation evidence by the cutoff',
         'pending_at_review_cutoff': 'remained pending at the cutoff'}[outcome]
     text = f'The same-range double-purge {direction} reversal {state}'
+    if not short and value.get('range_start_ny'):
+        text = f"The {_clock(value['range_start_ny'])} double-purge range's {direction} reversal {state}"
+    confirmation = value.get('selected_timeframe_return_inside')
+    if confirmation:
+        text += '; confirmed on the closure of ' + candle_label(
+            confirmation['bar_open_ny'], confirmation['timeframe'])
     midpoint = value['objectives'].get('midpoint', {})
     induced = inducement_clause(midpoint, direction)
     if induced:
         text += '; ' + induced
+    prior_induced = inducement_clause(value.get('pre_confirmation_objectives', {}).get('midpoint', {}), direction)
+    if prior_induced:
+        text += '; before official confirmation, ' + prior_induced
     text += '.'
     if not short:
         returned = value['source_return_inside']
@@ -95,7 +140,7 @@ def selected_range_story(story, row, fact, asset=None):
         return None
     next_range = next((t for t in story.get('range_transitions', [])
                        if t['from_anchor_ny'] == anchor), None)
-    next_range = ({k: next_range[k] for k in ('to_anchor_ny', 'confirmed_at_ny', 'reason')}
+    next_range = ({k: next_range[k] for k in ('from_anchor_ny', 'to_anchor_ny', 'confirmed_at_ny', 'reason', 'next_status', 'crt_established_by_handoff')}
                   if next_range else None)
     if next_range:
         next_range['at_review_cutoff'] = next_range['confirmed_at_ny'] == story['end_ny']
@@ -171,13 +216,13 @@ def selected_range_story(story, row, fact, asset=None):
         variant_known = stamp(parse_time(distribution) + 3600)
     selection_start = row.get('selected_at_ny')
     if selection_start and parse_time(selection_start) >= parse_time(story['end_ny']):
-        intro = f"The {name} became selected at the {_clock(story['end_ny'])} cutoff; no later setup or delivery evidence is available."
+        intro = f"The {name} became the range under review at the {_clock(story['end_ny'])} end of the GTOP shift; no later setup or delivery evidence is available."
     else:
         through = ', '.join(_clock(h['candle_start_ny']) for h in development)
         verified = all(h.get('candle_science') for h in development)
-        intro = f"The {name} stayed selected" + (f" through the {through} H1 candles." if through else '.')
+        intro = f"The {name} remained under review" + (f" through the {through} H1 candles." if through else '.')
         if not verified:
-            intro = f"The {name} was selected; later progression has missing or unfinished evidence."
+            intro = f"The {name} was under review; later progression has missing or unfinished evidence."
     text = ' '.join([intro] + clauses)
     text += ' ' + variant_clause(fact.get('variant', {}), include_known=True) + '.'
     if conclusion['status'] == 'pending_at_review_cutoff':
@@ -185,19 +230,19 @@ def selected_range_story(story, row, fact, asset=None):
     elif conclusion['status'] == 'unverified':
         text += ' Missing evidence leaves its outcome unverified.'
     if invalid:
-        text += f" It was invalidated at {_clock(invalid)}" + (' after recorded delivery.' if delivered else '.')
+        text += f" It was invalidated on {closing_candle(invalid)['spoken_label']}" + (' after recorded delivery.' if delivered else '.')
     if next_range:
-        text += (f" The next selected range was {_clock(next_range['to_anchor_ny'])} H1, confirmed at "
-                 f"{_clock(next_range['confirmed_at_ny'])}.")
+        text += ' ' + transition_sentence(next_range)
     elif story.get('progression_complete'):
-        text += ' No later selected-range transition occurred before the cutoff.'
+        text += ' No later under-review handoff occurred before the end of the GTOP shift.'
     else:
-        text += ' A later selected-range transition is unverified.'
+        text += ' A later under-review handoff is unverified.'
     double = _double_context(row, asset, story)
     if double:
         text += ' ' + _double_sentence(double)
     verified_through = next((h['candle_end_ny'] for h in reversed(development) if h.get('candle_science')), selection_start)
-    return {'anchor_start_ny': anchor, 'selected_at_ny': selection_start,
+    incoming = next((t for t in story.get('range_transitions', []) if t['to_anchor_ny'] == anchor), None)
+    return {'review_handoff': {k: incoming[k] for k in ('from_anchor_ny', 'to_anchor_ny', 'confirmed_at_ny', 'reason')} if incoming else None, 'anchor_start_ny': anchor, 'selection_status': 'range_under_review', 'selected_at_ny': selection_start,
             'selected_through_ny': next_range['confirmed_at_ny'] if next_range else verified_through,
             'still_selected_at_cutoff': (story.get('active_anchor_ny') == anchor
                                         if story.get('progression_complete') else None),

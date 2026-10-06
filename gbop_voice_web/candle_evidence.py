@@ -1,5 +1,6 @@
 """Deterministic candle facts. Times identify bars, never invented tick times."""
 from datetime import datetime, timedelta
+import math
 import re
 from zoneinfo import ZoneInfo
 from gbop_voice_web.candle_naming import candle_label, range_label, source_timeframe, objective_identity
@@ -92,7 +93,81 @@ def missing_source_intervals(bars, start, end, step, limit=3):
             'missing_interval_count': len(groups)}
 
 
-def candle_query(bars, start, end, tf, step):
+def h1_anchor(bars, start, step, native_h1=None, cutoff=None):
+    """Resolve closed H1 bounds without pretending its source minutes exist.
+
+    Native bars arrive only through the asset/symbol-isolated retained accessor.
+    Their OHLC authority is independent of intrahour source coverage. Conflicts
+    fail closed, even when the aggregated source hour was otherwise complete.
+    """
+    end = start + 3600
+    source = bars if cutoff is None else [b for b in bars if b['time'] + step <= cutoff]
+    result = summarize(source, start, end, step)
+    result['timeframe'] = 'H1'
+    candidates = [b for b in (native_h1 or []) if b.get('time') == start]
+    if not candidates or start % 3600 or (cutoff is not None and end > cutoff):
+        return result
+    valid = []
+    for bar in candidates:
+        provenance = bar.get('provenance', {})
+        if not isinstance(provenance, dict):
+            continue
+        values = [bar.get(k) for k in ('open', 'high', 'low', 'close')]
+        if (provenance.get('source') != 'MT5' or provenance.get('timeframe') != 'H1'
+                or provenance.get('method') != 'copy_rates_from_pos'
+                or not provenance.get('asset') or not provenance.get('symbol')
+                or not isinstance(provenance.get('captured_at'), int)
+                or isinstance(provenance.get('captured_at'), bool)
+                or provenance['captured_at'] < end
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                           and math.isfinite(v) and v > 0 for v in values)):
+            continue
+        o, h, l, c = values
+        if l <= min(o, c) <= max(o, c) <= h:
+            valid.append(bar)
+    if not valid:
+        result['native_h1_status'] = 'unverified_native_provenance_or_values'
+        return result
+    native = valid[0]
+    keys = ('open', 'high', 'low', 'close')
+    same = lambda a, b: math.isclose(a, b, rel_tol=0, abs_tol=1e-8)
+    ambiguous = any(any(not same(b[k], native[k]) for k in keys)
+                    or any(b['provenance'][k] != native['provenance'][k] for k in ('asset', 'symbol'))
+                    for b in valid[1:])
+    selected = [b for b in source if start <= b['time'] and b['time'] + step <= end]
+    conflict = ambiguous
+    if result['complete']:
+        conflict = conflict or any(not same(result[k], native[k]) for k in keys)
+    elif selected:
+        conflict = conflict or result['high'] > native['high'] + 1e-8 or result['low'] < native['low'] - 1e-8
+        first = next((b for b in selected if b['time'] == start), None)
+        last = next((b for b in selected if b['time'] + step == end), None)
+        conflict = conflict or bool(first and not same(first['open'], native['open']))
+        conflict = conflict or bool(last and not same(last['close'], native['close']))
+    source_complete = result['complete']
+    result.update(source_coverage_complete=source_complete, ohlc_complete=not conflict,
+                  native_h1_status='conflicting_ohlc' if conflict else 'verified_closed_native',
+                  native_ohlc_provenance=dict(native['provenance']))
+    if conflict:
+        result.update(complete=False, ohlc_basis='conflict',
+                      native_ohlc={k: native[k] for k in keys},
+                      coverage_note='Native H1 and retained source OHLC conflict; range bounds are unverified.')
+        return result
+    if not source_complete:
+        # Native OHLC supplies no timestamps/counts of its intrahour extremes.
+        for key in list(result):
+            if key.startswith(('high_', 'low_')):
+                result.pop(key)
+        result.update(missing_source_intervals(bars, start, end, step))
+    result.update({k: native[k] for k in keys})
+    result.update(complete=True, midpoint=(native['high'] + native['low']) / 2,
+                  ohlc_basis='native_broker_H1',
+                  coverage_note=('Closed native broker H1 establishes OHLC bounds; '
+                      'source-bar counts and gaps remain separate. Native H1 does not establish intrahour timing.'))
+    return result
+
+
+def candle_query(bars, start, end, tf, step, native_h1=None):
     tf = timeframe(tf)
     if not 0 < end - start <= 90 * 86400 + 3600:
         raise ValueError('Request a positive window no longer than 90 days.')
@@ -102,7 +177,9 @@ def candle_query(bars, start, end, tf, step):
     rows, cursor = [], start
     while cursor < end and len(rows) < 120:
         stop = next_boundary(cursor, tf)
-        row = summarize(bars, cursor, min(stop, end), step)
+        row = (h1_anchor(bars, cursor, step, native_h1, end)
+               if timeframe(tf) == 'H1' and stop <= end
+               else summarize(bars, cursor, min(stop, end), step))
         if stop > end:
             row['complete'] = False
             row['forming'] = True
@@ -235,14 +312,15 @@ def model1_evidence(bars, anchor, mapped, end, step):
 
 
 def crt_review(bars, start, end, tf, step, confirmation_tf=None,
-               blessed_thief_tf=None, blessed_thief_from=None):
+               blessed_thief_tf=None, blessed_thief_from=None, native_h1=None):
     tf = timeframe(tf)
     anchor_end = next_boundary(start, tf)
     if not anchor_end <= end or end - start > 90 * 86400 + 3600:
         raise ValueError('Review must include the anchor and span at most 90 days.')
     if (end - start) / (anchor_end - start) > 512:
         raise ValueError('Narrow this review to at most 512 anchor-timeframe candles.')
-    anchor = summarize(bars, start, anchor_end, step)
+    anchor = (h1_anchor(bars, start, step, native_h1, end) if tf == 'H1'
+              else summarize(bars, start, anchor_end, step))
     anchor['timeframe'] = tf
     mapped = timeframe(confirmation_tf) if confirmation_tf else ASSIGNED.get(tf)
     result = {'anchor_timeframe': tf, 'assigned_timeframe': mapped, 'anchor': anchor,
@@ -267,10 +345,20 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
     high, low = anchor['high'], anchor['low']
     events = result['events']
     # Invalidation is an anchor-timeframe CLOSE, not the intrabar excursion.
-    cursor, invalid_at = anchor_end, None
+    cursor, invalid_at, conflict_at = anchor_end, None, None
     while next_boundary(cursor, tf) <= end:
         stop = next_boundary(cursor, tf)
-        candle = summarize(bars, cursor, stop, step)
+        candle = (h1_anchor(bars, cursor, step, native_h1, end) if tf == 'H1'
+                  else summarize(bars, cursor, stop, step))
+        if candle.get('native_h1_status') == 'conflicting_ohlc':
+            conflict_at = cursor
+            result['hourly_evidence_conflict'] = {
+                'start_ny': stamp(cursor), 'end_ny': stamp(stop),
+                'status': 'native_source_ohlc_conflict',
+                'native_ohlc': candle.get('native_ohlc'),
+                'native_ohlc_provenance': candle.get('native_ohlc_provenance')}
+            result['validity_evidence_through_ny'] = stamp(cursor)
+            break
         if candle['complete'] and (candle['close'] > high or candle['close'] < low):
             invalid_at = stop
             events.append({'kind': 'range_invalidated', 'candle_open_ny': stamp(cursor),
@@ -278,14 +366,20 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
             break
         cursor = stop
     # Later gaps cannot undo complete evidence during this range's valid window.
-    result['range_observation_coverage'] = summarize(bars, anchor_end, invalid_at or end, step)
+    analysis_end = min(end, conflict_at) if conflict_at is not None else end
+    observation_end = invalid_at or analysis_end
+    following = [b for b in following if b['time'] + step <= observation_end]
+    result['range_observation_coverage'] = summarize(bars, anchor_end, observation_end, step)
+    if conflict_at is not None:
+        result['range_observation_coverage'].update(complete=False, source_conflict=True)
+        result['observation_coverage'].update(complete=False, source_conflict=True)
     # Include a qualifying candle that closes at invalidation; exclude anything
     # formed afterward. Later failure never changes the identity already observed.
-    result['model1'] = model1_evidence(bars, anchor, mapped, invalid_at or end, step)
+    result['model1'] = model1_evidence(bars, anchor, mapped, observation_end, step)
     from gbop_voice_web.purge_lifecycle import attach_lifecycles
-    attach_lifecycles(bars, anchor, mapped, end, step, result['model1'], invalid_at)
+    attach_lifecycles(bars, anchor, mapped, analysis_end, step, result['model1'], invalid_at)
     from gbop_voice_web.super_soup_evidence import enrich_model1
-    enrich_model1(bars, anchor, result['model1'], end, step, invalid_at)
+    enrich_model1(bars, anchor, result['model1'], analysis_end, step, invalid_at)
     first = {}
     for side, key, level in [('buy', 'high', high), ('sell', 'low', low)]:
         hits = [b for b in following if (invalid_at is None or b['time'] + step <= invalid_at) and (b[key] > level if side == 'buy' else b[key] < level)]
@@ -295,17 +389,30 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
             event = dict(kind=side + '_side_purge', level=level, observed_price=b[key],
                          first_in_available_data=True, **interval(b, step))
             event['assigned_purge'] = assigned_purge_evidence(
-                bars, anchor, mapped, b, side, invalid_at or end, step)
+                bars, anchor, mapped, b, side, observation_end, step)
             events.append(event)
     if first:
         result['status'] = 'range_sweep_candidate'
         side = min(first, key=lambda s: first[s]['time'])
         purge = first[side]
         same_bar = len(first) == 2 and first['buy']['time'] == first['sell']['time']
+        if tf == 'H1' and start % 3600 == 0 and native_h1 and len(first) == 2:
+            opposing_open = max(b['time'] for b in first.values()) // 3600 * 3600
+            if opposing_open + 3600 <= analysis_end:
+                confirmation = h1_anchor(bars, opposing_open, step, native_h1, analysis_end)
+                if confirmation.get('ohlc_basis') == 'native_broker_H1' and confirmation['complete']:
+                    result['opposing_purge_hourly_candle'] = {k: confirmation[k] for k in (
+                        'start_ny', 'end_ny', 'timeframe', 'close', 'complete', 'ohlc_basis',
+                        'source_coverage_complete', 'native_ohlc_provenance')}
         result['sweep_order'] = 'unknown_within_same_bar' if same_bar else sorted(first, key=lambda s: first[s]['time'])
+        source_prefix = summarize(bars, anchor_end, purge['time'] + step, step)
+        if not source_prefix['complete']:
+            result['sweep_order'] = 'unverified_incomplete_source_prefix'
         if not same_bar:
             direction = 'bearish' if side == 'buy' else 'bullish'
             result.update(observed_direction=direction, primary_target=low if side == 'buy' else high)
+            if not source_prefix['complete']:
+                result['direction_verification'] = 'first_observed_purge_only_incomplete_prefix'
             for label, level in [('midpoint', anchor['midpoint']), ('opposing_liquidity', result['primary_target'])]:
                 def reaches(b):
                     return b['low'] <= level if side == 'buy' else b['high'] >= level
@@ -313,27 +420,32 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
                             (invalid_at is None or b['time'] + step <= invalid_at) and reaches(b)]
                 if eligible:
                     b = eligible[0]
-                    events.append(dict(kind=label + '_observed', level=level,
+                    event = dict(kind=label + '_observed', level=level,
                                        **objective_identity(label, direction, anchor),
-                                       order_after_purge_known=b['time'] > purge['time'], **interval(b, step)))
+                                       order_after_purge_known=b['time'] > purge['time'], **interval(b, step))
+                    if not summarize(bars, anchor_end, b['time'] + step, step)['complete']:
+                        event['coverage_through_touch_complete'] = False
+                    events.append(event)
         if mapped:
             # Return a compact neighborhood of the first purge. The candle tool
             # can inspect any later leg without sending entire weeks to the model.
             boundaries, cursor = [], anchor_end
-            while cursor < end:
+            while cursor < analysis_end:
                 boundaries.append(cursor)
                 cursor = next_boundary(cursor, mapped)
             index = max((i for i, t in enumerate(boundaries) if t <= purge['time']), default=0)
             left = max(0, index - 2)
             right = min(len(boundaries), index + 10)
-            window_end = boundaries[right] if right < len(boundaries) else end
+            window_end = boundaries[right] if right < len(boundaries) else analysis_end
             result['assigned_candles'] = candle_query(bars, boundaries[left], window_end, mapped, step)
-            result['assigned_candles']['review_more_from_ny'] = stamp(window_end) if window_end < end else None
+            result['assigned_candles']['review_more_from_ny'] = stamp(window_end) if window_end < analysis_end else None
     if invalid_at:
         result['status'] = 'invalidated_by_close'
         result['invalidated_at_ny'] = stamp(invalid_at)
+    elif conflict_at is not None:
+        result['status'] = 'unverified_conflicting_hourly_evidence'
     result['blessed_thief'] = blessed_thief_review(
-        bars, anchor, tf, end, step, invalid_at, blessed_thief_tf, blessed_thief_from)
-    result['range_still_valid_in_available_closes'] = invalid_at is None
+        bars, anchor, tf, analysis_end, step, invalid_at, blessed_thief_tf, blessed_thief_from)
+    result['range_still_valid_in_available_closes'] = None if conflict_at is not None else invalid_at is None
     events.sort(key=lambda e: e.get('bar_open_ny', e.get('confirmed_at_ny', '')))
     return result

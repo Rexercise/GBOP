@@ -2,6 +2,7 @@
 from copy import deepcopy
 import json
 import unittest
+from test_chronological_transport import expand as expand_facts
 
 from gbop_voice_web.candle_evidence import crt_review, parse_time
 from gbop_voice_web.market_data import attach_lifecycle, market_tool
@@ -27,15 +28,18 @@ class TermsIntegrationTests(unittest.TestCase):
         payload = voice_tool_payload('review_market_session', result)
         self.assertTrue(payload['ok'], payload)
         self.assertEqual(result, before)
-        synopsis = payload['review']['shift_synopsis']
+        synopsis = expand_facts(payload)['review']['shift_synopsis']
         text = synopsis['spoken_summary']
         self.assertIn('failed bearish', text.split('.')[0])
         self.assertIn('BUT induced 50%: 7.76 points short (~94% of the high-to-50% path)', text)
-        self.assertIn('double-purge bullish reversal failed to deliver objectives by shift end', text)
+        self.assertIn('double-purge bullish reversal has no post-confirmation evidence', text)
+        self.assertIn('confirmed on the closure of the 11:00 AM H1 candle', text)
+        self.assertIn('before official confirmation', text)
         self.assertIn('BUT induced 50%: 33.20 points short (~60% of the low-to-50% path)', text)
         self.assertNotIn('inducement in GTOP terms', text)
         self.assertNotIn('remained pending', text)
-        self.assertLess(len(text.split()), 160)
+        # The short default includes the handoff, concurrent DOL and primary Model 1.
+        self.assertLess(len(text.split()), 360)
         self.assertIn('Independent 10:00 AM H1 range: bullish', text)
         # Retain newly requested later-range and double-purge evidence inside
         # the unchanged production cap, with the existing transport margin.
@@ -49,7 +53,9 @@ class TermsIntegrationTests(unittest.TestCase):
         result = self.detail()
         self.assertTrue(result['ok'], result)
         reverse = result['review']['double_purge']['reversal_thesis']
-        midpoint = reverse['objectives']['midpoint']
+        midpoint = result['review']['double_purge']['reversal_development']['objectives']['midpoint']
+        self.assertEqual(result['review']['double_purge']['confirmed_at_ny'], retained.ny('12:00'))
+        self.assertEqual(reverse['objectives']['midpoint']['status'], 'no_closed_post_confirmation_bars')
         self.assertEqual(midpoint['gtop_context']['basis'], 'explicit_owner_characterization')
         self.assertIsNone(midpoint['gtop_context']['general_numeric_threshold'])
         self.assertIsNone(midpoint['approach']['numeric_inducement_threshold'])
@@ -69,22 +75,23 @@ class TermsIntegrationTests(unittest.TestCase):
 
     def test_active_range_continuation_keeps_return_and_original_side_objective(self):
         review = self.replay.tool('NAS100')['review']
-        result = build_other_ranges(review, 'NAS100', continue_active=True)
+        result = build_other_ranges(review, 'NAS100', continue_active=True, anchor_start_ny=retained.ny('09:00'))
         value = result['active_range_context']['double_purge']
         self.assertEqual(value['original_outcome'], 'opposing_liquidity_delivered')
         self.assertEqual(value['reversal_outcome'], 'pending_at_review_cutoff')
-        self.assertEqual(value['presentation_outcome'], 'failed_to_deliver_objectives_by_shift_end')
+        self.assertEqual(value['presentation_outcome'], 'no_post_confirmation_evidence')
+        self.assertEqual(value['confirmed_at_ny'], retained.ny('12:00'))
         self.assertIsNone(value['invalidated_at_ny'])
         self.assertEqual(value['full_objective_side'], 'buy')
         self.assertEqual(value['source_return_inside']['bar_open_ny'], retained.ny('11:13'))
         self.assertEqual(value['source_return_inside']['known_at_ny'], retained.ny('11:14'))
         self.assertEqual(value['assigned_return_inside']['bar_open_ny'], retained.ny('11:10'))
         self.assertEqual(value['assigned_return_inside']['known_at_ny'], retained.ny('11:15'))
-        mid = value['objectives']['midpoint']
+        mid = value['pre_confirmation_objectives']['midpoint']
         self.assertEqual(mid['gtop_context']['basis'], 'explicit_owner_characterization')
         self.assertAlmostEqual(mid['full_range_reference']['gap_percent'], 19.9855526125692)
         self.assertAlmostEqual(mid['boundary_to_target_reference']['progress_percent'], 60.0288947748615)
-        self.assertIn('the range was not structurally invalidated', result['spoken_summary'])
+        self.assertIn('no post-confirmation evidence', result['spoken_summary'])
 
     def test_zero_width_anchor_remains_unverified_without_breaking_review(self):
         start = parse_time(retained.ny('09:00'))
@@ -98,19 +105,22 @@ class TermsIntegrationTests(unittest.TestCase):
 
     def test_fixed_cutoff_cannot_borrow_rebound_return_or_variant(self):
         bars = self.replay.bars['NAS100']
-        for cutoff, observed in [('11:13', False), ('11:14', True)]:
+        for cutoff, developing in [('11:13', False), ('11:14', True)]:
             end = parse_time(retained.ny(cutoff))
             review = attach_lifecycle(crt_review(bars, parse_time(retained.ny('09:00')), end, 'H1', 60),
                                       bars, end, 60)
             value = review['double_purge']
-            self.assertEqual(value['observed'], observed)
+            self.assertFalse(value['observed'])
+            self.assertEqual(value['developing'], developing)
+            self.assertIsNone(value['confirmed_at_ny'])
             self.assertEqual(value['original_outcome']['status'], 'opposing_liquidity_delivered')
             self.assertNotIn('11:52', json.dumps(value))
             self.assertNotIn('V1', json.dumps(value))
             self.assertNotIn('11:15:00', json.dumps(value))
-            if observed:
+            if developing:
                 self.assertIsNone(value['sequence']['assigned_return_inside'])
-                self.assertEqual(value['reversal_thesis']['objectives']['midpoint']['status'],
+                self.assertEqual(value['reversal_thesis']['status'], 'not_assessed_unconfirmed_double_purge')
+                self.assertEqual(value['reversal_development']['objectives']['midpoint']['status'],
                                  'no_closed_post_return_bars')
 
 

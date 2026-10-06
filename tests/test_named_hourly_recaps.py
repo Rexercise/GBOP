@@ -21,9 +21,10 @@ class NamedHourlyRecapTests(unittest.TestCase):
                          [f'the {hour}:00 PM H1 range' for hour in (8,9,10,11)])
         rows = recap['range_summaries']
         self.assertEqual([r['role'] for r in rows], ['selected_range','selected_range',
-                                                   'independent_range_context','independent_range_context'])
-        self.assertIn('independent hourly context, not a selected range', rows[2]['text'])
+                                                   'independent_range_context','selected_range'])
+        self.assertIn('independent hourly context, not the range under review', rows[2]['text'])
         self.assertIn('no later shift candles', rows[3]['text'])
+        self.assertIn('range under review; that role alone does not establish a CRT', rows[3]['text'])
         text = recap['hourly_crt_summary']
         self.assertLess(text.index('The 8:00 PM'), text.index('The 9:00 PM H1 range'))
         self.assertNotIn('another', text)

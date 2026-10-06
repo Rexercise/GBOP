@@ -46,15 +46,13 @@ class TerminologyVoiceDetailTests(unittest.TestCase):
         thesis = double['reversal_thesis']
         self.assertEqual(thesis['status'], 'pending_at_review_cutoff')
         self.assertEqual((thesis['objective_side'], thesis['objective_level']), ('buy', 30995.59))
-        midpoint = thesis['objectives']['midpoint']
+        self.assertEqual(double['confirmed_at_ny'], NY('12:00'))
+        self.assertEqual(thesis['objectives']['midpoint']['status'], 'no_closed_post_confirmation_bars')
+        midpoint = double['reversal_development']['objectives']['midpoint']
         self.assertEqual(midpoint['distance_price_points'], 33.2)
         self.assertEqual(midpoint['closest_source_interval']['bar_open_ny'], NY('11:52'))
-        self.assertEqual(midpoint['approach']['full_range_reference']['denominator_price_points'], 166.12)
-        self.assertEqual(midpoint['approach']['boundary_to_target_reference']['denominator_price_points'], 83.06)
-        self.assertAlmostEqual(midpoint['approach']['full_range_reference']['gap_percent'], 19.985552612569226)
         self.assertEqual(midpoint['gtop_context']['basis'], 'explicit_owner_characterization')
-        self.assertFalse(midpoint['boundary_order_verified'])
-        self.assertIsNone(double['proximity_policy']['numeric_inducement_threshold'])
+        self.assertEqual(double['reversal_development']['status'], 'pre_confirmation_only')
         request = double['double_purge_detail_request']
         self.assertEqual(request['tool'], 'review_market_crt')
         self.assertEqual(request['args']['detail_candle_start_ny'], NY('11:10'))
@@ -68,11 +66,15 @@ class TerminologyVoiceDetailTests(unittest.TestCase):
         self.assertNotIn('detail_omissions', double)
         self.assertEqual(double['opposite_identities'], raw['review']['double_purge']['opposite_identities'])
         self.assertEqual(double['sequence'], raw['review']['double_purge']['sequence'])
-        actual = double['reversal_thesis']['objectives']['midpoint']
-        original = raw['review']['double_purge']['reversal_thesis']['objectives']['midpoint']
-        self.assertEqual(actual['boundary_observations'], original['boundary_observations'])
+        self.assertEqual(double['confirmed_at_ny'], NY('12:00'))
+        self.assertEqual(double['reversal_thesis']['objectives']['midpoint']['status'], 'no_closed_post_confirmation_bars')
+        prior = double['reversal_development']['objectives']['midpoint']
+        self.assertEqual(prior['distance_price_points'], 33.2)
+        self.assertEqual(prior['closest_source_interval']['bar_open_ny'], NY('11:52'))
+        original = raw['review']['double_purge']['reversal_development']['objectives']['midpoint']
+        self.assertEqual(prior['boundary_observations'], original['boundary_observations'])
         for name in ('full_range_reference', 'boundary_to_target_reference'):
-            self.assertEqual(actual['approach'][name], original['approach'][name])
+            self.assertEqual(prior['approach'][name], original['approach'][name])
 
     def test_non_touch_keeps_named_target_percentage_and_explicit_owner_context(self):
         _, page = self.request(anchor_start_ny=NY('08:00'))

@@ -39,7 +39,7 @@ def scan_args(text, fields, selected, now, previous=None):
 
 
 def scan_young_lefty(db, args, now):
-    from gbop_voice_web.market_data import ASSETS, asset_name, read_feed, _history_sets, attach_lifecycle
+    from gbop_voice_web.market_data import ASSETS, asset_name, read_feed, _history_sets, attach_lifecycle, history_native_h1
     local = datetime.fromtimestamp(now, NY)
     day = date.fromisoformat(args.get('date_ny') or local.date().isoformat())
     shift = args.get('shift') or ('day' if local.hour < 19 else 'night')
@@ -66,20 +66,24 @@ def scan_young_lefty(db, args, now):
             if observed <= start:
                 rows.append(dict(asset=asset, status='unavailable', reason='No source evidence in the requested window.'))
                 continue
-            bars, step = _current_precision(_history_sets(db, feed, start, cutoff), start, observed)
-            state = _anchor_state(bars, start, 'H1', observed, step)
+            native_h1 = history_native_h1(db, feed, start, observed)
+            bars, step = _current_precision(_history_sets(db, feed, start, cutoff), start, observed,
+                                            native_h1, [start])
+            state = _anchor_state(bars, start, 'H1', observed, step, native_h1)
             if not state['complete']:
                 rows.append(dict(asset=asset, status='forming' if state['forming'] else 'unavailable',
                                  reason='Reference is not yet complete in source evidence.', observed_through_ny=state['observed_through_ny']))
                 continue
-            review = attach_lifecycle(crt_review(bars, start, observed, 'H1', step, 'M5'), bars, observed, step)
+            review = attach_lifecycle(crt_review(bars, start, observed, 'H1', step, 'M5',
+                                                native_h1=native_h1), bars, observed, step)
             review['anchor'].update(state)
             fact = _range_fact(review, 'scan_result', 'Young Lefty', asset, observed, 'H1', 'M5')
             assigned = review.get('candle_lifecycle', {}).get('purge_candles', [])
             fact['first_assigned_purge'] = ({k: assigned[0][k] for k in
                 ('bar_open_ny', 'bar_close_ny', 'timeframe', 'purge_type', 'direction') if k in assigned[0]}
                 if assigned else None)
-            status = ('invalidated' if fact['invalidated_at_ny'] else 'observed_setup' if fact['setup_status'] == 'initiated'
+            status = ('context_dependent' if fact.get('young_lefty_context') else
+                      'invalidated' if fact['invalidated_at_ny'] else 'observed_setup' if fact['setup_status'] == 'initiated'
                       else 'not_observed' if fact['setup_status'] == 'not_observed_in_complete_window' else 'unverified')
             rows.append(dict(asset=asset, status=status, evidence=fact,
                              source_cutoff_ny=stamp(observed), source_resolution_seconds=step,

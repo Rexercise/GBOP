@@ -1535,7 +1535,8 @@ class MarketConversation:
         if name == 'review_market_crt' and review.get('anchor'):
             detail = {'anchor_start_ny': review['anchor'].get('start_ny'),
                       **{k: deepcopy(review[k]) for k in ('status', 'observed_direction', 'primary_target',
-                          'invalidated_at_ny', 'anchor_timeframe') if k in review}}
+                          'invalidated_at_ny', 'anchor_timeframe', 'young_lefty_context',
+                          'hourly_evidence_conflict', 'validity_evidence_through_ny') if k in review}}
             # Keep one timestamped first occurrence of each objective/validity
             # fact, not an unbounded list of repeated excursions.
             events = {}
@@ -1550,6 +1551,7 @@ class MarketConversation:
         if name == 'review_current_market':
             ranges = [{k: deepcopy(row[k]) for k in ('anchor_start_ny', 'anchor_timeframe',
                 'assigned_timeframe', 'role', 'play', 'setup_status', 'direction', 'outcome',
+                'young_lefty_context', 'direction_scope', 'spoken_summary', 'physical_path_audit',
                 'variant', 'midpoint', 'opposing_liquidity', 'invalidated_at_ny', 'coverage_complete') if k in row}
                 for row in review.get('ranges', [])[:5]]
             recap = {'headline': 'Current market snapshot as of ' + str(review.get('as_of_ny')),

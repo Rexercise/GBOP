@@ -145,7 +145,8 @@ def _summary(record):
     review = result.get('review') or {}
     keys = ('status', 'anchor', 'anchor_timeframe', 'assigned_timeframe', 'observed_direction',
             'invalidated_at_ny', 'observation_coverage', 'directional_outcome', 'objectives',
-            'shift_synopsis', 'availability')
+            'shift_synopsis', 'availability', 'young_lefty_context', 'hourly_evidence_conflict',
+            'validity_evidence_through_ny')
     facts = {k: deepcopy(review[k]) for k in keys if k in review}
     story = review.get('shift_story') or {}
     if story:
@@ -155,7 +156,9 @@ def _summary(record):
         facts['anchor_coverage'] = [{
             'anchor_start_ny': row.get('anchor_start_ny'),
             **{k: deepcopy(row.get('anchor', {}).get(k)) for k in
-               ('complete', 'bar_count', 'missing_bar_count', 'source_resolution_seconds')},
+               ('complete', 'bar_count', 'missing_bar_count', 'source_resolution_seconds',
+                'ohlc_complete', 'ohlc_basis', 'source_coverage_complete', 'native_h1_status')
+               if k in row.get('anchor', {})},
             'classification_status': row.get('variant_evidence', {}).get('status'),
             'classification_reason': row.get('variant_evidence', {}).get('reason')}
             for row in story.get('ranges', [])[:6]]

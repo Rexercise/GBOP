@@ -16,14 +16,17 @@ class ActiveRangeStoryTests(unittest.TestCase):
     def setUpClass(cls):
         cls.review = provider('review_market_session', DAY)['review']
 
-    def test_exact_nine_anchor_persists_through_ten_and_eleven_to_noon(self):
+    def test_exact_nine_development_ends_with_eleven_under_review_at_noon(self):
         result = build_other_ranges(self.review, 'NAS100', [ny('07:00'), ny('08:00')])
         context = result['active_range_context']
         self.assertEqual(context['anchor_start_ny'], ny('09:00'))
         self.assertEqual(context['selected_at_ny'], ny('10:00'))
         self.assertEqual(context['selected_through_ny'], ny('12:00'))
-        self.assertTrue(context['still_selected_at_cutoff'])
-        self.assertIsNone(context['next_selected_range'])
+        self.assertFalse(context['still_selected_at_cutoff'])
+        self.assertEqual(context['next_selected_range']['to_anchor_ny'], ny('11:00'))
+        self.assertEqual(context['next_selected_range']['confirmed_at_ny'], ny('12:00'))
+        self.assertEqual(context['next_selected_range']['reason'], 'opposing_objective_completed')
+        self.assertFalse(context['next_selected_range']['crt_established_by_handoff'])
         ten, eleven = context['hourly_development']
         self.assertEqual(ten['candle_start_ny'], ny('10:00'))
         self.assertEqual(ten['candle_body_direction'], 'bearish')
@@ -67,7 +70,7 @@ class ActiveRangeStoryTests(unittest.TestCase):
         self.assertNotIn('independent range', result['spoken_summary'])
         older = build_other_ranges(self.review, 'NAS100', continue_active=True, anchor_start_ny=ny('08:00'))
         self.assertEqual(older['active_range_context']['next_selected_range']['to_anchor_ny'], ny('09:00'))
-        self.assertEqual([r['anchor_start_ny'] for r in older['next_selected_context']], [ny('09:00')])
+        self.assertEqual([r['anchor_start_ny'] for r in older['next_selected_context']], [ny('09:00'), ny('11:00')])
         with self.assertRaisesRegex(ValueError, 'independent context'):
             build_other_ranges(self.review, 'NAS100', continue_active=True, anchor_start_ny=ny('10:00'))
 
@@ -75,7 +78,7 @@ class ActiveRangeStoryTests(unittest.TestCase):
         result = build_other_ranges(self.review, 'NAS100')
         ending = result['shift_end']
         self.assertEqual(ending['through_ny'], ny('12:00'))
-        self.assertEqual(ending['active_anchor_ny'], ny('09:00'))
+        self.assertEqual(ending['active_anchor_ny'], ny('11:00'))
         self.assertEqual(ending['final_hour']['candle_start_ny'], ny('11:00'))
         self.assertEqual(ending['final_hour']['close'], 30875.09)
         self.assertEqual(ending['final_hour']['candle_science'], 'wick_below')
@@ -106,8 +109,8 @@ class ActiveRangeStoryTests(unittest.TestCase):
         self.assertEqual(build_other_ranges(future, 'NAS100'), build_other_ranges(self.review, 'NAS100'))
 
     def test_actual_next_selected_at_cutoff_is_unassessed_not_failed(self):
-        # Alter one last close only to exercise a transition absent from the
-        # retained fixture; this is a labelled synthetic edge case.
+        # Alter one last close to add outside-close invalidation to the already
+        # completed range; this is a labelled synthetic edge case.
         bars = deepcopy(BARS)
         bars[-1].update(close=30770, low=min(bars[-1]['low'], 30770))
         review = session_review(bars, DAY['date_ny'], 'day', 60)
@@ -126,9 +129,13 @@ class ActiveRangeStoryTests(unittest.TestCase):
         synopsis = voice_tool_payload('review_market_session', {'ok': True, 'asset': 'NAS100', 'review': self.review})
         self.assertLess(len(json.dumps(synopsis, separators=(',', ':'))), 9000)
         active = synopsis['review']['shift_synopsis']['active_range_context']
-        self.assertEqual(active['anchor_start_ny'], ny('09:00'))
+        self.assertEqual(active['anchor_start_ny'], ny('11:00'))
+        self.assertEqual(active['selected_at_ny'], ny('12:00'))
         self.assertIsNone(active['next_selected_range'])
-        self.assertEqual(active['hourly_development'][0]['candle_body_direction'], 'bearish')
+        self.assertIsNone(active['direction'])
+        self.assertIsNone(active['variant_known_at_ny'])
+        self.assertEqual(active['conclusion']['status'], 'pending_at_review_cutoff')
+        self.assertEqual(active['hourly_development'], [])
         for mode in (False, True):
             result = build_other_ranges(self.review, 'NAS100', [ny('07:00'), ny('08:00'), ny('09:00')], continue_active=mode)
             payload = voice_tool_payload('review_other_market_ranges', {'ok': True, 'asset': 'NAS100', 'review': {'other_range_followup': result}})
@@ -142,9 +149,10 @@ class ActiveRangeStoryTests(unittest.TestCase):
         review = session_review(bars, DAY['date_ny'], 'day', 60)
         text = review['shift_synopsis']['spoken_summary']
         self.assertIn('11:12 AM M1', text)
-        self.assertIn('Invalidated at 12:00 PM after recorded delivery', text)
-        self.assertIn('11:00 AM H1 then became selected at 12:00 PM', text)
-        self.assertIn('no later evidence before the cutoff', text)
+        self.assertIn('Invalidated on the closure of the 11:00 AM H1 candle after recorded delivery', text)
+        self.assertIn('11:00 AM H1 became the next range under review on the closure of the 11:00 AM H1 candle', text)
+        self.assertIn('this is not automatic CRT confirmation', text)
+        self.assertIn('No later evidence before the end of the GTOP shift', text)
         active = build_other_ranges(review, 'NAS100', continue_active=True, anchor_start_ny=ny('09:00'))
         self.assertEqual(active['active_range_context']['invalidated_at_ny'], ny('12:00'))
         self.assertTrue(active['active_range_context']['next_selected_range']['at_review_cutoff'])
@@ -152,8 +160,8 @@ class ActiveRangeStoryTests(unittest.TestCase):
         self.assertEqual(other['active_range_context']['anchor_start_ny'], ny('09:00'))
         self.assertEqual(other['shift_end']['active_anchor_ny'], ny('11:00'))
         self.assertNotIn(ny('09:00'), [r['anchor_start_ny'] for r in other['ranges']])
-        self.assertIn('invalidated at 12:00 PM after recorded delivery', other['spoken_summary'])
-        self.assertIn('11:00 AM H1 become selected at 12:00 PM', other['spoken_summary'])
+        self.assertIn('invalidated on the closure of the 11:00 AM H1 candle after recorded delivery', other['spoken_summary'])
+        self.assertIn('11:00 AM H1 became the next range under review on the closure of the 11:00 AM H1 candle', other['spoken_summary'])
         self.assertLess(other['spoken_summary'].index('11:12 AM M1'),
                         other['spoken_summary'].index('independent range'))
 

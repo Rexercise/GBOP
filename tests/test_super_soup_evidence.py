@@ -108,7 +108,7 @@ class SuperSoupEvidenceTests(unittest.TestCase):
 
     def test_soup_and_csd_may_share_closing_candle(self):
         item = life([MODEL, (102, 104, 97, 97.5)])
-        self.assertEqual(item['super_soup']['structural_quality'], 'not_clean')
+        self.assertEqual(item['super_soup']['structural_quality'], 'unverified_source_order')
         self.assertTrue(item['super_soup']['csd_same_assigned_close'])
         self.assertFalse(item['super_soup']['pre_csd'])
         self.assertEqual(item['csd']['reference_level'], 98)
@@ -145,7 +145,10 @@ class SuperSoupEvidenceTests(unittest.TestCase):
         tail = [bar(T + 300, *CLEAN), bar(T + 360, *INSIDE)]
         out = crt_review(anchor + model + tail, START, T + 420, 'H1', 60)['model1']['lifecycle'][0]
         self.assertTrue(out['assigned_candle_forming'])
-        self.assertEqual(out['super_soup']['structure_status'], 'pending_assigned_close')
+        self.assertEqual(out['super_soup']['structure_status'], 'developing')
+        self.assertEqual(out['super_soup']['structural_quality'], 'pending_own_timeframe_close')
+        self.assertEqual(out['super_soup']['variants'], [])
+        self.assertTrue(out['super_soup']['variant_explanation']['candidates'])
         self.assertIsNone(out['super_soup']['event'])
 
     def test_same_source_bar_touch_is_not_claimed_as_ordered_delivery(self):

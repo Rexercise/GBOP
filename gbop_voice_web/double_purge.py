@@ -2,8 +2,9 @@
 
 A later opposite Model 1 is an identity, not proof of this sequence. Both
 boundaries must be purged in source-bar order while the selected range remains
-valid, followed by an observed close back inside that SAME range. Source and
-assigned closes have separate known-at times. The reversal's full objective is
+valid, followed by a selected-range-timeframe close inside that SAME range.
+Source and assigned closes are developing evidence, not official confirmation.
+Each close has its own known-at time. The reversal's full objective is
 the originally purged boundary; the selected-range midpoint is halfway only.
 """
 from copy import deepcopy
@@ -14,7 +15,7 @@ from gbop_voice_web.candle_evidence import (
 from gbop_voice_web.candle_naming import candle_label, objective_identity, source_timeframe
 from gbop_voice_web.target_approach import target_approach_measurement
 
-VERSION = 'same-selected-range-double-purge-2026-10-03'
+VERSION = 'selected-timeframe-double-purge-confirmation-2026-10-06'
 
 
 def _coverage(bars, start, end, step):
@@ -88,6 +89,44 @@ def _assigned_return(bars, anchor, mapped, purge, side, end, step):
     return None
 
 
+def _selected_return(bars, anchor, opposing, end, step, native_hour=None):
+    """Closed own-timeframe candles on this anchor's grid; no execution-TF shortcut."""
+    tf = anchor.get('timeframe')
+    if not tf:
+        return None, 'unverified_selected_timeframe'
+    cursor = parse_time(anchor['end_ny'])
+    while next_boundary(cursor, tf) <= opposing['time']:
+        cursor = next_boundary(cursor, tf)
+    if tf == 'H1' and native_hour is not None:
+        stop = next_boundary(cursor, tf)
+        if (native_hour.get('timeframe') != tf or native_hour.get('start_ny') != stamp(cursor)
+                or native_hour.get('end_ny') != stamp(stop) or stop > end):
+            return None, 'unverified_selected_timeframe_confirmation_scope'
+        if not native_hour.get('complete'):
+            return None, 'unverified_incomplete_selected_timeframe_candle'
+        if not anchor['low'] <= native_hour['close'] <= anchor['high']:
+            return None, 'not_confirmed_before_range_invalidation'
+        return {'bar_open_ny': stamp(cursor), 'bar_close_ny': stamp(stop),
+                'known_at_ny': stamp(stop), 'timeframe': tf, 'close': native_hour['close'],
+                'precision_seconds': stop - cursor, 'source_resolution_seconds': step,
+                'exact_tick_time_known': False, 'confirmation_basis': 'resolved_closed_H1',
+                **{key: deepcopy(native_hour[key]) for key in ('ohlc_basis',
+                    'source_coverage_complete', 'native_ohlc_provenance') if key in native_hour}}, 'confirmed'
+    while next_boundary(cursor, tf) <= end:
+        stop = next_boundary(cursor, tf)
+        row = summarize(bars, cursor, stop, step)
+        if not row['complete']:
+            return None, 'unverified_incomplete_selected_timeframe_candle'
+        if anchor['low'] <= row['close'] <= anchor['high']:
+            return {'bar_open_ny': stamp(cursor), 'bar_close_ny': stamp(stop),
+                    'known_at_ny': stamp(stop), 'timeframe': tf,
+                    'precision_seconds': stop - cursor, 'source_resolution_seconds': step,
+                    'close': row['close'], 'exact_tick_time_known': False}, 'confirmed'
+        # An own-timeframe close outside invalidates this selected range.
+        return None, 'not_confirmed_before_range_invalidation'
+    return None, 'awaiting_selected_timeframe_close'
+
+
 def _identities(review, anchor, direction, cutoff):
     """Only identities belonging to this anchor, known by this review cutoff."""
     identities = []
@@ -112,12 +151,14 @@ def _identities(review, anchor, direction, cutoff):
     return sorted(identities, key=lambda fact: parse_time(fact['bar_close_ny']))
 
 
-def _objectives(bars, anchor, direction, returned, cutoff, invalid, step):
+def _objectives(bars, anchor, direction, returned, cutoff, invalid, step, *, confirmed=False):
     start = returned['time'] + step
     safe_end = max(start, cutoff - step if invalid else cutoff)
     rows = [b for b in bars if start <= b['time'] and b['time'] + step <= safe_end]
     coverage = _coverage(rows, start, safe_end, step)
-    boundary_rows = [('same_source_return_bar', returned)]
+    # Every extremum of the confirmation candle is already pre-confirmation.
+    # It cannot be a post-close touch, even when confirmation closes at a target.
+    boundary_rows = [] if confirmed else [('same_source_return_bar', returned)]
     if invalid:
         boundary_rows += [('same_invalidating_close_source_bar', b) for b in bars
                           if b['time'] >= start and b['time'] + step == cutoff]
@@ -131,7 +172,7 @@ def _objectives(bars, anchor, direction, returned, cutoff, invalid, step):
                                       direction, anchor)
         target = {'kind': name, 'level': level, **identity}
         fact = {'objective': name, 'level': level, **identity,
-                'status': 'no_closed_post_return_bars', 'evidence': None,
+                'status': 'no_closed_post_confirmation_bars' if confirmed else 'no_closed_post_return_bars', 'evidence': None,
                 'distance_price_points': None, 'observed_distance_price_points': None,
                 'closest_observed_price': None, 'closest_source_interval': None,
                 'approach': None, 'boundary_observations': []}
@@ -156,7 +197,7 @@ def _objectives(bars, anchor, direction, returned, cutoff, invalid, step):
                 fact['coverage_through_touch'] = prefix
                 fact['evidence'] = _source(closest, step)
                 if prefix['complete']:
-                    fact.update(status='observed_after_return', distance_price_points=0)
+                    fact.update(status='observed_after_confirmation' if confirmed else 'observed_after_return', distance_price_points=0)
                 else:
                     fact['status'] = 'observed_touch_validity_unverified'
             elif not coverage['complete']:
@@ -168,6 +209,8 @@ def _objectives(bars, anchor, direction, returned, cutoff, invalid, step):
                                     'not_observed_by_review_cutoff'), distance_price_points=gap)
         elif any(item['gap_price_points'] == 0 for item in fact['boundary_observations']):
             fact['status'] = 'unverified_boundary_bar_order'
+        elif safe_end > start and not coverage['complete']:
+            fact['status'] = 'unverified_incomplete_coverage'
         result[name] = fact
     return result, coverage
 
@@ -180,18 +223,23 @@ def double_purge_evidence(review, bars, end, step):
     seconds; only fully closed source bars are used. This never mutates inputs,
     promotes a later range, adds variant labels or classifies inducement.
     """
-    anchor = review.get('anchor', {})
+    anchor = dict(review.get('anchor', {}))
+    anchor.setdefault('timeframe', review.get('anchor_timeframe'))
     out = {'version': VERSION, 'status': 'unverified_direction', 'observed': False,
         'scope': 'same_selected_range', 'range_start_ny': anchor.get('start_ny'),
         'range_timeframe': anchor.get('timeframe', review.get('anchor_timeframe')),
         'review_cutoff_ny': stamp(end), 'source_resolution_seconds': step,
         'exact_tick_time_known': False, 'original_outcome': None,
+        'developing': False, 'confirmation_status': 'not_assessed', 'confirmed_at_ny': None,
         'original_first_purged_side': None, 'reverse_direction': None,
         'sequence': {}, 'opposite_identities': [],
         'reversal_thesis': {'status': 'not_assessed_no_valid_double_purge'},
+        'reversal_development': None,
         'response_contract': 'Double purge requires an ordered purge of both sides of the SAME '
-            'selected range and an observed close back inside. An opposite Model 1 alone is '
-            'insufficient. Keep source return, assigned return and their known-at closes distinct. '
+            'selected range and a completed close back inside on THAT RANGE\'S OWN TIMEFRAME. '
+            'Source/M1 and assigned/M5 returns are developing evidence only. An opposite Model 1 '
+            'alone is insufficient. Keep source, assigned and official confirmation closes distinct. '
+            'Pre-confirmation movement is not post-confirmation delivery or executable hindsight. '
             'The reverse full objective is the ORIGINAL FIRST PURGED SIDE; midpoint is halfway '
             'progress only. Preserve earlier original delivery separately. No variant, inducement, '
             'entry, fill, stop, profit or exact tick time is inferred.'}
@@ -234,12 +282,16 @@ def double_purge_evidence(review, bars, end, step):
             parse_time(event['bar_close_ny']) - first_time != step):
         out['status'] = 'unverified_initiating_source_evidence'
         return out
+    if any(b['time'] < first_time and (crossed(b, 'buy') or crossed(b, 'sell')) for b in rows):
+        out['status'] = 'unverified_initiating_event_not_first_boundary_purge'
+        return out
     first = first_rows[0]
     opposing = next((b for b in rows if b['time'] >= first_time and crossed(b, opposite)), None)
     sequence = out['sequence']
     sequence.update(first_purge=_source(first, step), opposing_purge=None,
         opposing_delivery=deepcopy(original['opposing_liquidity'].get('evidence')),
-        source_return_inside=None, assigned_return_inside=None, known_at_ny=None,
+        source_return_inside=None, assigned_return_inside=None,
+        selected_timeframe_return_inside=None, developing_known_at_ny=None, known_at_ny=None,
         coverage=_coverage(rows, parse_time(anchor['end_ny']), cutoff, step))
     if not opposing:
         out['status'] = ('not_observed_no_opposing_purge' if sequence['coverage']['complete'] else
@@ -261,7 +313,7 @@ def double_purge_evidence(review, bars, end, step):
     sequence['source_return_inside'] = _source(returned, step)
     known = returned['time'] + step
     prefix = _coverage(rows, parse_time(anchor['end_ny']), known, step)
-    sequence.update(coverage_through_return=prefix, known_at_ny=stamp(known))
+    sequence.update(coverage_through_return=prefix, developing_known_at_ny=stamp(known))
     if not prefix['complete']:
         out['status'] = 'unverified_incomplete_sequence_coverage'
         return out
@@ -271,10 +323,45 @@ def double_purge_evidence(review, bars, end, step):
     if original['status'] != 'opposing_liquidity_delivered':
         out['status'] = 'unverified_original_delivery'
         return out
-    out.update(status='observed', observed=True)
-    objectives, coverage = _objectives(rows, anchor, reverse, returned, cutoff, invalid, step)
+    confirmation, confirmation_status = _selected_return(
+        rows, anchor, opposing, cutoff, step, review.get('opposing_purge_hourly_candle'))
+    out['confirmation_status'] = confirmation_status
+    sequence['selected_timeframe_return_inside'] = confirmation
+    confirmed_at = parse_time(confirmation['known_at_ny']) if confirmation else None
+    development_end = confirmed_at or cutoff
+    development, development_coverage = _objectives(
+        rows, anchor, reverse, returned, development_end,
+        bool(invalid and development_end == invalid), step)
+    out['reversal_development'] = {'status': 'pre_confirmation_only', 'direction': reverse,
+        'window_start_ny': stamp(known), 'window_end_ny': stamp(development_end),
+        'objectives': development, 'coverage': development_coverage,
+        'response_contract': 'Physical movement after source return but BEFORE official selected-timeframe '
+            'confirmation. Never report these targets as post-confirmation delivery, entries or fills.'}
+    if not confirmation:
+        out['developing'] = confirmation_status == 'awaiting_selected_timeframe_close'
+        out['status'] = ('developing_pending_selected_timeframe_close' if out['developing'] else
+                         confirmation_status)
+        out['reversal_thesis'] = {'status': 'not_assessed_unconfirmed_double_purge'}
+        out['spoken_summary'] = ('Potential same-range double purge: both boundaries were purged and '
+            'a source candle returned inside, but an official ' + str(anchor.get('timeframe')) +
+            ' close inside is ' + ('still pending.' if out['developing'] else 'unverified or invalidated.'))
+        return out
+    prefix = _coverage(rows, parse_time(anchor['end_ny']), confirmed_at, step)
+    sequence['coverage_through_confirmation'] = prefix
+    native_confirmation = confirmation.get('confirmation_basis') == 'resolved_closed_H1'
+    if (not prefix['complete'] and not native_confirmation) or invalid and confirmed_at >= invalid:
+        out['status'] = 'unverified_selected_timeframe_confirmation'
+        out['confirmation_status'] = out['status']
+        return out
+    out.update(status='observed', observed=True, confirmed_at_ny=stamp(confirmed_at))
+    sequence['known_at_ny'] = stamp(confirmed_at)
+    # Only its end is used to set the post-confirmation observation window.
+    # Native H1 authority does not fabricate a missing final source bar.
+    confirmation_source = {'time': confirmed_at - step}
+    objectives, coverage = _objectives(rows, anchor, reverse, confirmation_source,
+                                      cutoff, invalid, step, confirmed=True)
     full, mid = objectives['original_side'], objectives['midpoint']
-    full_hit, mid_hit = (full['status'] == 'observed_after_return', mid['status'] == 'observed_after_return')
+    full_hit, mid_hit = (full['status'] == 'observed_after_confirmation', mid['status'] == 'observed_after_confirmation')
     unresolved = any('unverified' in item['status'] for item in objectives.values())
     status = ('original_side_delivered' if full_hit else 'midpoint_only' if mid_hit else
               'unverified' if unresolved else 'failed_before_objectives' if invalid else
@@ -283,15 +370,15 @@ def double_purge_evidence(review, bars, end, step):
         'objective_side': side, 'objective_level': anchor['high'] if side == 'buy' else anchor['low'],
         'objective_basis': 'original_first_purged_side_of_same_selected_range',
         'midpoint_level': anchor['midpoint'], 'midpoint_role': 'halfway_progress_not_full_objective',
-        'window_start_ny': stamp(known), 'validity_cutoff_ny': stamp(cutoff),
+        'window_start_ny': stamp(confirmed_at), 'validity_cutoff_ny': stamp(cutoff),
         'coverage': coverage, 'objectives': objectives,
-        'window_rule': 'Fully closed source bars after the source return close; exclude the '
+        'window_rule': 'Fully closed source bars AFTER official selected-timeframe confirmation; exclude the '
             'source bar ending at selected-range invalidation. Boundary-bar extrema stay qualified.',
         'earlier_delivery_preserved_after_invalidation': bool(invalid and (full_hit or mid_hit))}
     out['spoken_summary'] = (
         f"The same selected range has an observed double purge: the {side}-side was purged first, "
-        f"then its {opposite}-side, with a source close back inside in "
-        f"{candle_label(stamp(returned['time']), source_timeframe(step))}. "
+        f"then its {opposite}-side, officially confirmed inside on the closure of "
+        f"{candle_label(confirmation['bar_open_ny'], confirmation['timeframe'])}. "
         f"The separate {reverse} reversal's full objective is the original {side}-side; "
         f"the midpoint is halfway progress. Its outcome is {status.replace('_', ' ')}. "
         'Earlier original-direction delivery remains recorded separately.')

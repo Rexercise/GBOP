@@ -190,8 +190,7 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
                             objectives_after_formation=_objectives(bars, parse_time(row['end_ny']), end,
                                                                  anchor, side == 'buy', step, invalid_at, row))
             result['purge_candles'].append(fact)
-    # Add the owner's nested-CRT cleanliness/outcome axes to the SAME view.
-    # Do not replace the existing CSD or pre-CSD ordering statuses.
+    # Add canonical own-CRT variants without changing CSD or parent validity.
     from gbop_voice_web.super_soup_evidence import enrich_model1
     models = {'assigned_timeframe': mapped, 'candles': [
         f for f in result['purge_candles'] if f['purge_type'] == 'body_soup']}
@@ -205,6 +204,11 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
         structure.pop('pre_csd', None)
         structure['pre_csd_status_ref'] = 'super_soup.status'
         f['super_soup_structure'] = structure
+        if (structure.get('variant_status') == 'distribution_observed'
+                and structure.get('variants') and structure.get('csd_same_assigned_close')):
+            f['super_soup']['status'] = 'observed_same_assigned_close_as_csd'
+            f['super_soup']['known_at_ny'] = structure.get('completion_known_at_ny')
+            f['super_soup']['ordering_basis'] = 'Source-ordered own-CRT delivery; variant and CSD share the assigned close.'
         f['following_candle_relations'] = r['following_candles']
         f['next_relation_detail_start_ny'] = r['next_detail_start_ny']
         f['model1_crt_invalidating_close'] = r['model1_crt_invalidating_close']
@@ -214,7 +218,8 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
         'local_crt_outcome, local_function_outcome and selected-range parent_function_outcome. '
         'local_function_objectives preserves later delivery and timing versus Model 1 invalidation; '
         'it never restores CRT validity or cleanliness. Stop at the selected-range cutoff. '
-        'super_soup.status governs pre-CSD ordering. Inside bars may precede Soup.')
+        'super_soup.status distinguishes pre-CSD from same-close confirmation. Inside bars may precede Soup. '
+        'Canonical V1–V6 apply to Model 1 own CRT; completed opposing delivery survives its later outside close.')
     complete = all(row['complete'] for row in rows)
     result.update(identified_count=total, observation_complete=complete,
                   window_start_ny=stamp(start), window_end_ny=stamp(end))
@@ -250,20 +255,24 @@ def super_soup_performance_summary(body):
         event = target['evidence']
         return candle_label(event['bar_open_ny'], source_timeframe(event.get('precision_seconds')))
     if delivered:
-        event_name = 'Super Soup' if structure.get('occurrence_type') == 'pre_csd_wick_super_soup' else 'Model 1 range purge'
+        event_name = ('Super Soup' if structure.get('occurrence_type') == 'pre_csd_wick_super_soup'
+                      or str(structure.get('occurrence_type')).startswith('completed_crt_super_soup') else 'Model 1 range purge')
         text = f"The {event_name} reached {delivered['spoken_label']} in {touch(delivered)}"
         timing = delivered['relative_to_model1_invalidation']
         if timing == 'after_model1_invalidation' and invalidation:
             text += f", after {invalidation} invalidated the Model 1 CRT"
         elif timing == 'before_model1_invalidation' and invalidation:
-            text += f", before {invalidation} later invalidated the Model 1 CRT"
+            text += (f", before {candle_label(invalidating['bar_open_ny'], body['timeframe'])} closed beyond the completed objective"
+                     if structure.get('variant_status') == 'distribution_observed' else
+                     f", before {invalidation} later invalidated the Model 1 CRT")
         elif timing == 'same_model1_invalidating_bar_order_unresolved':
             text += '; its order relative to the Model 1 invalidating close is unresolved'
         text += '.'
         if delivered is midpoint:
             text += f" Its full objective, {full['spoken_label']}, is {state(full)}."
     else:
-        event_name = 'Super Soup' if structure.get('occurrence_type') == 'pre_csd_wick_super_soup' else 'Model 1 range purge'
+        event_name = ('Super Soup' if structure.get('occurrence_type') == 'pre_csd_wick_super_soup'
+                      or str(structure.get('occurrence_type')).startswith('completed_crt_super_soup') else 'Model 1 range purge')
         text = f"The {event_name}'s objective, {full['spoken_label']}, is {state(full)}."
         if invalidation:
             text += f" The Model 1 CRT invalidated on {invalidation}."
@@ -272,7 +281,9 @@ def super_soup_performance_summary(body):
         if (delivered is full and delivered['relative_to_model1_invalidation'] == 'after_model1_invalidation'
                 and earlier_midpoint['status'] == 'observed_after_purge'):
             text += f" Before invalidation, it had reached {earlier_midpoint['spoken_label']} in {touch(earlier_midpoint)}."
-        text += ' Any later physical delivery does not restore CRT validity.'
+        text += (' Completed own-CRT delivery remains recorded.'
+                 if structure.get('variant_status') == 'distribution_observed' else
+                 ' Any later physical delivery does not restore CRT validity.')
     parent = structure['parent_range_objectives']
     pfull, pmid = parent['opposing_liquidity'], parent['midpoint']
     phit = pfull if pfull['status'] == 'observed_after_purge' else (
@@ -302,19 +313,35 @@ def lifecycle_summary(result):
             parts.append(f"Its precise source purge is in {candle_label(source['bar_open_ny'], source_timeframe(body['source_resolution_seconds']))}.")
         csd = body['csd']
         if csd['status'] == 'confirmed':
-            parts.append(f"CSD confirmed on {closure_label(csd['evidence']['bar_open_ny'], body['timeframe'])} strictly {'below' if body['direction'] == 'bearish' else 'above'} the Model 1 full {csd['reference_boundary']}, {csd['reference_level']}.")
+            csd_sentence = f"CSD confirmed on {closure_label(csd['evidence']['bar_open_ny'], body['timeframe'])} strictly {'below' if body['direction'] == 'bearish' else 'above'} the Model 1 full {csd['reference_boundary']}, {csd['reference_level']}."
         elif csd['status'].startswith('not_observed'):
-            parts.append('CSD was not observed in the reviewed window; the Model 1 candle still exists.')
+            csd_sentence = 'CSD was not observed in the reviewed window; the Model 1 candle still exists.'
         else:
-            parts.append('CSD or its timing remains unresolved in the available evidence.')
+            csd_sentence = 'CSD or its timing remains unresolved in the available evidence.'
         structure = body.get('super_soup_structure')
         if structure and structure['structure_status'] == 'observed':
-            quality = 'clean' if structure['structural_quality'] == 'clean' else 'not clean'
-            variants = ', '.join(v['code'] for v in structure['variants'])
-            when = closure_label(structure['event']['bar_open_ny'], body['timeframe'])
-            parts.append(f"The purge of the Model 1 candle’s own range was identified on {when}; its structure was {quality}" +
-                         (f", supporting {variants}." if variants else '.'))
+            quality = {'clean': 'clean', 'valid_completed_crt': 'a valid completed CRT',
+                       'unverified_source_order': 'unverified source-bar order'}.get(
+                structure['structural_quality'], 'not clean')
+            variants = ', '.join(v['code'] + (' — ' + v['name'] if v.get('name') else '')
+                                 for v in structure['variants'])
+            completed = structure.get('variant_status') == 'distribution_observed'
+            named_open = (structure.get('variant_explanation', {}).get('known_candle_open_ny')
+                          if completed else None) or structure['event']['bar_open_ny']
+            when = closure_label(named_open, body['timeframe'])
+            parts.append((f"Super Soup {variants} completed on {when}."
+                          if structure.get('variant_status') == 'distribution_observed' and variants else
+                          f"The purge of the Model 1 candle’s own range was identified on {when}; its structure was {quality}" +
+                          (f", supporting {variants}." if variants else '.')))
+            parts.append(csd_sentence)
             parts.append(structure['performance_summary'])
+        elif structure and structure['structure_status'] == 'developing':
+            from gbop_voice_web.variant_explanation import variant_clause
+            parts.append('Super Soup ' + variant_clause({'labels': [],
+                'explanation': structure.get('variant_explanation', {})}) + '.')
+            parts.append(csd_sentence)
+        else:
+            parts.append(csd_sentence)
         if body['super_soup']['status'] == 'observed_before_csd':
             returned = body['super_soup']['evidence']['return_candle']
             parts.append(f"A Super Soup returned inside the Model 1 range on {closure_label(returned['bar_open_ny'], body['timeframe'])}, before CSD.")

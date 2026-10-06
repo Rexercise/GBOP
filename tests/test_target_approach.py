@@ -168,8 +168,8 @@ class TargetApproachTests(unittest.TestCase):
                        'Unrecognized nicknames are not saved alternatives'):
             self.assertIn(phrase, CANONICAL_KNOWLEDGE)
         for prompt in (MARKET_PROMPT, LIVE_MARKET_PROMPT):
-            self.assertIn('verdict in the first sentence', prompt)
-            self.assertIn('no universal numeric threshold', prompt)
+            self.assertIn('Outcomes: first name the range and direction, then full delivery, midpoint only, pending, failed or unverified; then mechanism', prompt)
+            self.assertIn('No glossary, universal threshold, inferred intent/profit', prompt)
             self.assertIn('original first-purged boundary', prompt)
 
 
