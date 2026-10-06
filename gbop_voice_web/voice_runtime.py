@@ -8,7 +8,7 @@ import random
 import time
 
 READ_ONLY_RECOVERY_NAMES = frozenset({
-    'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_midpoint_preference', 'get_member_plan',
+    'review_market_contexts', 'select_market_context', 'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_midpoint_preference', 'get_member_plan',
     'get_member_dashboard', 'get_shift_plans', 'get_performance_review',
     'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_weekly_structure_study', 'get_trade_assist',
     'list_trade_photos', 'get_market_price', 'list_market_shifts', 'review_market_session',

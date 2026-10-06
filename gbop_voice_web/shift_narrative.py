@@ -5,7 +5,7 @@ Distribution timing uses the opposing-liquidity objective; midpoint-only deliver
 is reported separately. Unordered source bars cannot prove a completed variant.
 """
 from datetime import datetime
-from gbop_voice_web.variant_explanation import variant_explanation, variant_clause
+from gbop_voice_web.variant_explanation import NAMES, variant_explanation, variant_clause
 from gbop_voice_web.candle_evidence import parse_time, summarize, interval
 from gbop_voice_web.smt_reference import closing_candle
 from gbop_voice_web.candle_naming import candle_label, source_timeframe, objective_identity, range_label
@@ -202,7 +202,7 @@ def classify_structure(row, bars, end, step):
                           candles_through_distribution=count)
             if not inside and manipulation_start == start + 3600:
                 if count == 2:
-                    label('V2', 'Kryptonite', 'Candle 2 purged and reached opposing liquidity in later source bars within the same H1.')
+                    label('V2', NAMES['V2'], 'Candle 2 purged and reached opposing liquidity in later source bars within the same H1.')
                 elif count == 3 and not closed_outside:
                     label('V1', 'Textbook', 'Candle 1 was the range, candle 2 manipulated and closed inside, candle 3 reached opposing liquidity.')
                 elif count > 3 and not closed_outside:

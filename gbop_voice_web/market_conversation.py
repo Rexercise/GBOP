@@ -24,6 +24,8 @@ SHIFT_TOOLS = {'review_market_session', 'get_prepared_market_brief'}
 SCOPED_TOOLS = SHIFT_TOOLS | {'list_market_shifts', 'review_market_crt',
                               'review_market_smt', 'inspect_market_candles', 'review_current_market',
                               'review_other_market_ranges'}
+MULTI_TOOLS = {'review_market_contexts', 'select_market_context'}
+SCOPED_TOOLS |= MULTI_TOOLS
 DETAIL_SCOPE_KEYS = ('asset', 'anchor_start_ny', 'anchor_timeframe', 'through_ny')
 DETAIL_NULL_ARGS = ('confirmation_timeframe', 'blessed_thief_timeframe',
                     'blessed_thief_from_ny', 'detail_candle_start_ny', 'detail_from_ny')
@@ -47,7 +49,7 @@ def contextual_tools(tools):
                     params['required'].append(key)
                 tool['description'] += (' Reported entry/exit timestamps require a date and explicit timezone; '
                     'leave unknown timestamps null. reported_outcome: stopped_out, win, loss, breakeven, open, unknown.')
-        if tool.get('name') not in SCOPED_TOOLS:
+        if tool.get('name') not in SCOPED_TOOLS or tool.get('name') in MULTI_TOOLS:
             continue
         if tool['name'] == 'review_current_market':
             tool['parameters']['properties']['context_action'] = {
@@ -100,6 +102,8 @@ def contextual_tools(tools):
         'followup_mode=continue_active_range with context_action=continue. Continue the verified selected '
         'range through the same cutoff, even if already discussed; a new hour does not select a new range. '
         'An explicit range detail selection stays selected. Never switch asset/date/shift or refresh its cutoff.')
+    from gbop_voice_web.multi_market_context import tools as multi_tools
+    result.extend(tool for tool in multi_tools() if not any(t.get('name') == tool['name'] for t in result))
     return result
 
 
@@ -460,6 +464,17 @@ class MarketConversation:
         self._journal_candle_reference = False
         self._journal_results = {}
         self._auth_revision = None
+        from gbop_voice_web.multi_market_context import ContextBank
+        self.context_bank = ContextBank(self.session_id)
+        self._multi_request = self._multi_result = None
+        self._multi_cache = {}
+        self._multi_seen = set()
+        self._multi_focus_required = False
+        self._last_context_ids = []
+        self._last_multi_asset = None
+        self._comparison_asset_ambiguous = False
+        self._multi_read_lock = threading.Lock()
+        self._scoped_read_lock = threading.RLock()
 
     def bind_auth(self, db, guild, user):
         from gbop_voice_web.journal_context import member_revision
@@ -476,6 +491,11 @@ class MarketConversation:
                 self._retrieved_discussion.clear()
                 self._completed_responses.clear()
                 self.session_id = uuid4().hex
+                from gbop_voice_web.multi_market_context import ContextBank
+                self.context_bank = ContextBank(self.session_id)
+                self._last_context_ids = []
+                self._last_multi_asset = None
+                self._multi_focus_required = False
             self._auth_revision = revision
 
     def begin_turn(self, text=None, *, now=None, client_turn=None):
@@ -495,6 +515,8 @@ class MarketConversation:
             self._client_text = text
             self._turn_now = time.time() if now is None else now
             self.generation += 1
+            self._scoped_read_lock = threading.RLock()
+            self._multi_read_lock = threading.Lock()
             from gbop_voice_web.trade_feelings import begin_feeling_turn
             begin_feeling_turn(self, text)
             self._current_result = None
@@ -502,12 +524,43 @@ class MarketConversation:
             self._retrieved_discussion.clear()
             self._journal_results = {}
             self.pending = None
+            self._multi_result = None
+            self._multi_cache = {}
+            self._multi_seen = set()
+            self._comparison_asset_ambiguous = False
             previous_scope = self.requested or self.selected or {}
             correction = journal_correction_intent(text)
             self.intent = ({'action': 'continue', 'fields': {}} if correction else
                            _text_intent(text, self.requested or self.selected, self._turn_now)
                            if text is not None else None)
+            if (self._multi_focus_required and self.intent is not None
+                    and not self.intent['fields'].get('asset')
+                    and (self.intent['action'] == 'latest' or is_current_request(text)
+                         or self.intent['fields'].get('date_ny') and any(k in self.intent['fields'] for k in ('shift', 'anchor_start_ny')))):
+                if self._last_multi_asset:
+                    self.intent['fields']['asset'] = self._last_multi_asset
+                    if self.intent['action'] == 'continue':
+                        self.intent['action'] = 'switch'
+                else:
+                    self._comparison_asset_ambiguous = True
+            from gbop_voice_web.multi_market_context import paired_request
+            pair_base = self.selected or self.requested
+            if self._multi_focus_required:
+                pair_base = {'asset': self._last_multi_asset} if self._last_multi_asset else None
+            self._multi_request = None if correction else paired_request(
+                text, (self.intent or {}).get('fields', {}), pair_base)
+            if self._multi_request is not None:
+                self.intent = {'action': 'continue', 'fields': {}}
+                self._multi_focus_required = True
+            elif not self._comparison_asset_ambiguous and self.intent is not None and (self.intent['action'] == 'latest' or (
+                    self.intent['action'] == 'switch' and self.intent['fields'].get('date_ny')
+                    and any(k in self.intent['fields'] for k in ('shift', 'anchor_start_ny')))):
+                # A new explicit latest/exact request can establish fresh evidence.
+                # Short 'the night one' must select its independently resolved snapshot.
+                self._multi_focus_required = False
             self._required_current = not correction and is_current_request(text)
+            if self._required_current and self._multi_request is None and not self._comparison_asset_ambiguous:
+                self._multi_focus_required = False
             from gbop_voice_web.market_scan import scan_intent, scan_args
             previous_scan = self._previous_scan
             previous_scan_result = self._scan_result
@@ -569,6 +622,10 @@ class MarketConversation:
             # A new topic or explicit switch must not inherit an old candle identity.
             if text is not None and not correction:
                 self.detail_focus = deepcopy(self._required_detail)
+            if self._multi_request is not None:
+                self._required_detail = None
+                self._required_current = self._required_other = self._required_active = False
+                self._scan_request = None
             return self.generation
 
     def required_evidence_request(self):
@@ -576,6 +633,17 @@ class MarketConversation:
         # Audio begin_turn(None) has no transcript; its routing remains model-dependent.
         from gbop_voice_web.candle_evidence import parse_time
         with self._lock:
+            if self._comparison_asset_ambiguous:
+                return {'tool': 'review_market_contexts', 'query_purpose': 'multiple_contexts',
+                        'args': None, 'status': 'market_asset_required',
+                        'error': 'The comparison requested multiple or unresolved markets. Which asset should this new review use?'}
+            if not self.closed and self._multi_request is not None and self._multi_result is None:
+                if self._multi_request.get('requests') is None:
+                    return {'tool': 'review_market_contexts', 'query_purpose': 'multiple_contexts',
+                            'args': None, 'status': 'explicit_context_selectors_required',
+                            'error': 'This request needs explicit qualified selectors. Call review_market_contexts for the contexts actually requested; preserve distinct dates/assets and exclusions rather than imposing a shared day/night default.'}
+                return {'tool': 'review_market_contexts', 'query_purpose': 'multiple_contexts',
+                        'args': deepcopy(self._multi_request), 'status': 'ready'}
             if not self.closed and self._scan_request is not None:
                 return {'tool': 'scan_young_lefty', 'query_purpose': 'cross_asset_scan',
                         'args': deepcopy(self._scan_request), 'status': 'ready'}
@@ -693,10 +761,15 @@ class MarketConversation:
             if client_turn is not None:
                 self.client_turn = client_turn
             self.generation += 1
+            self._scoped_read_lock = threading.RLock()
+            self._multi_read_lock = threading.Lock()
             self._begun_client_turn = None
             self._feeling_prompt = None
             self._feeling_note = self._feeling_clarification = self._feeling_reply = None
             self.pending = None
+            self._multi_request = self._multi_result = None
+            self._multi_cache = {}
+            self._multi_seen = set()
             self.intent = None
             self._required_detail = None
             self._required_current = False
@@ -734,6 +807,8 @@ class MarketConversation:
         with self._lock:
             self.closed = True
             self.invalidate()
+            self.context_bank.clear()
+            self._last_context_ids = []
 
     def current(self, generation):
         with self._lock:
@@ -814,13 +889,34 @@ class MarketConversation:
 
     def prompt(self):
         with self._lock:
-            if not self.selected and not self.requested:
+            if not self.selected and not self.requested and not self.context_bank.entries and not self._multi_request:
                 return ''
             snapshot = {'requested_context': self.requested, 'selection': self.selected,
                         'verified_evidence': self.evidence,
                         'discussion_context': self.discussion_context()}
-            if self._required_detail is not None or self._required_current or self._required_other or self._required_active:
+            if self.context_bank.entries or self._multi_request:
+                from gbop_voice_web.multi_market_context import CONTRACT
+                snapshot['available_contexts'] = self.context_bank.index()
+                snapshot['multi_context_contract'] = CONTRACT
+                snapshot['focus_selection_required'] = self._multi_focus_required
+                if self._multi_result is not None:
+                    snapshot['latest_context_comparison'] = self._multi_result
+            if self._comparison_asset_ambiguous or self._multi_request is not None or self._required_detail is not None or self._required_current or self._required_other or self._required_active:
                 snapshot['required_evidence_request'] = self.required_evidence_request()
+            if self._multi_focus_required or self._multi_request is not None:
+                # An old focus is not the answer to an ambiguous comparison
+                # follow-up, even if the model makes no tool call at all.
+                snapshot.pop('selection', None)
+                snapshot.pop('verified_evidence', None)
+                snapshot.pop('requested_context', None)
+                snapshot.pop('discussion_context', None)
+                return ('\nMULTIPLE MARKET CONTEXTS (this conversation only)\n'
+                        + json.dumps(snapshot, separators=(',', ':'))
+                        + '\nNo single context is selected for this comparison. Never answer an ambiguous '
+                        'it/that/this from a previous focus. Use review_market_contexts to recall the named '
+                        'context IDs for comparisons, or select_market_context only after the member identifies '
+                        'one context. If several could be meant, ask which. The context index supplies identity, '
+                        'not outcome evidence. An unavailable member remains unknown; answer every requested member.')
             if self.requested and self.requested != self.selected:
                 snapshot['warning'] = ('Requested context has no matching verified evidence yet. '
                                        'Do not answer it from the previous selection; retrieve the exact requested scope.')
@@ -991,6 +1087,9 @@ class MarketConversation:
                             'error': 'The current member turn does not identify this journal with the selected review. Use none for an unrelated record.'}
                 review = deepcopy(self._journal_review) if wants_review else None
                 if wants_review:
+                    if self._multi_focus_required:
+                        return {'ok': False, 'status': 'journal_context_selection_required',
+                                'error': 'Several market contexts were reviewed. Identify and select the exact one before linking a journal.'}
                     if (not review or self.requested != self.selected or self.pending and self.pending != self.selected
                             or review.get('scope_id') != (self.evidence or {}).get('scope_id')):
                         return {'ok': False, 'status': 'journal_review_required',
@@ -1081,6 +1180,20 @@ class MarketConversation:
             return output
 
     def run(self, name, arguments, runner, *, generation=None):
+        # Serialize scope-changing reads within a conversation, including batch
+        # and focus selection. The state lock remains free for cancellation/new
+        # turns; a queued old read keeps its original ticket and cannot revive.
+        if name in SCOPED_TOOLS or name in WRITE_TOOLS or name == 'scan_young_lefty':
+            with self._lock:
+                ticket = self.generation if generation is None else generation
+                if not self.current(ticket):
+                    return self._stale()
+                scope_lock = self._scoped_read_lock
+            with scope_lock:
+                return self._run(name, arguments, runner, generation=ticket)
+        return self._run(name, arguments, runner, generation=generation)
+
+    def _run(self, name, arguments, runner, *, generation=None):
         """Runner is the existing authenticated dispatcher, including catalogue reads.
 
         Only finished matching evidence can update selection. DB/model work is
@@ -1097,6 +1210,37 @@ class MarketConversation:
                 return self._stale()
             active = deepcopy(self.pending or self.requested or self.selected)
             intent = deepcopy(self.intent)
+        if self._comparison_asset_ambiguous and name in SCOPED_TOOLS:
+            return {'ok': False, 'status': 'market_asset_required',
+                    'error': 'Which requested market should this new review use? A partial comparison cannot select its sole successful asset for you.'}
+        if name in MULTI_TOOLS:
+            from gbop_voice_web.multi_market_context import run_context_tool
+            return run_context_tool(self, name, arguments, runner, ticket)
+        if (self._multi_focus_required and self.intent is None and self._multi_result is None
+                and self._multi_request is None and name in SCOPED_TOOLS):
+            action = arguments.get('context_action')
+            fresh = (name == 'review_current_market' and action in {'switch', 'latest'}
+                or name in SHIFT_TOOLS | {'list_market_shifts'} and action in {'latest', 'last_night'}
+                or action == 'switch' and (name in SHIFT_TOOLS and all(arguments.get(k) for k in ('asset', 'date_ny', 'shift'))
+                    or name == 'review_market_crt' and all(arguments.get(k) for k in DETAIL_SCOPE_KEYS)))
+            if fresh:
+                # Audio has no transcript. Honor its existing explicit intent
+                # contract on a later turn, but make failures visibly unresolved.
+                with self._lock:
+                    if not self.current(ticket):
+                        return self._stale()
+                    self._multi_focus_required = False
+                    self._journal_review = None
+                    self.pending = None
+                    self.requested = {k: arguments.get(k) for k in ('asset', 'date_ny', 'shift', *DETAIL_SCOPE_KEYS[1:])
+                                      if arguments.get(k) is not None}
+                    self.requested['evidence_status'] = 'fresh_request_pending'
+                    active = deepcopy(self.requested)
+        if (self._multi_request is not None or self._multi_focus_required) and name in SCOPED_TOOLS:
+            return {'ok': False, 'status': 'market_context_selection_required',
+                    'next_tool': 'review_market_contexts' if self._multi_request and self._multi_result is None else 'select_market_context',
+                    'next_arguments': deepcopy(self._multi_request) if self._multi_request and self._multi_result is None else None,
+                    'error': 'Review all requested contexts, then select the member-identified context for a single-range follow-up. Do not reuse an arbitrary old focus.'}
         if name in WRITE_TOOLS:
             return self._run_journal(name, arguments, runner, ticket)
         from gbop_voice_web.journal_recall import bind_recall_intent
@@ -1368,6 +1512,9 @@ class MarketConversation:
                         self.evidence['range_outcomes'] = deepcopy(previous_evidence['range_outcomes'])
                     self._journal_review = review_snapshot(result, target, self.evidence,
                         self.detail_focus, self.session_id, ticket)
+                    record = self.context_bank.record(name, target, result)
+                    if record is not None:
+                        self.context_bank.store(record)
                     return {**result, 'market_context': {'selection': deepcopy(target), **self.evidence,
                             'discussion_context': self.discussion_context(target)}}
                 return {**result, 'market_context': {'selection': deepcopy(target)}}

@@ -3,7 +3,7 @@ from datetime import date, datetime
 import re
 
 TOOLS = {'review_market_session', 'review_market_crt', 'review_market_smt',
-         'get_prepared_market_brief', 'list_market_shifts', 'inspect_market_candles'}
+         'get_prepared_market_brief', 'list_market_shifts', 'inspect_market_candles', 'select_market_context'}
 ASSETS = {'NAS100', 'SPX', 'US30', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'WTI'}
 TIMEFRAMES = {'M1', 'M5', 'M15', 'M20', 'M30', 'H1', 'H4', 'H6', 'D1', 'W1', 'MN1'}
 
@@ -97,6 +97,19 @@ def _ss_log(args, result, voice):
 
 def market_scope_log(name, args, result, voice=None):
     """Return bounded typed scope/identity facts only for read-only market tools."""
+    if name == 'review_market_contexts' and isinstance(result, dict):
+        members = result.get('contexts')
+        rows = []
+        for member in members[:4] if isinstance(members, list) else []:
+            member = _dict(member)
+            row = {'ok': member.get('ok') is True, 'resolved': _scope(member.get('scope'))}
+            for key in ('context_id', 'evidence_id'):
+                value = member.get(key)
+                if isinstance(value, str) and re.fullmatch(key.split('_id')[0] + r'_[a-f0-9]{24}', value):
+                    row[key] = value
+            rows.append(row)
+        return {'tool': name, 'ok': result.get('ok') is True, 'contexts': rows,
+                'voice_ok': _dict(voice).get('ok') is True if voice is not None else None}
     if name == 'get_weekly_structure_study' and isinstance(result, dict):
         return _ss_log(args, result, voice)
     if name not in TOOLS or not isinstance(result, dict):
