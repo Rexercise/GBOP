@@ -391,7 +391,7 @@ def _compact_synopsis_navigation(out):
     synopsis['response_contract'] = (
         'Name each range through GTOP shift end. Under review is not CRT confirmation. Explain variants/DOL. '
         'Keep primary body, own CRT/CISD, parent, re-purges, prior delivery, DP and induced 50% distinct. '
-        'Context counts are event-time ranges, not Soup/closure votes or probability. Omission is not absence; use range_detail_request.')
+        'Context counts are event-time ranges, not Soup/closure votes or probability. Name acting candle AND affected range; own anchor closure is not subsequent CRT confirmation. Omission is not absence; use range_detail_request.')
 
 
 
@@ -443,7 +443,7 @@ def _compact_synopsis_facts(out):
         synopsis['objective_columns'] = list(objective_columns)
     out['voice_view']['fact_tables'] = ('ranges inherit range_defaults; explicit values win. Interval/target arrays use source_interval_columns/objective_columns; absent trailing cells remain absent.')
     synopsis['response_contract'] = ('Under review is not CRT confirmation. Keep primary/own/parent identities separate. '
-        'Use distinct event-time range contexts, never probability votes. Omission is not absence; use exact detail requests.')
+        'Name acting candle AND affected range; anchor closure alone is not CRT confirmation. Opening plays follow event-time order. Contexts are not probability votes. Omission is not absence; use exact detail requests.')
 
 
 def shift_voice_synopsis(result):
@@ -549,8 +549,7 @@ def voice_tool_payload(name, result):
         out['market_context'] = _voice_market_context(out.get('market_context'), evidence_ref='#/review')
         out['voice_view'] = {'kind': 'other_range_followup', 'detail_omitted': True,
                             'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
-                            'note': 'Follow mode: continue_active_range retains the story; other_ranges adds opportunities after the bridge. '
-                                    'Preserve phase identities, transitions and GTOP shift end. Body is not thesis; retrieval is not discussion.'}
+                            'note': 'Follow mode and named ranges through shift end; keep phase identities and discussion bridge. Retrieval is not discussion.'}
         if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
             # The same selected-range narrative also exists in structured
             # active context and the top-level follow-up summary. Keep phase
@@ -560,6 +559,11 @@ def voice_tool_payload(name, result):
             if isinstance(active, dict) and active.get('spoken_summary'):
                 active.pop('spoken_summary')
                 out['voice_view']['secondary_prose_omitted'] = 'Active-range prose; structured chronology and follow-up summary remain.'
+        if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+            # Reuse the existing lossless in-payload references. No range,
+            # actor/parent relation, objective or qualification is discarded.
+            _factor_review(out)
+            out['voice_view']['reference_format'] = 'same_evidence_as resolves to an in-payload JSON pointer.'
         if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
             return _bounded_error({'ok': False, 'status': 'voice_other_ranges_budget_exceeded',
                 'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),

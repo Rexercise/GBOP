@@ -295,14 +295,15 @@ def pending_range_facts(row, fact):
     return result
 
 
-def pending_sentence(value):
+def pending_sentence(value, anchor=None):
     if not value:
         return ''
     primary = value['primary_body_model1']
+    prefix = f"For the {_clock(anchor)} H1 range, " if anchor else ''
     if primary['status'] != 'present':
-        return ('Primary body Model 1 ' + ('not observed in complete data' if primary['status'].startswith('not_observed')
+        return prefix + ('Primary body Model 1 ' + ('not observed in complete data' if primary['status'].startswith('not_observed')
                                         else 'unverified with available coverage') + '.')
-    text = f"Primary body Model 1 is {candle_label(primary['bar_open_ny'], primary['timeframe'])}"
+    text = prefix + f"Primary body Model 1 is {candle_label(primary['bar_open_ny'], primary['timeframe'])}"
     if primary.get('completed_SS'):
         from gbop_voice_web.variant_explanation import variant_clause
         text += '; own Super Soup ' + variant_clause({'labels': primary['completed_SS']['variants']}) + ' completed'
@@ -363,18 +364,24 @@ def pending_reversal_facts(row):
     full = value['primary_body_model1']
     if full.get('strict_CISD'):
         primary['strict_CISD_status'] = full['strict_CISD'].get('status', 'unverified')
+    confirmation = double.get('sequence', {}).get('selected_timeframe_return_inside') or {}
     return {'direction': direction, 'remaining_DOL_side': reverse['objective_side'],
-            'primary_body_model1': primary}
+            'primary_body_model1': primary,
+            'official_confirmation': {k: deepcopy(confirmation[k]) for k in
+                ('bar_open_ny', 'timeframe', 'known_at_ny') if k in confirmation}}
 
 
-def pending_reversal_sentence(value, anchor):
+def pending_reversal_sentence(value, anchor, *, include_confirmation=True):
     if not value:
         return ''
     primary = value['primary_body_model1']
     intro = f"For the {_clock(anchor)} {value['direction']} double-purge reversal"
+    confirmation = value.get('official_confirmation', {})
+    confirmed = ('; official confirmation on ' + closure_label(
+        confirmation['bar_open_ny'], confirmation['timeframe'])) if include_confirmation and confirmation.get('bar_open_ny') else ''
     if primary['status'] != 'present':
         return intro + ', primary body Model 1 ' + ('not observed in complete data.'
-            if primary['status'] == 'not_observed_in_complete_window' else 'is unverified.')
+            if primary['status'] == 'not_observed_in_complete_window' else 'is unverified.').rstrip('.') + confirmed + '.'
     text = intro + ', primary body Model 1 is ' + candle_label(primary['bar_open_ny'], primary['timeframe'])
     own = primary['own_CRT_status']
     if primary.get('completed_SS'):
@@ -389,4 +396,4 @@ def pending_reversal_sentence(value, anchor):
     csd = primary.get('strict_CISD_status', 'unverified')
     text += '; strict CISD ' + ('confirmed' if csd == 'confirmed' else
         'pending' if csd == 'not_observed_by_review_cutoff' else 'unverified')
-    return text + '.'
+    return text + confirmed + '.'

@@ -15,6 +15,23 @@ BOT = Path(__file__).resolve().parents[1] / 'bot.py'
 
 
 class DeletionConfirmationUITests(unittest.TestCase):
+    def test_discord_standalone_delete_cleans_derived_evidence(self):
+        self.fixture.seed_coaching()
+        self.conn.execute('UPDATE journals SET thesis_id=NULL WHERE id=1')
+        preview = self.ns['get_journal_delete_preview'](20, 1)
+        result = self.ns['delete_owned_journal'](20, 1, preview['fingerprint'])
+        self.assertTrue(result['ok'])
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM gbop_coaching_observations WHERE guild_id=10 AND user_id=20 AND source_key='journal:1'").fetchone())
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM gbop_coaching_observations WHERE guild_id=10 AND user_id=20 AND source_key='risk:1'").fetchone())
+
+    def test_discord_trade_delete_reports_derived_cleanup(self):
+        self.fixture.seed_coaching()
+        preview = self.ns['get_trade_delete_preview'](20, 41)
+        self.assertEqual(preview['coaching_observations'], 2)
+        view = self.ns['DeleteTradeView'](20, preview)
+        asyncio.run(view.confirm_delete(self.interaction, None))
+        self.assertIn('2 derived coaching observation(s)', self.interaction.response.edit_message.call_args.kwargs['content'])
+
     def setUp(self):
         self.fixture = deletion_fixture.JournalDeleteTests()
         self.fixture.setUp()

@@ -145,9 +145,11 @@ class IntelligenceTests(unittest.TestCase):
         """)
 
         conn = self.conn
+        self.executed = []
 
         class Adapter:
             def execute(_, sql, params=()):
+                self.executed.append((sql, params))
                 compact = " ".join(str(sql).split()).upper()
                 if (
                     "PG_ADVISORY_XACT_LOCK" in compact
@@ -158,7 +160,7 @@ class IntelligenceTests(unittest.TestCase):
                     or compact.startswith("GRANT ALL ON GBOP_")
                 ):
                     return conn.execute("SELECT 1")
-                return conn.execute(sql, params)
+                return conn.execute(sql.replace(' FOR UPDATE', ''), params)
 
         @contextlib.contextmanager
         def db():
@@ -171,6 +173,90 @@ class IntelligenceTests(unittest.TestCase):
 
     def tearDown(self):
         self.conn.close()
+
+    def observation(self, source, *, guild=10, user=20, weight=1, theme='boredom'):
+        intel._upsert_observation(self.conn, guild, user, source, theme, -1, weight,
+                                  'Synthetic source evidence', datetime.now(timezone.utc).isoformat())
+
+    def test_orphan_journal_and_risk_evidence_is_ignored_without_purging(self):
+        self.observation('journal:101')
+        self.observation('risk:201')
+        before = [tuple(row) for row in self.conn.execute('SELECT * FROM gbop_coaching_observations')]
+        profile = intel.coaching_profile(self.db, 10, 20)
+        self.assertIsNone(profile['current_focus'])
+        self.assertEqual([tuple(row) for row in self.conn.execute('SELECT * FROM gbop_coaching_observations')], before)
+
+    def test_source_existence_requires_same_member_and_guild(self):
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.executemany('INSERT INTO journals(id,guild_id,user_id,created_at) VALUES(?,?,?,?)',
+                             [(1,10,30,now),(2,11,20,now)])
+        self.conn.executemany('INSERT INTO risk_flags(id,guild_id,user_id,created_at) VALUES(?,?,?,?)',
+                             [(1,10,30,now),(2,11,20,now)])
+        for source in ('journal:1','journal:2','risk:1','risk:2'):
+            self.observation(source)
+        self.assertIsNone(intel.coaching_profile(self.db, 10, 20)['current_focus'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM gbop_coaching_observations').fetchone()[0], 4)
+
+    def test_source_keys_match_exact_raw_ids_not_prefixes_or_numeric_aliases(self):
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute('INSERT INTO journals(id,guild_id,user_id,created_at) VALUES(1,10,20,?)', (now,))
+        self.conn.execute('INSERT INTO risk_flags(id,guild_id,user_id,created_at) VALUES(1,10,20,?)', (now,))
+        for source in ('journal:1','risk:1'):
+            self.observation(source)
+        for source in ('journal:10','journal:01','journal:1:extra','risk:10','risk:01','risk:1:extra'):
+            self.observation(source, weight=100)
+        profile = intel.coaching_profile(self.db, 10, 20)
+        self.assertEqual(profile['current_focus']['score'], 2.0)
+
+    def test_fresh_profile_drops_deleted_sources_and_preserves_unrelated_evidence(self):
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute('INSERT INTO journals(id,guild_id,user_id,description,created_at) VALUES(1,10,20,?,?)',
+                          ('I took a boredom trade.',now))
+        self.conn.execute('INSERT INTO risk_flags(id,guild_id,user_id,rule_code,message,created_at) VALUES(1,10,20,?,?,?)',
+                          ('synthetic-risk','Synthetic risk evidence',now))
+        before = intel.coaching_profile(self.db, 10, 20)
+        self.assertEqual({row['theme'] for row in before['issues']}, {'boredom','risk_protocol'})
+        self.conn.execute('DELETE FROM journals WHERE id=1')
+        self.conn.execute('DELETE FROM risk_flags WHERE id=1')
+        self.observation('ss:2026-09-28:TEST:execution', theme='exit_timing_early')
+        self.observation('checkin:404', theme='fomo')
+        after = intel.coaching_profile(self.db, 10, 20)
+        self.assertEqual({row['theme'] for row in after['issues']}, {'exit_timing_early','fomo'})
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM gbop_coaching_observations').fetchone()[0], 4)
+
+    def test_valid_study_or_reflection_journal_still_contributes_coaching(self):
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute('CREATE TABLE journal_details(journal_id INTEGER,metadata TEXT)')
+        for number,kind in ((1,'study'),(2,'reflection')):
+            self.conn.execute('INSERT INTO journals(id,guild_id,user_id,description,created_at) VALUES(?,10,20,?,?)',
+                              (number,'I took a boredom trade.',now))
+            self.conn.execute('INSERT INTO journal_details VALUES(?,?)', (number,'{"kind":"'+kind+'"}'))
+        self.assertEqual(intel.coaching_profile(self.db, 10, 20)['current_focus']['score'], 1.87)
+
+    def test_source_refresh_and_profile_read_lock_before_fetching_evidence(self):
+        intel.coaching_profile(self.db, 10, 20)
+        source_read = next(i for i,(sql,_) in enumerate(self.executed) if 'SELECT id,response,responded_at' in sql)
+        profile_read = next(i for i,(sql,_) in enumerate(self.executed) if 'SELECT o.theme,o.polarity' in sql)
+        locks = [i for i,(sql,params) in enumerate(self.executed)
+                 if 'pg_advisory_xact_lock(?)' in sql and params == (20,)]
+        self.assertTrue(any(i < source_read for i in locks))
+        self.assertTrue(any(source_read < i < profile_read for i in locks))
+        query, params = self.executed[profile_read]
+        self.assertNotIn('%', query)  # psycopg placeholders must not see SQL-literal wildcards.
+        self.assertEqual(params[-2:], ('journal:%', 'risk:%'))
+
+    def test_actual_standalone_cleanup_changes_next_profile_without_cached_results(self):
+        from gbop_voice_web.deletion import delete_journal_records
+        self.conn.execute('CREATE TABLE journal_details(journal_id INTEGER,guild_id INTEGER,user_id INTEGER)')
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute('INSERT INTO journals(id,guild_id,user_id,description,created_at) VALUES(1,10,20,?,?)',
+                          ('I took a boredom trade.',now))
+        self.assertEqual(intel.coaching_profile(self.db, 10, 20)['current_focus']['theme'], 'boredom')
+        with self.db() as conn:
+            deleted = delete_journal_records(conn, 10, 20, 1)
+        self.assertEqual(deleted['coaching_observations'], 1)
+        self.assertIsNone(intel.coaching_profile(self.db, 10, 20)['current_focus'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM gbop_coaching_observations').fetchone()[0], 0)
 
     def complete_ss_args(self, **overrides):
         args = {

@@ -32,6 +32,28 @@ def validate_owned_relations(conn, guild_id, user_id, *, trade_id=None, journal_
             raise ValueError('Linked records have inconsistent ownership. Nothing deleted; contact support.')
 
 
+def _coaching_sources(conn, guild_id, user_id, journal_ids=(), risk_ids=(), *, delete=False):
+    """Scope derived evidence to exact owned sources; never sweep historical rows.
+
+    Older installations may not have initialized coaching yet. A failed schema
+    read still propagates, so a storage error cannot silently skip cleanup.
+    """
+    if not conn.execute('PRAGMA table_info(gbop_coaching_observations)').fetchall():
+        return []
+    keys = sorted({f'journal:{value}' for value in journal_ids} |
+                  {f'risk:{value}' for value in risk_ids})
+    if not keys:
+        return []
+    clause = 'guild_id=? AND user_id=? AND source_key IN (' + ','.join('?' for _ in keys) + ')'
+    params = (guild_id, user_id, *keys)
+    rows = [dict(row) for row in conn.execute(
+        'SELECT * FROM gbop_coaching_observations WHERE ' + clause +
+        ' ORDER BY source_key,theme,polarity', params).fetchall()]
+    if delete and rows:
+        conn.execute('DELETE FROM gbop_coaching_observations WHERE ' + clause, params)
+    return rows
+
+
 def deletion_snapshot(conn, guild_id, user_id, *, journal_id=None, trade_id=None):
     """Fingerprint every owned record in the selected journal/trade aggregate.
 
@@ -67,6 +89,8 @@ def deletion_snapshot(conn, guild_id, user_id, *, journal_id=None, trade_id=None
     else:
         records.update(journals=[dict(journal)], thesis_events=[], thesis_executions=[], risk_flags=[])
     journal_ids = [r['id'] for r in records['journals']]
+    records['coaching_observations'] = _coaching_sources(
+        conn, guild_id, user_id, journal_ids, [r['id'] for r in records['risk_flags']])
     records['journal_details'] = []
     if journal_ids:
         placeholders = ','.join('?' for _ in journal_ids)
@@ -109,7 +133,8 @@ def deletion_snapshot(conn, guild_id, user_id, *, journal_id=None, trade_id=None
     return {'journal': dict(journal) if journal else None, 'trade': dict(trade) if trade else None,
             'fingerprint': digest, 'counts': {'journals': len(records['journals']),
             'events': len(records['thesis_events']), 'executions': len(records['thesis_executions']),
-            'risk_flags': len(records['risk_flags']), 'photos': len(records['trade_photos'])}}
+            'risk_flags': len(records['risk_flags']), 'photos': len(records['trade_photos']),
+            'coaching_observations': len(records['coaching_observations'])}}
 
 
 def validate_deletion_snapshot(snapshot, expected_fingerprint):
@@ -126,7 +151,13 @@ def delete_trade_records(conn, guild_id, user_id, trade_id):
     if row is None:
         raise ValueError('Linked trade was not found in your account. Nothing deleted.')
     validate_owned_relations(conn, guild_id, user_id, trade_id=trade_id)
+    journal_ids = [r['id'] for r in conn.execute(
+        'SELECT id FROM journals WHERE thesis_id=? AND guild_id=? AND user_id=?', params).fetchall()]
+    risk_ids = [r['id'] for r in conn.execute(
+        'SELECT id FROM risk_flags WHERE thesis_id=? AND guild_id=? AND user_id=?', params).fetchall()]
     counts = {}
+    counts['coaching_observations'] = len(_coaching_sources(
+        conn, guild_id, user_id, journal_ids, risk_ids, delete=True))
     for table, label in (('risk_flags', 'risk_flags'), ('thesis_events', 'events'),
                          ('thesis_executions', 'executions'), ('journals', 'journals')):
         counts[label] = conn.execute(
@@ -135,3 +166,19 @@ def delete_trade_records(conn, guild_id, user_id, trade_id):
         conn.execute(f'DELETE FROM {table} WHERE thesis_id=? AND guild_id=? AND user_id=?', params)
     conn.execute('DELETE FROM theses WHERE id=? AND guild_id=? AND user_id=?', params)
     return counts
+
+
+def delete_journal_records(conn, guild_id, user_id, journal_id):
+    """Delete a confirmed journal and its owned aggregate in the caller's transaction."""
+    lock_member_deletion(conn, guild_id, user_id)
+    row = conn.execute('SELECT thesis_id FROM journals WHERE id=? AND guild_id=? AND user_id=? FOR UPDATE',
+                       (journal_id, guild_id, user_id)).fetchone()
+    if row is None:
+        raise ValueError('That journal was not found in your account. Nothing deleted.')
+    if row['thesis_id'] is not None:
+        return delete_trade_records(conn, guild_id, user_id, row['thesis_id'])
+    validate_owned_relations(conn, guild_id, user_id, journal_ids=(journal_id,))
+    observations = _coaching_sources(conn, guild_id, user_id, (journal_id,), delete=True)
+    conn.execute('DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?',
+                 (journal_id, guild_id, user_id))
+    return {'journals': 1, 'coaching_observations': len(observations)}

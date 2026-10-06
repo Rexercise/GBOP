@@ -12,6 +12,7 @@ from gbop_voice_web.market_data import MARKET_TOOLS, session_review
 from gbop_voice_web.market_prefetch import prefetch_market_evidence
 from gbop_voice_web.shift_synopsis import build_other_ranges
 from gbop_voice_web.voice_payload import voice_tool_payload, SHIFT_SYNOPSIS_TARGET_CHARS
+from test_voice_payload_budget import expanded
 
 
 DAY = {'asset': 'NAS100', 'date_ny': '2026-10-02', 'shift': 'day'}
@@ -194,7 +195,7 @@ class OtherRangeConversationTests(unittest.TestCase):
         payload = voice_tool_payload('review_other_market_ranges', result)
         self.assertTrue(payload['ok'])
         self.assertEqual(payload['voice_view']['kind'], 'other_range_followup')
-        self.assertEqual(payload['review']['other_range_followup'], result['review']['other_range_followup'])
+        self.assertEqual(expanded(payload, payload['review']['other_range_followup']), result['review']['other_range_followup'])
         self.assertLess(len(json.dumps(payload, separators=(',', ':'))), SHIFT_SYNOPSIS_TARGET_CHARS)
 
     def test_voice_continue_cannot_switch_scope(self):

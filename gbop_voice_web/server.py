@@ -790,12 +790,12 @@ def tool_prepare_journal_delete(user_id: int, args: dict):
         "legacy_journal_number": display['legacy_journal_number'],
         "description": row["description"], "created_at": row["created_at"],
         "records": snapshot['counts'],
-        "message": "Ask the user to confirm deleting this journal. Its linked trade, executions, events, risk flags, photos linked to the trade, and all linked journals will also be deleted. Nothing has been deleted.",
+        "message": "Ask the user to confirm deleting this journal. Its linked trade, executions, events, risk flags, photos linked to the trade, all linked journals, and coaching observations derived from those journals and risk flags will also be deleted. Nothing has been deleted.",
     }
 
 
 def tool_delete_journal(user_id: int, args: dict, confirmation_token=None):
-    from gbop_voice_web.deletion import deletion_snapshot, validate_deletion_snapshot
+    from gbop_voice_web.deletion import deletion_snapshot, validate_deletion_snapshot, delete_journal_records
     pending = PENDING_JOURNAL_DELETIONS.get(user_id)
     journal_id = args.get("journal_id")
     if (args.get("confirmed") is not True or type(journal_id) is not int
@@ -812,12 +812,7 @@ def tool_delete_journal(user_id: int, args: dict, confirmation_token=None):
             if PENDING_JOURNAL_DELETIONS.get(user_id) is not pending or pending['expires_at'] <= time.time():
                 return {'ok': False, 'error': 'The deletion preview expired or changed. Preview it again.'}
             validate_deletion_snapshot(snapshot, pending['fingerprint'])
-            row = snapshot['journal']
-            if row["thesis_id"] is not None:
-                delete_trade_records(conn, GTOP_GUILD_ID, user_id, row["thesis_id"])
-            else:
-                conn.execute("DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?",
-                             (journal_id, GTOP_GUILD_ID, user_id))
+            delete_journal_records(conn, GTOP_GUILD_ID, user_id, journal_id)
     except ValueError as exc:
         return {'ok': False, 'error': str(exc)}
     if PENDING_JOURNAL_DELETIONS.get(user_id) is pending:

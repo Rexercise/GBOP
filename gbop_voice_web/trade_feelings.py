@@ -123,7 +123,7 @@ SELF_REPORT_PREFIX = (r"(?:i\s+(?:feel|felt|am feeling|was feeling|(?:started|be
     r"i(?:'ve| have)\s+been feeling)")
 
 
-def _explicit_self_report(text, *, fragments=False):
+def _explicit_self_report(text, *, fragments=False, explicit_note=False):
     value = _normalize(text).strip(' ,:')
     if _unsafe_source(value):
         return False
@@ -140,6 +140,12 @@ def _explicit_self_report(text, *, fragments=False):
         r"my\s+(?:feeling|emotion|mood|confidence)(?:s)?\s*(?:is|was|:|began|started)|"
         r"i(?:'m| am| was)\s+(?:" + FEELING_WORDS + r"))\b", value)
     if first_person:
+        return True
+    # Extend only an explicit full-note save, not ordinary speech or a short
+    # prompt answer. The caller still binds the exact Trade #, words and stage.
+    if explicit_note and re.match(r'^i\s+became\s+'
+            r'(?:(?:more|less|a little|slightly|very|really|quite|not(?: at all| really)?)\s+)*'
+            r'(?:' + FEELING_WORDS + r')\b', value):
         return True
     if not fragments:
         return False
@@ -182,7 +188,7 @@ def _note(text):
     if not 0 < number or len(feeling) > MAX_FEELING_CHARS:
         return None
     clauses = [part.strip() for _, _, part in _report_clauses(feeling) if part.strip()]
-    if not clauses or not all(_explicit_self_report(part, fragments=True) for part in clauses):
+    if not clauses or not all(_explicit_self_report(part, fragments=True, explicit_note=True) for part in clauses):
         return None
     return {'trade_number': number, 'feeling': feeling}
 
@@ -257,7 +263,7 @@ def delivered_feeling_clarification(context, text, generation, response_id):
                                           'response_id': response_id}
 
 
-def _source_phrase(text, feeling, *, fragments=False):
+def _source_phrase(text, feeling, *, fragments=False, explicit_note=False):
     """Return the original source substring, checking every intersected clause."""
     if not isinstance(feeling, str) or not feeling.strip() or _unsafe_source(text):
         return None
@@ -288,7 +294,7 @@ def _source_phrase(text, feeling, *, fragments=False):
             # Do not turn "not calm" or "less confident" into its opposite by
             # extracting only the adjective. Preserve the member's modifiers.
             prefix = text[clause_start:match.start()] if clause_start < match.start() else ''
-            if (not _explicit_self_report(part, fragments=fragments)
+            if (not _explicit_self_report(part, fragments=fragments, explicit_note=explicit_note)
                     or re.search(r"\b(?:not|never|less|slightly|barely|hardly|scarcely|no longer|anything but|nowhere near|opposite of|reverse of|far from)(?:\s+(?!(?:and|but|yet|however)\b)[\w’'-]+)*\s*$", prefix, re.I)):
                 accepted = False
                 break
@@ -381,7 +387,7 @@ def _ground_report(args, guild, user):
             and reply['trade_number'] == args.get('trade_number'))
         explicit_note = _note(text)
         fragments = bool(explicit_note or (prompted or clarified) and _short_answer(text))
-        phrase = _source_phrase(text, args.get('feeling'), fragments=fragments)
+        phrase = _source_phrase(text, args.get('feeling'), fragments=fragments, explicit_note=bool(explicit_note))
         if phrase is not None:
             direct = _source_phrase(text, args.get('feeling'), fragments=False)
             if explicit_note or direct is None:

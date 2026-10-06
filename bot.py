@@ -3337,7 +3337,7 @@ def get_journal_delete_preview(user_id: int, journal_id: int):
 
 
 def delete_owned_journal(user_id: int, journal_id: int, expected_fingerprint=None, *, expires_at=None):
-    from gbop_voice_web.deletion import deletion_snapshot, validate_deletion_snapshot
+    from gbop_voice_web.deletion import deletion_snapshot, validate_deletion_snapshot, delete_journal_records
     from gbop_voice_web.journal_numbers import journal_display
     try:
         with db() as conn:
@@ -3345,13 +3345,8 @@ def delete_owned_journal(user_id: int, journal_id: int, expected_fingerprint=Non
             if expires_at is not None and time.monotonic() >= expires_at:
                 return {'ok': False, 'error': 'This preview expired. Preview the records again.'}
             validate_deletion_snapshot(snapshot, expected_fingerprint)
-            row = snapshot['journal']
             display = next(r for r in journal_display(conn, GTOP_GUILD_ID, user_id) if r['id'] == journal_id)
-            if row['thesis_id'] is not None:
-                delete_trade_records(conn, GTOP_GUILD_ID, user_id, row['thesis_id'])
-            else:
-                conn.execute('DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?',
-                             (journal_id, GTOP_GUILD_ID, user_id))
+            delete_journal_records(conn, GTOP_GUILD_ID, user_id, journal_id)
     except ValueError as exc:
         return {'ok': False, 'error': str(exc)}
     return {'ok': True, 'journal_id': journal_id, 'trade_id': display['trade_number'], 'trade_preserved': False}
@@ -3410,7 +3405,7 @@ class DeleteJournalView(discord.ui.View):
             content=(
                 f"🗑️ **{self.label} deleted.**"
                 f"{trade_note}\n"
-                "Linked trade, executions, events, risk flags, and journals are removed together."
+                "Linked trade, executions, events, risk flags, journals, and their derived coaching observations are removed together."
             ),
             view=None,
         )
@@ -3473,7 +3468,7 @@ async def deletejournal(
         f"**Delete {label}?**\nResult: **{result_text}**\n"
         f"Rule Adherence: **{preview['rule_adherence'] or 'Not specified'}**\n\n"
         'This permanently deletes the journal and its linked trade. All linked executions, events, risk flags, '
-        'photos linked to the trade, and journals will also be removed.',
+        'photos linked to the trade, journals, and coaching observations derived from those journals and risk flags will also be removed.',
         view=DeleteJournalView(interaction.user.id, preview), ephemeral=True)
 
 
@@ -3575,7 +3570,8 @@ class DeleteTradeView(discord.ui.View):
                 f"Removed: **{result['executions']} execution(s)**, "
                 f"**{result['events']} event(s)**, "
                 f"**{result['journals']} linked journal(s)**, and "
-                f"**{result['risk_flags']} risk flag(s)**."
+                f"**{result['risk_flags']} risk flag(s)**. "
+                f"Also removed **{result['coaching_observations']} derived coaching observation(s)**."
             ),
             view=None,
         )
@@ -3658,7 +3654,8 @@ async def deletetrade(
             f"This will remove **{preview['executions']} execution(s)**, "
             f"**{preview['events']} event(s)**, "
             f"**{preview['journals']} linked journal(s)**, and "
-            f"**{preview['risk_flags']} risk flag(s)**.\n\n"
+            f"**{preview['risk_flags']} risk flag(s)**. "
+            f"Also removes **{preview['coaching_observations']} coaching observation(s)** derived from those journals and risk flags.\n\n"
             "**This cannot be undone.**"
         ),
         view=DeleteTradeView(interaction.user.id, preview),

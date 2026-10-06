@@ -20,7 +20,7 @@ from gbop_voice_web.chronological_context import (build_context_graph, compact_c
 
 
 SYNOPSIS_CONTRACT = (
-    '9ate8 verdict, Young Lefty status, then selected chronology to shift_end. '
+    'Opening plays in evidenced event-time order, including 9ate8 verdict and Young Lefty status, then selected chronology to shift_end. '
     'Continue after delivery with each evidenced later range and its own outcome; independent context is not a new selection. '
     'Only recorded completion/invalidation handoffs change the range under review; selection does not establish a CRT. Explain supplied variants/candidates and missing conditions. '
     'Preserve earlier delivery and BUT induced 50% gap/path. Body is not thesis; no glossary/profit. '
@@ -28,11 +28,16 @@ SYNOPSIS_CONTRACT = (
     'Primary body identity belongs to the original local direction, not a paired/boneless thesis. '
     'Use detail_request for further Model 1/CISD/Soup; omission is not absence. ' + CONTEXT_CONTRACT)
 
+RANGE_IDENTITY_CONTRACT = (
+    'Name acting candle AND affected range. Own closure fixes anchor bounds; own CRT needs subsequent '
+    'purge/return evidence. Recheck the same parent on challenges, not another anchor.')
+SYNOPSIS_CONTRACT += ' ' + RANGE_IDENTITY_CONTRACT
+
 
 OTHER_RANGES_CONTRACT = (
-    'Follow mode and named ranges through GTOP shift end. Exclude discussed opportunities; retain their bridge. '
-    'Under review is not CRT confirmation. Keep primary/own CRT/CISD, parent, re-purges, variant and DOL separate. '
-    'Body is not thesis; omission is not absence. Retrieval is not discussion.')
+    'Follow mode through shift end; exclude discussed ranges, retain bridge. Under review is not CRT confirmation. '
+    'Name acting candle AND affected range. Keep primary/own CRT/CISD, parent, re-purges, variant and DOL distinct. '
+    'Omission is not absence; retrieval is not discussion.')
 
 
 def negative_claim_guard(young_status, story):
@@ -106,20 +111,20 @@ def _continuity_bridge(context):
     for hour in context['hourly_development']:
         actions = []
         if hour.get('purge'):
-            actions.append(f"swept its {hour['purge']['side']}-side")
+            actions.append(f"swept the {name}'s {hour['purge']['side']}-side")
             if hour.get('candle_science') in ('wick_above', 'wick_below', 'both_sides_wicked', 'inside_range'):
-                actions.append(f"closed {hour.get('candle_body_direction') or ''} back inside".replace('  ', ' '))
+                actions.append(f"closed {hour.get('candle_body_direction') or ''} back inside that range".replace('  ', ' '))
         for key, label in (('midpoint', '50%'), ('opposing_liquidity',
                 'sell-side' if context.get('direction') == 'bearish' else 'buy-side')):
             event = hour.get(key)
             if event:
-                actions.append(f"delivered its {label} in " + candle_label(event['bar_open_ny'],
+                actions.append(f"delivered the {name}'s {label} in " + candle_label(event['bar_open_ny'],
                     source_timeframe(event.get('precision_seconds'))))
         if actions:
             parts.append(f"The {_clock(hour['candle_start_ny'])} H1 candle " + ' and '.join(actions) + '.')
-    parts.append(variant_clause(context.get('variant', {}), include_known=True) + '.')
+    parts.append(f"The {name}: " + variant_clause(context.get('variant', {}), include_known=True) + '.')
     if context.get('invalidated_at_ny'):
-        parts.append(f"The range was invalidated on {closing_candle(context['invalidated_at_ny'])['spoken_label']}"
+        parts.append(f"The {name} was invalidated on {closing_candle(context['invalidated_at_ny'])['spoken_label']}"
                      + (' after recorded delivery.' if context['conclusion']['status'] == 'opposing_liquidity_delivered' else '.'))
     if context.get('next_selected_range'):
         nxt = context['next_selected_range']
@@ -139,26 +144,28 @@ def _short_selected_summary(context):
     for hour in context['hourly_development']:
         actions = []
         if hour.get('purge'):
-            actions.append(f"swept {hour['purge']['side']}-side")
+            actions.append(f"swept the {name}'s {hour['purge']['side']}-side")
             if hour.get('candle_science') in ('wick_above', 'wick_below', 'both_sides_wicked', 'inside_range'):
-                actions.append(f"closed {hour.get('candle_body_direction') or ''} inside".replace('  ', ' '))
+                actions.append(f"closed {hour.get('candle_body_direction') or ''} inside that range".replace('  ', ' '))
         for key, label in (('midpoint', '50%'), ('opposing_liquidity',
                 'sell-side' if context.get('direction') == 'bearish' else 'buy-side')):
             event = hour.get(key)
             if event:
                 verb = 'delivered ' if not any('delivered ' in action for action in actions) else ''
-                actions.append(f"{verb}{label} in {_clock(event['bar_open_ny'])} "
+                actions.append(f"{verb}the {name}'s {label} in {_clock(event['bar_open_ny'])} "
                                f"{source_timeframe(event.get('precision_seconds')) or 'source'}")
         if actions:
-            parts.append(f"{_clock(hour['candle_start_ny'])} H1 " + ', '.join(actions) + '.')
-    parts.append(variant_clause(context.get('variant', {}), include_known=True) + '.')
+            parts.append(f"{_clock(hour['candle_start_ny'])} H1 candle " + ', '.join(actions) + '.')
+    conclusion = f"The {name}: " + variant_clause(context.get('variant', {}), include_known=True)
     if context['conclusion']['status'] == 'pending_at_review_cutoff':
-        parts.append('Full DOL remains pending.')
+        conclusion += '; full DOL remains pending'
     elif context['conclusion']['status'] == 'unverified':
-        parts.append('DOL unverified.')
+        conclusion += '; DOL unverified'
     if context.get('invalidated_at_ny'):
-        parts.append(f"Invalidated on {closing_candle(context['invalidated_at_ny'])['spoken_label']}"
-                     + (' after recorded delivery.' if context['conclusion']['status'] == 'opposing_liquidity_delivered' else '.'))
+        conclusion += f"; invalidated on {closing_candle(context['invalidated_at_ny'])['spoken_label']}"
+        if context['conclusion']['status'] == 'opposing_liquidity_delivered':
+            conclusion += ' after recorded delivery'
+    parts.append(conclusion + '.')
     if context.get('next_selected_range'):
         nxt = context['next_selected_range']
         parts.append(transition_sentence(nxt))
@@ -173,11 +180,12 @@ def _compact_active_context(context):
     if not context:
         return None
     out = _pick(context, ('anchor_start_ny', 'selected_at_ny', 'selected_through_ny',
-        'still_selected_at_cutoff', 'direction', 'invalidated_at_ny', 'variant_known_at_ny', 'next_selected_range'))
+        'selection_status', 'crt_status', 'still_selected_at_cutoff', 'direction', 'invalidated_at_ny', 'variant_known_at_ny', 'next_selected_range'))
     out['conclusion'] = _pick(context['conclusion'], ('status', 'known_at_ny'))
     out['hourly_development'] = []
     for hour in context['hourly_development']:
-        item = _pick(hour, ('candle_start_ny', 'candle_body_direction', 'candle_science', 'return_inside'))
+        item = _pick(hour, ('candle_start_ny', 'own_range_crt_status_at_cutoff',
+                           'candle_body_direction', 'candle_science', 'return_inside'))
         # Exact purge/objective intervals are already in this anchor's ranges
         # fact. Preserve the hour's relationship without a second interval copy.
         if hour.get('purge'):
@@ -195,6 +203,14 @@ def _pick(value, keys):
 
 def _clock(value):
     return datetime.fromisoformat(value).strftime('%I:%M %p').lstrip('0')
+
+
+def _first_event_time(fact):
+    """Opening order comes from observed setup events, never branded priority."""
+    event = (fact.get('first_purge_interval') or fact.get('paired_setup')
+             or fact.get('physical_path_audit', {}).get('first_purge_interval') or {})
+    value = event.get('bar_open_ny') or event.get('start_ny')
+    return parse_time(value) if value else None
 
 
 def _objective(value, level=None):
@@ -493,6 +509,7 @@ def build_shift_synopsis(review, asset=None):
     young = next((o.get('evidence') for o in review.get('observations', [])
                   if o.get('play') == 'Young Lefty'), None)
     young_relevant = False
+    young_fact = None
     young_status = 'unverified'
     young_sentence = 'Young Lefty: unverified; missing or unfinished seven-range evidence.'
     young_coverage, missing_sentence = _missing_young_anchor(young)
@@ -507,9 +524,10 @@ def build_shift_synopsis(review, asset=None):
             item['opposes_9ate8'] = (None if item.get('young_lefty_context') else
                 bool(item['direction'] and lead['direction'] and item['direction'] != lead['direction']))
             facts.append(item)
+            young_fact = item
             young_sentence = _sentence(item, young=True, compact=True)
             if item.get('pending_range'):
-                young_sentence += ' ' + pending_sentence(item['pending_range'])
+                young_sentence += ' ' + pending_sentence(item['pending_range'], item['anchor_start_ny'])
             if item.get('pending_reversal'):
                 young_sentence += ' ' + pending_reversal_sentence(item['pending_reversal'], item['anchor_start_ny'])
             young_status = 'context_dependent' if item.get('young_lefty_context') else item['verdict']
@@ -517,11 +535,18 @@ def build_shift_synopsis(review, asset=None):
         elif young.get('observation_coverage', {}).get('complete'):
             young_status = 'absent'
             young_sentence = 'Young Lefty: absent; no early seven-range purge by eight/nine.'
-    sentences.append(young_sentence)
     if lead.get('pending_range'):
-        sentences.append(pending_sentence(lead['pending_range']))
+        sentences.append(pending_sentence(lead['pending_range'], lead['anchor_start_ny']))
     if lead.get('pending_reversal'):
-        sentences.append(pending_reversal_sentence(lead['pending_reversal'], lead['anchor_start_ny']))
+        sentences.append(pending_reversal_sentence(lead['pending_reversal'], lead['anchor_start_ny'],
+                         include_confirmation=not bool(opening_double)))
+    young_time = _first_event_time(young_fact) if young_fact else None
+    lead_time = _first_event_time(lead)
+    if young_time is not None and lead_time is not None and young_time < lead_time:
+        sentences.insert(0, young_sentence)
+    else:
+        # Absent, incomplete or tied evidence does not establish earlier order.
+        sentences.append(young_sentence)
     cutoff_transitions_spoken = set()
     for row in ranges:
         if row is opening:
@@ -548,9 +573,10 @@ def build_shift_synopsis(review, asset=None):
                 sentences.append(f"Its {item['direction']} boneless from paired setup by {_clock(known)}: "
                                  + _delivery_text(item) + '.')
             if item.get('pending_range'):
-                sentences.append(pending_sentence(item['pending_range']))
+                sentences.append(pending_sentence(item['pending_range'], item['anchor_start_ny']))
             if item.get('pending_reversal'):
-                sentences.append(pending_reversal_sentence(item['pending_reversal'], item['anchor_start_ny']))
+                sentences.append(pending_reversal_sentence(item['pending_reversal'], item['anchor_start_ny'],
+                                 include_confirmation=not bool(continuity and continuity.get('double_purge'))))
             if continuity and (continuity.get('next_selected_range') or {}).get('at_review_cutoff'):
                 cutoff_transitions_spoken.add(continuity['next_selected_range']['to_anchor_ny'])
     if not story.get('coverage', {}).get('complete') or not story.get('progression_complete'):
@@ -653,7 +679,7 @@ def build_other_ranges(review, asset=None, discussed=(), *, continue_active=Fals
             if fact['role'] == 'independent_range_context' and not fact.get('play'):
                 text = 'Separately, treating this candle as an independent range: ' + text
             if fact.get('pending_range'):
-                text += ' ' + pending_sentence(fact['pending_range'])
+                text += ' ' + pending_sentence(fact['pending_range'], fact['anchor_start_ny'])
             if fact.get('pending_reversal'):
                 text += ' ' + pending_reversal_sentence(fact['pending_reversal'], fact['anchor_start_ny'])
         remaining.append(fact)

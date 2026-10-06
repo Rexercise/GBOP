@@ -40,7 +40,7 @@ class ShiftSynopsisTests(unittest.TestCase):
         self.assertEqual(review, before)
         return result
 
-    def test_real_gold_leads_boneless_delivery_then_opposed_early_young_lefty(self):
+    def test_real_gold_keeps_boneless_fact_order_but_narrates_earlier_young_lefty_first(self):
         replay = self.replay(retained.RetainedMarketReplayTests)
         source = replay.tool('XAUUSD')
         synopsis = source['review']['shift_synopsis']
@@ -56,7 +56,8 @@ class ShiftSynopsisTests(unittest.TestCase):
         self.assertEqual([v['code'] for v in young['variant']['labels']], ['V2'])
         self.assertNotEqual(young['opposing_liquidity']['level'], lead['opposing_liquidity']['level'])
         text = synopsis['spoken_summary']
-        self.assertTrue(text.startswith('9ate8'))
+        self.assertTrue(text.startswith('Young Lefty'))
+        self.assertLess(text.index('8:30 AM'), text.index('10:28 AM'))
         self.assertIn('opposite 9ate8', text)
         self.assertNotIn('Model 1', text)
         # Required chronological context remains bounded even without a body Model 1.
@@ -289,7 +290,8 @@ class ShiftSynopsisTests(unittest.TestCase):
             self.assertIn('SHORT', prompt)
             self.assertIn('shift_synopsis.spoken_summary', prompt)
             self.assertIn('Young Lefty', prompt)
-            self.assertIn("always state Young Lefty's independent status", prompt)
+            self.assertIn("always state young lefty's independent status", prompt.lower())
+            self.assertIn("evidenced event-time order", prompt)
             self.assertNotIn('Omit absent/uninitiated', prompt)
             self.assertIn('Recaps: verdict then BUT induced 50%', prompt)
             self.assertIn('No glossary, universal threshold, inferred intent/profit', prompt)
