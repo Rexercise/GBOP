@@ -91,7 +91,8 @@ def _bounded_error(error, budget=SHIFT_OVERVIEW_TARGET_CHARS):
     if _encoded_size(error) <= budget:
         return error
     out = _pick(error, ('ok', 'status', 'asset', 'anchor_start_ny', 'through_ny',
-                        'message', 'detail_request', 'raw_candle_request', 'backend_remaining_from_ny'))
+                        'message', 'detail_request', 'raw_candle_request', 'backend_remaining_from_ny',
+                        'negative_claim_guard'))
     context = error.get('market_context')
     if isinstance(context, dict):
         out['market_context'] = _pick(context, ('selection', 'scope_id', 'evidence_id', 'source_tool', 'limits'))
@@ -104,9 +105,16 @@ def _bounded_error(error, budget=SHIFT_OVERVIEW_TARGET_CHARS):
         return out
     # Reject malformed/unbounded metadata rather than truncate an identifier,
     # timestamp or request into a different, apparently valid scope.
-    return {'ok': False, 'status': error.get('status'), 'evidence_omitted': True,
-            'message': 'The scoped evidence and metadata exceed the voice budget. '
-                       'Ask for one asset, exact range and candle; no market outcome was supplied.'}
+    out = {'ok': False, 'status': error.get('status'), 'evidence_omitted': True,
+           'message': 'The scoped evidence and metadata exceed the voice budget. '
+                      'Ask for one asset, exact range and candle; no market outcome was supplied.'}
+    for key in ('message', 'status', 'evidence_omitted'):
+        if _encoded_size(out) <= budget:
+            return out
+        out.pop(key, None)
+    if _encoded_size(out) <= budget:
+        return out
+    raise ValueError('Voice budget cannot fit even an explicit failure result.')
 
 
 def _interval(value):
@@ -343,6 +351,45 @@ def _budget_overview(out):
     return out
 
 
+def _compact_synopsis_navigation(out):
+    """Share exact request scope and duplicate policy prose, never market facts.
+
+    A compact index still names every range. Its common request is expanded by
+    adding that row's anchor_start_ny; require exact equality before factoring,
+    so an exceptional asset, cutoff, timeframe or future argument stays intact.
+    This runs only on the copied voice view, after authoritative context capture.
+    """
+    synopsis = out['review']['shift_synopsis']
+    index = synopsis.get('range_index', [])
+    common, common_encoded = None, None
+    for row in index:
+        request = deepcopy(row.get('detail_request'))
+        if not isinstance(request, dict) or not isinstance(request.get('args'), dict):
+            return
+        anchor = row.get('anchor_start_ny')
+        if not isinstance(anchor, str) or not anchor or request['args'].pop('anchor_start_ny', None) != anchor:
+            return
+        encoded = json.dumps(request, sort_keys=True, separators=(',', ':'))
+        if common_encoded is not None and encoded != common_encoded:
+            return
+        common, common_encoded = request, encoded
+    if common is None:
+        return
+    synopsis['range_detail_request'] = common
+    for row in index:
+        del row['detail_request']
+    out['voice_view']['note'] = (
+        'For exact detail, add the chosen range_index.anchor_start_ny to range_detail_request.args.')
+    # Consolidate the two synopsis instruction copies. Every structured fact,
+    # spoken_summary, coverage caveat and negative-claim guard stays unchanged.
+    synopsis['response_contract'] = (
+        'State 9ate8, Young Lefty and all later range outcomes through shift_end, even after delivery. '
+        'Only next_selected_range changes selection; independent context is not selection. '
+        'Explain variant/candidate reasons and missing conditions. Preserve earlier delivery, '
+        'BUT induced 50% gap/path and ordered double-purge reversal separately. '
+        'Body is not thesis; no glossary/profit. Use range_detail_request for Model 1/CISD/Soup; omission is not absence.')
+
+
 def shift_voice_synopsis(result):
     """Small default presentation after raw conversation evidence was captured.
 
@@ -362,13 +409,18 @@ def shift_voice_synopsis(result):
         'note': 'Follow the selected range to shift_end; only a recorded transition '
                 'changes selection. Name supported variants/candidates with reasons and missing conditions. '
                 'Omission is not absence; range_index retrieves Model 1/CISD/Soup detail.'}
+    synopsis = out['review']['shift_synopsis']
+    range_index = deepcopy(synopsis['range_index'])
     if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
-        synopsis = out['review']['shift_synopsis']
+        _compact_synopsis_navigation(out)
+    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
         return _bounded_error({'ok': False, 'status': 'voice_synopsis_budget_exceeded',
             'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),
             'message': 'This synopsis exceeds the response budget. Request an exact named range; no synopsis was supplied.',
-            'range_index': synopsis['range_index'],
-            'detail_request': next((r['detail_request'] for r in synopsis['range_index'] if r['label'] == '9ate8'), None)},
+            'range_index': range_index,
+            **({'negative_claim_guard': deepcopy(synopsis['negative_claim_guard'])}
+               if synopsis.get('negative_claim_guard') else {}),
+            'detail_request': next((r['detail_request'] for r in range_index if r['label'] == '9ate8'), None)},
             SHIFT_SYNOPSIS_TARGET_CHARS)
     return out
 
