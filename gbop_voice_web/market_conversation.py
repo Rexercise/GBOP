@@ -35,7 +35,7 @@ def contextual_tools(tools):
     """Copy schemas so global market/watch tools and nonconversation users stay intact."""
     result = deepcopy(tools)
     for tool in result:
-        if tool.get('name') in WRITE_TOOLS and tool.get('name') != 'save_ss_review':
+        if tool.get('name') in WRITE_TOOLS and tool.get('name') not in {'save_ss_review','stage_journal_story','get_journal_story','save_journal_story'}:
             params = tool['parameters']
             params['properties']['market_reference'] = {'type': ['string', 'null'], 'enum': ['selected_review', 'selected_candle', 'none', None]}
             params['required'].append('market_reference')
@@ -519,6 +519,8 @@ class MarketConversation:
             self._multi_read_lock = threading.Lock()
             from gbop_voice_web.trade_feelings import begin_feeling_turn
             begin_feeling_turn(self, text)
+            from gbop_voice_web.journal_story import begin_story_turn
+            begin_story_turn(self, text)
             self._current_result = None
             self._other_result = None
             self._retrieved_discussion.clear()
@@ -873,6 +875,8 @@ class MarketConversation:
                 self._completed_responses.popitem(last=False)
             from gbop_voice_web.trade_feelings import delivered_feeling_clarification
             delivered_feeling_clarification(self, text, ticket, receipt[1])
+            from gbop_voice_web.journal_story import delivered_story_question
+            delivered_story_question(self, text, ticket)
             scope = _discussion_scope(self.selected)
             if not scope or scope != _discussion_scope(self.requested):
                 return 0
@@ -1070,6 +1074,8 @@ class MarketConversation:
     def _run_journal(self, name, arguments, runner, ticket):
         args = {key: value for key, value in dict(arguments).items() if not key.startswith('_')}
         reference = args.pop('market_reference', None)
+        if name in {'stage_journal_story','get_journal_story','save_journal_story'} and reference not in (None,'none'):
+            return {'ok':False,'error':'Story drafts preserve member-reported narrative, not a market-review binding. Use the existing contextual journal flow for verified candle provenance.'}
         if reference not in (None, 'none', 'selected_review', 'selected_candle'):
             return {'ok': False, 'error': 'Use market_reference selected_review, selected_candle, none, or null.'}
         with self._journal_write_lock:
@@ -1077,7 +1083,7 @@ class MarketConversation:
                 if not self.current(ticket):
                     return self._stale()
                 wants_review = self._journal_reference is True or (reference in {'selected_review', 'selected_candle'} and self._journal_reference is None)
-                existing_journal = (name in {'edit_journal', 'record_trade_feeling', 'record_trade_self_grade', 'save_ss_review'} or name == 'save_journal_entry' and
+                existing_journal = (name in {'stage_journal_story', 'get_journal_story', 'save_journal_story', 'edit_journal', 'record_trade_feeling', 'record_trade_self_grade', 'save_ss_review'} or name == 'save_journal_entry' and
                     any(args.get(key) is not None for key in ('journal_number', 'trade_number', 'legacy_journal_number'))
                     or name == 'open_trade' and args.get('trade_id') is not None)
                 if existing_journal:
@@ -1097,12 +1103,15 @@ class MarketConversation:
                     if (self._journal_candle_reference or reference == 'selected_candle') and review.get('candle_selection_required'):
                         return {'ok': False, 'status': 'journal_candle_required',
                                 'error': 'Which candle opening and timeframe was your entry? Several or unverified candle identities remain in this review.'}
-                key = _digest({'tool': name, 'args': args, 'review': review})
-                if key in self._journal_results:
+                story_revision = (getattr(self, '_journal_story', None) or {}).get('revision') if name == 'save_journal_story' else None
+                cache_result = name not in {'stage_journal_story','get_journal_story'}
+                key = _digest({'tool': name, 'args': args, 'review': review, 'story_revision':story_revision})
+                if cache_result and key in self._journal_results:
                     return deepcopy(self._journal_results[key])
                 args['_journal_binding'] = JournalBinding(self, ticket, review)
-                self._journal_results[key] = {'ok': False, 'status': 'journal_outcome_uncertain',
-                    'error': 'This write was already started. Check saved journal/trade state before retrying; do not create a duplicate.'}
+                if cache_result:
+                    self._journal_results[key] = {'ok': False, 'status': 'journal_outcome_uncertain',
+                        'error': 'This write was already started. Check saved journal/trade state before retrying; do not create a duplicate.'}
             result = runner(name, args)
             if result.get('ok') and self.auth_provider:
                 from gbop_voice_web.trade_feelings import optional_prompt
@@ -1115,7 +1124,7 @@ class MarketConversation:
                     # reflection must never induce an unsafe repeat execution.
                     result = {**result, 'optional_feeling_prompt_unavailable': True}
             with self._lock:
-                if result.get('ok') and ticket == self.generation:
+                if cache_result and result.get('ok') and ticket == self.generation:
                     self._journal_results[key] = deepcopy(result)
                     self._journal_results = dict(list(self._journal_results.items())[-32:])
             return result

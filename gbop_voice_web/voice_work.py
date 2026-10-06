@@ -6,11 +6,13 @@ from collections import deque
 from uuid import uuid4
 
 from gbop_voice_web.voice_runtime import (RECOVERY_NAMES, READ_ONLY_RECOVERY_NAMES, recovery_options,
-    delivery_identity, delivery_receipt_fingerprint)
+    delivery_identity, delivery_receipt_fingerprint, JOURNAL_WRITE_NAMES, JOURNAL_WRITE_TERMINAL,
+    journal_write_needs_reconciliation)
 
 
 READ_STATUS_SECONDS = 300
 MAX_READ_STATUS_CALLS = 64
+WRITE_STATUS_SECONDS = 900
 
 
 async def create_response(session, options):
@@ -58,6 +60,8 @@ class VoiceToolWork:
         self.delivery_recovery = None
         self.read_calls = {}
         self.read_status = None
+        self.write_status = None
+        self.write_barriers = {}
 
     @property
     def pending(self):
@@ -124,6 +128,13 @@ class VoiceToolWork:
         if self.read_status is not None:
             self.read_status.cancel()
             self.read_status = None
+        if self.write_status is not None:
+            self.write_status.cancel()
+            self.write_status = None
+        self.write_barriers.clear()
+        write = getattr(self.session, '_journal_write_recovery', None)
+        if write is not None and not write['reconciled']:
+            write.setdefault('interrupted_at', time.monotonic())
         if preserve_read_status:
             for entry in self.read_calls.values():
                 entry.setdefault('interrupted_at', time.monotonic())
@@ -193,6 +204,71 @@ class VoiceToolWork:
         finally:
             if self.read_status is asyncio.current_task():
                 self.read_status = None
+
+    def _write_status_current(self, entry, scope):
+        if (not entry or not self.current(scope)
+                or entry is not getattr(self.session, '_journal_write_recovery', None)):
+            return False
+        identity = delivery_identity(self.session)
+        member, owner, session_id = identity
+        context = getattr(self.session, 'market_context', None)
+        return bool(member and len(owner) >= 2 and owner[1] == member and session_id
+                    and not getattr(context, 'closed', False)
+                    and identity == entry['identity'] and self.session.websocket is entry['websocket']
+                    and self.session._voice_turn_count > entry['turn']
+                    and 'interrupted_at' in entry and not entry['reconciled']
+                    and time.monotonic() - entry['interrupted_at'] <= WRITE_STATUS_SECONDS)
+
+    def recover_writes(self):
+        """Retain committed save facts across barge-in, without replay or speech."""
+        entry = getattr(self.session, '_journal_write_recovery', None)
+        scope = self.scope()
+        if not self._write_status_current(entry, scope):
+            return
+        if self.write_status is None or self.write_status.done():
+            self.write_status = asyncio.create_task(self._report_interrupted_write(entry, scope))
+
+    async def _report_interrupted_write(self, entry, scope):
+        try:
+            authorize = getattr(self.session, 'authorize_tool', None)
+            if authorize is None:
+                return
+            # Pending can become saved while auth or transport is awaited. Drain
+            # the newest snapshot in this task so that change cannot be lost.
+            while self._write_status_current(entry, scope):
+                if await authorize() or not self._write_status_current(entry, scope):
+                    return
+                outcome = dict(entry['outcome'])
+                fingerprint = json.dumps(outcome, sort_keys=True, separators=(',', ':'))
+                if fingerprint == entry['published']:
+                    return
+                text = ('JOURNAL WRITE STATUS CONTEXT. Metadata for the earlier interrupted '
+                        'record change, not a new request. Use only for that save or its status. '
+                        'Saved means the database transaction committed: report the actual Trade # '
+                        'and replace any earlier waiting claim. Pending means its worker has not '
+                        'finished; it does not promise a reply. Uncertain means a save may have '
+                        'happened and no outcome is verified. Never repeat open/add/save '
+                        'automatically. A distinct new user request is required for a new write '
+                        'after reconciliation. This does not assert that optional risk checks '
+                        'finished or that a journal contains every requested detail. Outcome JSON: '
+                        + json.dumps(outcome, separators=(',', ':')))
+                sent = await self.session.send_event({'type': 'conversation.item.create', 'item': {
+                    'type': 'message', 'role': 'system',
+                    'content': [{'type': 'input_text', 'text': text}]}})
+                if sent is False or not self._write_status_current(entry, scope):
+                    return
+                entry['published'] = fingerprint
+                if outcome['status'] in JOURNAL_WRITE_TERMINAL and outcome == entry['outcome']:
+                    entry['reconciled'] = True
+                    entry['reconciled_turn'] = self.session._voice_turn_count
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print('[GBOP-WRITE-STATUS] unavailable:', type(exc).__name__)
+        finally:
+            if self.write_status is asyncio.current_task():
+                self.write_status = None
 
     def recover_delivery(self):
         """Publish exact interrupted-operation facts in current context, silently.
@@ -286,6 +362,14 @@ class VoiceToolWork:
             return
         self.seen_calls.append(call_id)
         scope = self.scope()
+        write = getattr(self.session, '_journal_write_recovery', None)
+        if (item['name'] in JOURNAL_WRITE_NAMES
+                and journal_write_needs_reconciliation(write, self.session._voice_turn_count)):
+            # Capture admission, not later execution time: waiting behind the
+            # old worker must not turn a premature retry into a fresh write.
+            self.write_barriers[call_id] = write
+            if len(self.write_barriers) > 256:
+                self.write_barriers.pop(next(iter(self.write_barriers)))
         if item['name'] in READ_ONLY_RECOVERY_NAMES:
             self.read_calls[call_id] = dict(tool=item['name'], identity=delivery_identity(self.session),
                 websocket=self.session.websocket, turn=self.session._voice_turn_count)
