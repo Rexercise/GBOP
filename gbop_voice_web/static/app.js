@@ -29,6 +29,10 @@ let connectionGeneration = 0;
 let outputScope = null;
 let outputSequence = 0;
 let remotePlaybackReady = false;
+let completedOutputId = null;
+let turnReplyToResponseId = null;
+let completedOutputReceipt = null;
+let turnReplyReceipt = null;
 
 function acknowledgeMarketResponse(text) {
   const scope = outputScope;
@@ -38,12 +42,20 @@ function acknowledgeMarketResponse(text) {
       || !remotePlaybackReady || els.remoteAudio.paused || els.remoteAudio.muted
       || els.remoteAudio.ended || els.remoteAudio.volume === 0
       || !(els.remoteAudio.currentTime > scope.audioStartedAt)) return;
-  authFetch("/api/live/context/delivered", {
+  completedOutputId = scope.response;
+  const delivery = authFetch("/api/live/context/delivered", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: scope.session, turn_id: scope.turn,
       response_id: scope.response, text }),
-  }).catch(console.warn);
+  }).then(async (response) => response.ok && (await response.json()).ok === true)
+    .catch(() => false);
+  // Playback may finish just before the member says Yes. Do not let either
+  // continuation request overtake its exact delivery receipt at the server.
+  let timeout;
+  completedOutputReceipt = Promise.race([delivery,
+    new Promise((resolve) => { timeout = setTimeout(() => resolve(false), 5000); }),
+  ]).finally(() => clearTimeout(timeout));
 }
 
 function setState(text, mode = "idle") {
@@ -155,14 +167,28 @@ async function waitForIceGathering(pc) {
   });
 }
 
-function invalidateMarketContext(closed = false) {
+function invalidateMarketContext(closed = false, continuation = false) {
   voiceTurn += 1;
+  turnReplyToResponseId = continuation && !closed ? completedOutputId : null;
+  turnReplyReceipt = turnReplyToResponseId ? completedOutputReceipt : null;
+  completedOutputId = completedOutputReceipt = null;
   if (!sessionId) return;
-  authFetch("/api/live/context/cancel", {
+  const requestSession = sessionId;
+  const requestTurn = voiceTurn;
+  const requestConnection = connectionGeneration;
+  const reply = turnReplyToResponseId;
+  const sendFence = (delivered) => authFetch("/api/live/context/cancel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, turn_id: voiceTurn, closed }),
+    body: JSON.stringify({ session_id: requestSession, turn_id: requestTurn, closed,
+      continuation: Boolean(delivered && reply), reply_to_response_id: delivered ? reply : null }),
   }).catch(console.warn);
+  if (!turnReplyReceipt) return sendFence(false); // Interruptions/close fence immediately.
+  return turnReplyReceipt.then((delivered) => {
+    if (sessionId !== requestSession || voiceTurn !== requestTurn
+        || connectionGeneration !== requestConnection) return;
+    return sendFence(delivered);
+  });
 }
 
 async function startVoice() {
@@ -266,6 +292,7 @@ async function startVoice() {
       }
 
       if (event.type === "session.output_audio.started") {
+        completedOutputId = completedOutputReceipt = null;
         outputScope = { session: sessionId, turn: voiceTurn,
           connection: connectionGeneration, response: `browser_${++outputSequence}`,
           audioStartedAt: els.remoteAudio.currentTime };
@@ -285,11 +312,14 @@ async function startVoice() {
       }
 
       if (event.type === "session.input_audio.speech_started") {
+        // Only an ordinary reply after finished playback may answer a prior
+        // clarification. Interruptions must invalidate it with the queued work.
+        const continuation = completedOutputId !== null && outputScope === null && !currentOutput.trim();
         // An interrupted transcript is useful history, not a completed reply.
         outputScope = null;
         if (currentOutput.trim()) addLine("assistant", currentOutput);
         currentOutput = "";
-        invalidateMarketContext();
+        invalidateMarketContext(false, continuation);
         setState("Listening", "listening");
         return;
       }
@@ -348,9 +378,13 @@ async function startVoice() {
 async function handleDelegation(delegationId) {
   const requestSession = sessionId;
   const requestTurn = voiceTurn;
+  const reply = turnReplyToResponseId;
+  const receipt = turnReplyReceipt;
   setState("Checking GTOP…", "thinking");
 
   try {
+    const delivered = receipt ? await receipt : false;
+    if (sessionId !== requestSession || voiceTurn !== requestTurn) return;
     const response = await authFetch("/api/delegate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -359,6 +393,8 @@ async function handleDelegation(delegationId) {
         history: timeline,
         session_id: requestSession,
         turn_id: requestTurn,
+        continuation: Boolean(delivered && reply),
+        reply_to_response_id: delivered ? reply : null,
       }),
     });
 
@@ -401,6 +437,8 @@ function toggleMute() {
 
 function cleanup(message = "Tap to start") {
   outputScope = null;
+  completedOutputId = turnReplyToResponseId = null;
+  completedOutputReceipt = turnReplyReceipt = null;
   remotePlaybackReady = false;
   connectionGeneration += 1;
   invalidateMarketContext(true);

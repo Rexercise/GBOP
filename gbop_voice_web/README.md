@@ -306,13 +306,21 @@ legacy `emotion` field is preserved rather than copied into the history. Limits
 are 500 characters per report, 32 reports per trade and the existing journal
 metadata budget; reaching a limit rejects the new report without pruning history.
 
-Text report grounding uses the current authenticated utterance; brief bare feeling
-answers require this exact conversation's immediately preceding prompt. Explicit
-reports support ordinary contractions and sentence-ending punctuation
-while preserving the member's exact words. A recent prompt does not authorize
-hypothetical reports, questions, or feelings attributed to someone else. Other
-requests, including watches, retain their ordinary route. Audio-only classification
-still relies on the existing model and does not claim an added transcript check.
+Text reports use authenticated member words, including natural Trade # note
+fragments and multi-sentence changes in confidence; no `I felt` prefix is required.
+Explicit reports support ordinary contractions and sentence-ending punctuation.
+Fragment notes preserve the full original wording, qualifiers and chronology.
+Unstated time/correction stay unknown, and ambiguous stages need one clarification.
+An immediate affirmative reply can confirm one exact original note after a completed,
+delivered save question naming that Trade # and one stage. This one-use context
+expires after 15 minutes and is discarded on unrelated turns, interruption, auth
+changes or reconnect. Browser continuations identify the exact completed response;
+both cancel and delegate requests apply the same fence regardless of arrival order.
+Bare feeling answers still require this conversation's immediately preceding prompt.
+Questions, quoted, hypothetical, preview-only and other-person feelings cannot
+supply the report, even after a recent prompt.
+Other requests, including watches, retain their ordinary route. Audio-only
+classification still relies on the existing model and adds no transcript check.
 Trade identity, member access, revocation, cancellation and connection lifetime are
 checked by the existing guarded journal transaction. The model must clarify an
 uncertain trade/stage and must not infer emotion from a loss, risk or tone.

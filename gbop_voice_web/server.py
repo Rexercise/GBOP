@@ -1311,12 +1311,16 @@ class DelegateRequest(BaseModel):
     history: list[dict[str, str]] = []
     session_id: str | None = None
     turn_id: int = 0
+    continuation: bool = False
+    reply_to_response_id: str | None = None
 
 
 class LiveContextRequest(BaseModel):
     session_id: str
     turn_id: int
     closed: bool = False
+    continuation: bool = False
+    reply_to_response_id: str | None = None
 
 
 class LiveDeliveryRequest(BaseModel):
@@ -1614,7 +1618,8 @@ async def cancel_live_context(request: Request, body: LiveContextRequest):
     if body.session_id == session.get('live_session_id'):
         context = session.get('market_context')
         if context is not None:
-            context.advance_client_turn(body.turn_id)
+            context.advance_client_turn(body.turn_id, continuation=getattr(body, 'continuation', False) and not body.closed,
+                                        response_id=getattr(body, 'reply_to_response_id', None))
             if body.closed:
                 context.close()
                 session.pop('market_context', None)
@@ -1632,6 +1637,10 @@ async def delegate(request: Request, body: DelegateRequest):
         # Every queued delegation must remain attached to an authenticated live
         # generation, including across logout or connection replacement.
         raise HTTPException(status_code=409, detail='This voice session ended. Refresh and start a new conversation.')
+    # Apply the same speech fence here: delegation may beat the asynchronous
+    # cancel request to the server. A late interruption cannot undo a save.
+    market_context.advance_client_turn(body.turn_id, continuation=getattr(body, 'continuation', False),
+                                       response_id=getattr(body, 'reply_to_response_id', None))
     try:
         result = await asyncio.to_thread(
             run_backend,
@@ -1661,9 +1670,9 @@ async def delivered_live_context(request: Request, body: LiveDeliveryRequest):
         return {'ok': False, 'recorded': 0}
     if len(body.text) > 12000 or len(body.response_id) > 128:
         raise HTTPException(status_code=400, detail='Response acknowledgement is too large.')
-    # Client speech completion is a navigation receipt, never authorization for
-    # an action or proof of an unheard tool result. Only named verified ranges
-    # in this exact authenticated context can be marked as discussed.
+    # Completion records delivered navigation or a note's stage question. It
+    # never authorizes a write by itself: feelings still require the member's
+    # original save request plus their next affirmative authenticated turn.
     recorded = context.complete_response(body.text, generation=context.generation,
         response_id=body.response_id, completed=True)
     return {'ok': True, 'recorded': recorded}

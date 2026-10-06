@@ -471,7 +471,7 @@ def community_review(db,guild,user,args):
 
 
 COACH_TOOLS=[
-    schema('record_trade_feeling','Append an explicitly member-reported feeling to the same private Trade # journal. Preserve exact words; stage open/add/mid/close must be stated or clear. reported_at is member-stated time only, null if unknown. correction_of is a prior feeling id, otherwise null. skip=true only for an explicit decline and saves no feeling. Never infer emotion from profit/loss, tone or risk; never use this for an unrelated message.',
+    schema('record_trade_feeling','Append an explicitly member-reported feeling to the same private Trade # journal. Preserve exact words, including natural Trade # note fragments and multiple sentences; never require an I-felt prefix. An immediate yes to a delivered stage clarification retains the original note. Stage open/add/mid/close must be stated or clear. reported_at is member-stated time only, null if unknown. correction_of is a prior feeling id, otherwise null. skip=true only for an explicit decline and saves no feeling. Never infer emotion from profit/loss, tone or risk; never use this for an unrelated message.',
            {'trade_number':NUM,'stage':{'type':['string','null'],'enum':list(STAGES)+[None]},
             'feeling':STR,'reported_at':STR,'correction_of':NUM,'skip':{'type':['boolean','null']}}),
     schema('get_activity_check','Check recent execution counts and larger recorded risk after a loss against the member’s plan; no diagnosis.',{}),
