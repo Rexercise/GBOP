@@ -57,6 +57,80 @@ class FeelingConversationTests(unittest.TestCase):
         self.assertIsNone(result['feeling']['correction_of'])
         self.assertEqual(len(self.metadata()['feeling_history']), 1)
 
+    def test_explicit_became_feeling_note_keeps_full_exact_words_after_reconnect(self):
+        self.opened()
+        words = 'I felt uncertain during the trade. I became more relaxed once I followed my original plan.'
+        self.context.begin_turn('Save this as a mid-trade feeling for Trade #1: ' + words)
+        result = self.run_save({**self.args(), 'feeling': words})
+        self.assertTrue(result['ok'], result)
+        self.context.close()
+        self.context = MarketConversation((10,20,'fresh-became-session'),auth_provider=(self.db,10,20))
+        self.assertEqual(self.metadata()['feeling_history'][0]['feeling'], words)
+        self.assertEqual(self.metadata()['feeling_history'][0]['stage'], 'mid')
+        self.assertIsNone(self.metadata()['feeling_history'][0]['reported_at'])
+
+    def test_became_note_stage_conflict_needs_one_exact_confirmation(self):
+        self.opened()
+        words = 'I felt uncertain before entry. I became more relaxed once I followed my original plan.'
+        self.context.begin_turn('Save this as a mid-trade feeling for Trade #1: ' + words)
+        args = {**self.args(), 'feeling': words}
+        self.assertFalse(self.run_save(args)['ok'])
+        self.assertNotIn('feeling_history', self.metadata())
+        self.context.complete_response(QUESTION, completed=True)
+        self.context.begin_turn('Yes')
+        result = self.run_save(args)
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(result['feeling']['feeling'], words)
+        self.context.complete_response('Saved the exact note.')
+        self.context.begin_turn('Yes')
+        self.assertFalse(self.run_save(args)['ok'])
+        self.assertEqual(len(self.metadata()['feeling_history']),1)
+
+    def test_became_note_cannot_be_paraphrased_retargeted_or_given_a_time(self):
+        self.opened(); self.opened()
+        words = 'I became a little less calm during the trade.'
+        for changes in ({'feeling':'calm'}, {'feeling':'less calm'}, {'trade_number':2},
+                {'stage':'open'}, {'reported_at':'2026-10-01T10:00:00Z'}, {'correction_of':1}):
+            with self.subTest(changes=changes):
+                self.context.begin_turn('Save this as a mid-trade feeling for Trade #1: '+words)
+                self.assertFalse(self.run_save({**self.args(),'feeling':words,**changes})['ok'])
+        self.assertNotIn('feeling_history',self.metadata(1))
+        self.assertNotIn('feeling_history',self.metadata(2))
+
+    def test_became_grammar_does_not_authorize_unrequested_save_or_guess_stage(self):
+        self.opened()
+        for text in ('I became more relaxed during the trade.',
+                'Note for Trade #1: I became more relaxed.'):
+            self.context.begin_turn(text)
+            words = text.split(': ',1)[-1]
+            self.assertFalse(self.run_save({**self.args(),'feeling':words})['ok'])
+        self.assertNotIn('feeling_history',self.metadata())
+
+    def test_became_note_requires_own_factual_unquoted_unnegated_save_request(self):
+        self.opened()
+        for words in ('My friend became relaxed during the trade.',
+                'I became aware that my friend was nervous during the trade.',
+                'I became calm during the trade and my friend became nervous.',
+                'If I became more relaxed during the trade.',
+                'I might have become more relaxed during the trade.',
+                'Did I become more relaxed during the trade?',
+                'My coach said "I became more relaxed during the trade."',
+                'I became more relaxed during the trade. Do not save this.',
+                'I became more relaxed during the trade. Preview only.'):
+            with self.subTest(words=words):
+                self.context.begin_turn('Save this as a mid-trade feeling for Trade #1: '+words)
+                self.assertFalse(self.run_save({**self.args(),'feeling':words})['ok'])
+        self.assertNotIn('feeling_history',self.metadata())
+
+    def test_became_note_keeps_authenticated_member_binding(self):
+        self.opened()
+        words = 'I became more relaxed during the trade.'
+        self.context.begin_turn('Save this as a mid-trade feeling for Trade #1: '+words)
+        result = self.context.run('record_trade_feeling',{**self.args(),'feeling':words},
+            lambda name,args:coach.coach_tool(self.db,10,30,name,args))
+        self.assertFalse(result['ok'])
+        self.assertNotIn('feeling_history',self.metadata())
+
     def test_direct_first_person_multisentence_and_correction_keep_history(self):
         self.opened()
         words = 'I felt relaxed at entry. My confidence began to fade after adding.'

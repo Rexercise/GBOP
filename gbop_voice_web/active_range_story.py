@@ -166,6 +166,11 @@ def selected_range_story(story, row, fact, asset=None):
             continue
         item = {k: deepcopy(hour[k]) for k in ('candle_start_ny', 'candle_end_ny', 'complete',
                 'status', 'candle_science', 'close') if k in hour}
+        # This independent-range status is evaluated at the shared review
+        # cutoff, never implied to hold at this acting candle's own closure.
+        own_range = next((r for r in story.get('ranges', [])
+                          if r['anchor_start_ny'] == hour['candle_start_ny']), {})
+        item['own_range_crt_status_at_cutoff'] = own_range.get('context_qualification', {}).get('crt_status', 'unverified')
         candle = by_hour.get(hour['candle_start_ny'], {})
         body = None
         if hour.get('complete') and candle.get('open') is not None and candle.get('close') is not None:
@@ -242,7 +247,8 @@ def selected_range_story(story, row, fact, asset=None):
         text += ' ' + _double_sentence(double)
     verified_through = next((h['candle_end_ny'] for h in reversed(development) if h.get('candle_science')), selection_start)
     incoming = next((t for t in story.get('range_transitions', []) if t['to_anchor_ny'] == anchor), None)
-    return {'review_handoff': {k: incoming[k] for k in ('from_anchor_ny', 'to_anchor_ny', 'confirmed_at_ny', 'reason')} if incoming else None, 'anchor_start_ny': anchor, 'selection_status': 'range_under_review', 'selected_at_ny': selection_start,
+    return {'review_handoff': {k: incoming[k] for k in ('from_anchor_ny', 'to_anchor_ny', 'confirmed_at_ny', 'reason')} if incoming else None, 'anchor_start_ny': anchor, 'selection_status': 'range_under_review',
+            'crt_status': row.get('context_qualification', {}).get('crt_status', 'unverified'), 'selected_at_ny': selection_start,
             'selected_through_ny': next_range['confirmed_at_ny'] if next_range else verified_through,
             'still_selected_at_cutoff': (story.get('active_anchor_ny') == anchor
                                         if story.get('progression_complete') else None),
@@ -257,7 +263,11 @@ def shift_end_state(story):
     """Actual final close plus the newly closed range's independent evidence limit."""
     hours = story.get('hourly_progression', [])
     final = hours[-1] if hours else {}
+    selected = next((r for r in story.get('ranges', [])
+                     if r['anchor_start_ny'] == story.get('active_anchor_ny')), {})
     return {'through_ny': story['end_ny'], 'active_anchor_ny': story.get('active_anchor_ny'),
+            'selection_status': selected.get('selection_status', 'unverified'),
+            'selected_range_crt_status': selected.get('context_qualification', {}).get('crt_status', 'unverified'),
             'progression_complete': story.get('progression_complete', False),
             'final_hour': {k: deepcopy(final[k]) for k in ('candle_start_ny', 'candle_end_ny',
                 'anchor_start_ny', 'complete', 'close', 'candle_science', 'status') if k in final},

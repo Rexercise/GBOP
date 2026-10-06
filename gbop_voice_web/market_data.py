@@ -458,7 +458,7 @@ MARKET_TOOLS = [
         'anchor_start_ny': {'type': 'string'}, 'anchor_timeframe': {'type': 'string'},
         'through_ny': {'type': 'string'}}),
     schema('get_market_price', 'Get latest broker bid/ask ONLY when a quote is requested. Disclose stale or absent data.', {'asset': {'type': 'string'}}),
-    schema('review_market_session', 'Review the GTOP shift: 9AM-noon or 9PM-midnight New York. Default shift_synopsis leads with 9ate8, supported variant and own objective outcomes; always states independent Young Lefty status, including verified absence or uncertainty, before later ranges. Full underlying range and paired evidence remains available for explicit walkthroughs. For Model 1 identity, Super Soup, CSD, wick/body, or objective-distance followups use review_market_crt for the specific range and exact named candle instead; overview omissions never establish absence.', {
+    schema('review_market_session', 'Review the GTOP shift: 9AM-noon or 9PM-midnight New York. Default shift_synopsis orders opening plays by observed setup time, including 9ate8 variant/objectives and independent Young Lefty status before later ranges; preserve verified absence or uncertainty. Full underlying range and paired evidence remains available for explicit walkthroughs. For Model 1 identity, Super Soup, CSD, wick/body, or objective-distance followups use review_market_crt for the specific range and exact named candle instead; overview omissions never establish absence.', {
         'asset': {'type': 'string'}, 'date_ny': {'type': ['string', 'null'], 'description': 'Explicit NY date; null selects the latest completed usable shift. Unavailable dates are never silently changed.'},
         'shift': {'type': 'string', 'enum': ['day', 'night']}}),
     schema('inspect_market_candles', 'Read historical or current candle OHLC and when extremes formed. Explicit ISO start/end in New York (or with offset). M1-M60, H1-H24, D1, W1, MN1; custom anchors supported. Incomplete coverage is not a definitive daily/weekly extreme. Paginate next_start_ny.', {
@@ -476,11 +476,11 @@ MARKET_PROMPT = """
 # GROUNDED MARKET CONVERSATION
 Use review_market_session/review_market_crt for actual setups, not definitions/quotes. '988', '9 ate 8', 'nine ate eight' mean 9ate8.
 Current: review_current_market. Keep current_scope cutoff until explicit refresh. State as-of/observed-through/freshness; forming is not closed; snapshots are not instant ticks.
-Whole shift: use shift_synopsis.spoken_summary, SHORT (usually 2-4 sentences; add only relevant evidence).
-Lead with 9ate8 direction/verdict (clean, failed, boneless potential/delivered as supported),
-variant established/pending, and own 50%/opposing delivery/invalidation/pending.
+Whole shift: SHORT shift_synopsis.spoken_summary, usually 2-4 sentences plus needed facts.
+Opening plays follow evidenced event-time order, Young Lefty first when earlier. Include
+9ate8 direction/verdict, variant established/pending and own 50%/opposing outcome.
 Automatically name supported variants and pending candidates with candle-specific why and what each still needs. Distinguish touch/H1-close times.
-Then always state Young Lefty's independent status before later ranges: early 7-boundary
+Always state Young Lefty's independent status before later ranges: early 7-boundary
 purge by 8/9, absent only with complete evidence, otherwise unverified. Use its own
 direction/targets; it can oppose 9ate8. Failed 9ate8 erases neither Young Lefty nor later
 setups. Day 09:00-12:00, night 21:00-00:00 NY. Omit unrelated candidate lists.
@@ -523,9 +523,9 @@ invalidate?', 'last Wednesday’s low', or a timeframe-specific CRT review. Thes
 not definition questions. Delegate first; never invent today’s candle behavior.
 Current requests use review_current_market. Keep cutoff until explicit refresh. State as-of/observed-through and freshness; forming is not closed, snapshots are not instant ticks.
 'What did price do this shift/today?' uses the SHORT shift_synopsis.spoken_summary.
-Lead with 9ate8 direction/verdict, supported variant or pending, and 50%/opposing
-outcome/invalidation. Automatically name supported variants and pending candidates with candle-specific why and what each still needs. Distinguish touch/H1-close times.
-Then always state Young Lefty's independent status before later ranges.
+Opening plays follow evidenced event-time order, Young Lefty first when earlier. Include
+9ate8 direction/verdict, supported variant and 50%/opposing outcome/invalidation. Automatically name supported variants and pending candidates with candle-specific why and what each still needs. Distinguish touch/H1-close times.
+Always state Young Lefty's independent status before later ranges.
 Young Lefty needs an actual early 7-boundary purge by 8/9: say absent only with complete
 evidence of no early purge, otherwise unverified. Never omit its status or infer absence from
 failed 9ate8. Its direction can oppose 9ate8; use its own objectives. Keep later delivery after
@@ -564,8 +564,9 @@ automatic PD-array recognition is not required.
 
 MARKET_RESPONSE_CONTRACT = """
 NAMED-RANGE ANSWERS
-Use shift_synopsis.chronological_context: under-review handoffs are not CRT confirmation. Keep source/H1 returns distinct; count distinct event-time ranges, not Soup/closure votes or probability. End with the GTOP day/night shift boundary. Name whose boundary closes outside.
+Use shift_synopsis.chronological_context: under review is not CRT confirmation. Keep source/H1 returns distinct; count event-time ranges, not Soup/closure votes. End at the GTOP shift boundary.
 Outcomes: first name the range and direction, then full delivery, midpoint only, pending, failed or unverified; then mechanism.
+Name acting candle AND affected range. Own CRT needs subsequent purge/return evidence beyond anchor closure. Recheck the same parent.
 Use directional_outcome/variant_evidence; later invalidation preserves earlier V2 delivery.
 A later opposite-direction Model 1 cannot replace the earlier wick setup or paired
 thesis. Name both directions and targets. A double purge needs the same range's

@@ -45,6 +45,9 @@ class JournalDeleteTests(unittest.TestCase):
         INSERT INTO thesis_executions VALUES(1,41,10,20),(2,42,10,30);
         INSERT INTO thesis_events(id,thesis_id,guild_id,user_id) VALUES(1,41,10,20),(2,42,10,30);
         INSERT INTO risk_flags VALUES(1,41,10,20),(2,42,10,30);
+        CREATE TABLE gbop_coaching_observations(guild_id INTEGER,user_id INTEGER,source_key TEXT,
+            theme TEXT,polarity INTEGER,weight REAL,note TEXT,observed_at TEXT,created_at TEXT,
+            PRIMARY KEY(guild_id,user_id,source_key,theme,polarity));
         ''')
         self.before_execute = None
         self.executed = []
@@ -72,6 +75,100 @@ class JournalDeleteTests(unittest.TestCase):
         return self.ns['tool_delete_journal'](user, {'journal_id': journal, 'confirmed': confirmed}, token)
     def token(self):
         return self.ns['PENDING_JOURNAL_DELETIONS'][20]['token']
+
+    def seed_coaching(self):
+        rows = [(10,20,key,'boredom',-1,1.0,'Synthetic coaching evidence','2026-10-06','2026-10-06')
+                for key in ('journal:1','risk:1','journal:10','risk:10','journal:01','risk:1:extra',
+                            'ss:2026-09-28:TEST:execution','checkin:1')]
+        rows.extend((guild,user,key,'boredom',-1,1.0,'Other owner','2026-10-06','2026-10-06')
+                    for guild,user in ((10,30),(11,20)) for key in ('journal:1','risk:1'))
+        self.conn.executemany('INSERT INTO gbop_coaching_observations VALUES(?,?,?,?,?,?,?,?,?)', rows)
+
+    def test_confirmed_linked_delete_removes_only_exact_owned_derived_evidence(self):
+        self.seed_coaching()
+        preview = self.preview()
+        self.assertEqual(preview['records']['coaching_observations'], 2)
+        self.assertIn('coaching observations', preview['message'])
+        self.assertTrue(self.delete(token=self.token())['deleted'])
+        keys = {row[0] for row in self.conn.execute(
+            'SELECT source_key FROM gbop_coaching_observations WHERE guild_id=10 AND user_id=20')}
+        self.assertNotIn('journal:1', keys)
+        self.assertNotIn('risk:1', keys)
+        self.assertEqual(len(keys), 6)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM gbop_coaching_observations WHERE guild_id<>10 OR user_id<>20').fetchone()[0], 4)
+
+    def test_standalone_delete_cleans_only_journal_derived_evidence(self):
+        self.seed_coaching()
+        self.conn.execute('UPDATE journals SET thesis_id=NULL WHERE id=1')
+        self.assertEqual(self.preview()['records']['coaching_observations'], 1)
+        self.assertTrue(self.delete(token=self.token())['deleted'])
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM gbop_coaching_observations WHERE guild_id=10 AND user_id=20 AND source_key='journal:1'").fetchone())
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM gbop_coaching_observations WHERE guild_id=10 AND user_id=20 AND source_key='risk:1'").fetchone())
+        self.assertIsNotNone(self.conn.execute('SELECT 1 FROM theses WHERE id=41').fetchone())
+
+    def test_derived_changes_require_new_confirmation_but_unrelated_changes_do_not(self):
+        self.seed_coaching()
+        self.preview()
+        self.conn.execute("UPDATE gbop_coaching_observations SET note='Changed source' WHERE guild_id=10 AND user_id=20 AND source_key='journal:1'")
+        self.assertFalse(self.delete(token=self.token())['ok'])
+        self.preview()
+        self.conn.execute("UPDATE gbop_coaching_observations SET note='Unrelated source' WHERE source_key='journal:10' OR user_id=30")
+        self.assertTrue(self.delete(token=self.token())['deleted'])
+
+    def test_derived_cleanup_rolls_back_with_failed_source_delete(self):
+        self.seed_coaching()
+        self.conn.executescript("CREATE TRIGGER refuse_delete BEFORE DELETE ON theses BEGIN SELECT RAISE(ABORT, 'test failure'); END;")
+        before = [tuple(row) for row in self.conn.execute('SELECT * FROM gbop_coaching_observations')]
+        self.preview()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.delete(token=self.token())
+        self.assertEqual([tuple(row) for row in self.conn.execute('SELECT * FROM gbop_coaching_observations')], before)
+        self.assertIsNotNone(self.conn.execute('SELECT 1 FROM journals WHERE id=1').fetchone())
+
+    def test_missing_coaching_schema_keeps_legacy_delete_available(self):
+        self.conn.execute('DROP TABLE gbop_coaching_observations')
+        self.assertEqual(self.preview()['records']['coaching_observations'], 0)
+        self.assertTrue(self.delete(token=self.token())['deleted'])
+
+    def test_new_derived_evidence_after_preview_requires_reconfirmation(self):
+        self.preview()
+        self.seed_coaching()
+        self.assertFalse(self.delete(token=self.token())['ok'])
+        self.assertIsNotNone(self.conn.execute('SELECT 1 FROM journals WHERE id=1').fetchone())
+
+    def test_standalone_failure_rolls_back_derived_cleanup(self):
+        self.seed_coaching()
+        self.conn.execute('UPDATE journals SET thesis_id=NULL WHERE id=1')
+        self.conn.executescript("CREATE TRIGGER refuse_delete BEFORE DELETE ON journals BEGIN SELECT RAISE(ABORT, 'test failure'); END;")
+        self.preview()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.delete(token=self.token())
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM gbop_coaching_observations WHERE guild_id=10 AND user_id=20 AND source_key='journal:1'").fetchone())
+        self.assertIsNotNone(self.conn.execute('SELECT 1 FROM journals WHERE id=1').fetchone())
+
+    def test_coaching_schema_read_failure_does_not_silently_skip_cleanup(self):
+        self.seed_coaching()
+        self.preview()
+        def fail_schema_read(sql, params):
+            if sql == 'PRAGMA table_info(gbop_coaching_observations)':
+                raise sqlite3.OperationalError('Synthetic schema read failure')
+        self.before_execute = fail_schema_read
+        with self.assertRaises(sqlite3.OperationalError):
+            self.delete(token=self.token())
+        self.assertIsNotNone(self.conn.execute('SELECT 1 FROM journals WHERE id=1').fetchone())
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM gbop_coaching_observations').fetchone()[0], 12)
+
+    def test_coaching_cleanup_does_not_expand_source_photo_deletion(self):
+        self.seed_coaching()
+        self.conn.execute("INSERT INTO trade_photos VALUES('source',10,20,NULL,'Synthetic source','invented')")
+        self.conn.execute('UPDATE journal_details SET metadata=? WHERE journal_id=1',
+                          (json.dumps({'source_attachments':[{'photo_id':'source','entry_index':1}]}),))
+        self.preview()
+        self.assertTrue(self.delete(token=self.token())['deleted'])
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM trade_photos WHERE id='photo1'").fetchone())
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM trade_photos WHERE id='source'").fetchone())
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM trade_photos WHERE id='photo2'").fetchone())
+
     def test_confirmed_delete_cascades_and_blocks_replay(self):
         self.assertTrue(self.preview()['requires_confirmation'])
         token = self.token()

@@ -378,6 +378,9 @@ def refresh_coaching_sources(db, guild, user, *, now_utc=None):
     cutoff = (now_utc - timedelta(days=SOURCE_LOOKBACK_DAYS)).isoformat()
 
     with db() as conn:
+        # Serialize source reads and derived writes with confirmed deletions.
+        # A refresh that was waiting must not recreate evidence from old rows.
+        conn.execute('SELECT pg_advisory_xact_lock(?)', (user,))
         checkins = conn.execute(
             """SELECT id,response,responded_at
             FROM post_shift_checkins
@@ -813,12 +816,21 @@ def coaching_profile(db, guild, user, *, now_utc=None):
     cutoff = (now_utc - timedelta(days=SOURCE_LOOKBACK_DAYS)).isoformat()
 
     with db() as conn:
+        conn.execute('SELECT pg_advisory_xact_lock(?)', (user,))
+        # Historical orphan evidence is ineligible immediately, without a
+        # destructive backfill. Studies/reflections with owned sources remain.
         observations = conn.execute(
-            """SELECT theme,polarity,weight,note,observed_at
-            FROM gbop_coaching_observations
-            WHERE guild_id=? AND user_id=? AND observed_at>=?
-            ORDER BY observed_at DESC""",
-            (guild, user, cutoff),
+            """SELECT o.theme,o.polarity,o.weight,o.note,o.observed_at
+            FROM gbop_coaching_observations o
+            WHERE o.guild_id=? AND o.user_id=? AND o.observed_at>=?
+              AND (o.source_key NOT LIKE ? OR EXISTS (
+                  SELECT 1 FROM journals j WHERE j.guild_id=o.guild_id AND j.user_id=o.user_id
+                    AND o.source_key='journal:' || CAST(j.id AS TEXT)))
+              AND (o.source_key NOT LIKE ? OR EXISTS (
+                  SELECT 1 FROM risk_flags r WHERE r.guild_id=o.guild_id AND r.user_id=o.user_id
+                    AND o.source_key='risk:' || CAST(r.id AS TEXT)))
+            ORDER BY o.observed_at DESC""",
+            (guild, user, cutoff, 'journal:%', 'risk:%'),
         ).fetchall()
         controls = conn.execute(
             """SELECT theme,retired_at

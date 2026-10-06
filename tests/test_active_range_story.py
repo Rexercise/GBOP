@@ -149,7 +149,8 @@ class ActiveRangeStoryTests(unittest.TestCase):
         review = session_review(bars, DAY['date_ny'], 'day', 60)
         text = review['shift_synopsis']['spoken_summary']
         self.assertIn('11:12 AM M1', text)
-        self.assertIn('Invalidated on the closure of the 11:00 AM H1 candle after recorded delivery', text)
+        self.assertIn('The 9:00 AM H1 range:', text)
+        self.assertIn('invalidated on the closure of the 11:00 AM H1 candle after recorded delivery', text)
         self.assertIn('11:00 AM H1 became the next range under review on the closure of the 11:00 AM H1 candle', text)
         self.assertIn('this is not automatic CRT confirmation', text)
         self.assertIn('No later evidence before the end of the GTOP shift', text)
