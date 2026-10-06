@@ -22,6 +22,7 @@ MAX_OUTPUT_BYTES = 28000
 CONTRACT = ('Keep every requested context separately named by asset, NY date, timeframe, anchor and cutoff. '
     'Latest day and night are independently completed and may have different dates. '
     'Missing/partial data is not absence or proof of no relationship. Summaries omit detail, never disprove it. '
+    'Honor negative_claim_guard: no shift-wide none claim from unverified ranges; assess double purges separately. '
     'Each range retains its own objectives, CSD, Soup and invalidation; later invalidation cannot erase earlier delivery. '
     'Use only supplied relationship findings. Geometric overlap, matching direction or chronology alone do not '
     'establish parent/child lineage, SMT, Butterfly, causation or probability improvement. '
@@ -162,6 +163,14 @@ def _summary(record):
     out.update(ok=True, status='retrieved', evidence=facts,
         detail_request={'tool': 'select_market_context', 'args': {'context_id': record['context_id']}},
         detail_omitted=True)
+    if record['source_tool'] == 'review_market_session':
+        from gbop_voice_web.shift_synopsis import negative_claim_guard
+        synopsis = review.get('shift_synopsis') or {}
+        # Retain this outside the optional detailed evidence, including older
+        # prepared snapshots and both comparison-compaction paths.
+        guard = negative_claim_guard(synopsis.get('young_lefty_status'), story)
+        if guard:
+            out['negative_claim_guard'] = guard
     if result.get('saved_preparation'):
         out.update(saved_preparation=True, prepared_at_epoch=result.get('prepared_at_epoch'))
     # No silent slicing of a fact or dropping an entire requested context.
@@ -330,7 +339,7 @@ def read_batch(bank, requests, runner, now, current):
                 member['evidence_note'] = 'Retrieve this exact context for its outcomes; identity is not outcome evidence.'
     if _size(out) > MAX_OUTPUT_BYTES:
         # Final fail-closed boundary even if a future summary field grows.
-        out['contexts'] = [{k: row[k] for k in ('ok', 'request_index', 'context_id', 'scope', 'status') if k in row}
+        out['contexts'] = [{k: row[k] for k in ('ok', 'request_index', 'context_id', 'scope', 'status', 'negative_claim_guard') if k in row}
                            | {'evidence_omitted': True} for row in members]
         out['relationships'] = []
         out['response_contract'] = 'Evidence exceeded the output budget. Context identities remain separate; select one exact context before asserting outcomes or relationships.'
