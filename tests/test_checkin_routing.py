@@ -100,6 +100,44 @@ class CheckinRoutingTests(unittest.TestCase):
             with self.subTest(content=content):
                 self.assert_passes_through(content)
 
+    def test_full_multisentence_reflection_is_saved_verbatim(self):
+        target = self.checkin()
+        self.delivery()
+        reflection = (
+            'I followed my plan and personal risk protocol. I waited for my A+ setup. '
+            'I felt impatient after the first move, but I did not chase it.\n\n'
+            'The useful pattern was that a pause helped me avoid unnecessary entries. '
+            'My next shift adjustment is to leave more time for that pause. '
+            'I want this whole reflection retained, including the final sentence.'
+        )
+        saved = self.save(reflection, reply=500)
+        self.assertEqual(saved['response'], reflection)
+        self.assertEqual(self.row(target)['response'], reflection)
+
+    def test_prefixed_full_reflection_keeps_paragraphs_and_member_scope(self):
+        target = self.checkin()
+        other = self.checkin(user=30)
+        reflection = 'I respected my limits. I stayed patient.\n\nI noticed FOMO and sat out.'
+        saved = self.save('Check-in: ' + reflection)
+        self.assertEqual(saved['response'], reflection)
+        self.assertEqual(self.row(target)['response'], reflection)
+        self.assertIsNone(self.row(other)['response'])
+
+    def test_prompt_welcomes_brief_or_full_reflection_without_format_mandate(self):
+        assignments = {node.targets[0].id: ast.literal_eval(node.value)
+                       for node in ast.parse(SOURCE.read_text()).body
+                       if isinstance(node, ast.Assign) and len(node.targets) == 1
+                       and isinstance(node.targets[0], ast.Name)
+                       and node.targets[0].id in ('GBOP_CHECKIN_PROMPT', 'GBOP_CHECKIN_REPLY_HINT')}
+        prompt = assignments['GBOP_CHECKIN_PROMPT']
+        self.assertIn('brief or fuller reflection', prompt)
+        self.assertIn('no sentence limit', prompt)
+        for constraint in ('one message', 'one sentence', 'single sentence'):
+            self.assertNotIn(constraint, prompt.lower())
+        hint = assignments['GBOP_CHECKIN_REPLY_HINT']
+        for guard in ('within 24 hours', 'Discord Reply', 'Check-in:', 'normal conversations'):
+            self.assertIn(guard, hint)
+
     def test_matching_day_prompt_saves_only_the_exact_older_checkin(self):
         target = self.checkin(day='2026-10-02',
                               sent=(NOW - timedelta(hours=2)).isoformat())

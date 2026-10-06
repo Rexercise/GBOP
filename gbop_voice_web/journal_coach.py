@@ -12,7 +12,9 @@ from gbop_voice_web.unified_journal import (ensure_canonical_journal, canonical_
     create_journal_thesis, source_journal_id, attach_journal_source, owned_journal_details, sync_thesis_fields)
 from gbop_voice_web.trade_photos import init_photos, schema, STR, NUM
 from gbop_voice_web.journal_context import (REPORTED_KEYS, validate_reported, binding,
-    merge_metadata, journal_transaction, JournalTarget)
+    merge_metadata, journal_transaction, JournalTarget, JournalThesisTarget)
+
+from gbop_voice_web.journal_story import STORY_PROMPT, STORY_TOOLS, stage_story, get_story, save_story
 
 from gbop_voice_web.trade_self_grades import SELF_GRADE_PROMPT, SELF_GRADE_TOOLS, record_self_grade, self_grade_summary, self_grade_counts
 
@@ -75,6 +77,7 @@ verified asset/date/shift/range. A stopout does NOT imply -1R; unknown R stays n
 Market objective delivery does NOT establish a winning personal trade or any fill.
 """
 
+COACH_PROMPT += STORY_PROMPT
 COACH_PROMPT += FEELING_PROMPT
 COACH_PROMPT += "\n\n" + SELF_GRADE_PROMPT
 
@@ -149,6 +152,12 @@ def clean_metadata(value):
 
 def save_entry(db,guild,user,args):
     meta = clean_metadata(args.get('metadata_json'))
+    story_payload=args.get('_journal_story_payload')
+    if story_payload is not None:
+        from gbop_voice_web.journal_story import StoryPayload
+        if not isinstance(story_payload,StoryPayload) or binding(args) is None:
+            return {'ok':False,'error':'Story payload must come from the authenticated draft.'}
+        meta['journal_story']=story_payload.encoded
     if any(k in args for k in ('journal_id', 'thesis_id', '_thesis_id')):
         return {'ok':False,'error':'Use the displayed Trade #, not an internal record identity.'}
     result = args.get('result_r')
@@ -158,17 +167,27 @@ def save_entry(db,guild,user,args):
     if type(index) is not int or index < 1:
         return {'ok':False,'error':'entry_index must start at 1.'}
     photo_id = args.get('photo_id')
+    thesis_target = args.get('_journal_thesis_target')
+    if thesis_target is not None and (not isinstance(thesis_target,JournalThesisTarget) or (thesis_target.guild,thesis_target.user)!=(guild,user)):
+        return {'ok':False,'error':'Trade target must come from the authenticated account lookup.'}
     target = args.get('_journal_target')
     if target is not None and (not isinstance(target, JournalTarget) or (target.guild, target.user) != (guild, user)):
         return {'ok':False,'error':'Journal target must come from the authenticated account lookup.'}
     init_coach(db)
     with journal_transaction(db, args, guild, user, serialize=True) as conn:
         record_id, thesis_id, explicit_legacy = None, None, False
+        if thesis_target is not None:
+            owned=conn.execute('SELECT id FROM theses WHERE id=? AND guild_id=? AND user_id=?',
+                (thesis_target.thesis_id,guild,user)).fetchone()
+            if not owned:return {'ok':False,'error':'The selected trade was deleted or changed; no other trade was modified.'}
+            thesis_id=thesis_target.thesis_id
         selection = {k:args.get(k) for k in ('trade_number','journal_number','legacy_journal_number')}
         if any(value is not None for value in selection.values()):
             selected = resolve_journal_selector(conn,guild,user,**selection)
             if not selected['ok']:
                 return selected
+            if thesis_target is not None and selected.get('thesis_id')!=thesis_target.thesis_id:
+                return {'ok':False,'error':'The displayed trade selection changed. Refresh history.'}
             record_id, thesis_id = selected.get('record_id'), selected.get('thesis_id')
             explicit_legacy = selected.get('explicit_legacy',False)
         if target is not None:
@@ -224,6 +243,12 @@ def save_entry(db,guild,user,args):
             text_changes={key: {'before': old[key] or '', 'after': args[key]}
                 for key in ('description', 'rule_adherence', 'study_note') if old and args.get(key) is not None
                 and (old[key] or '') != args[key]})
+        # Reconcile again under the same member lock as creation. A matching
+        # trade may have committed in another channel after draft preflight.
+        if story_payload is not None and record_id is None and thesis_id is None and not story_payload.new_trade:
+            from gbop_voice_web.journal_story import story_trade_candidates, reconciliation_required
+            matches=story_trade_candidates(conn,guild,user,json.loads(story_payload.encoded))
+            if matches:return reconciliation_required(matches)
         description = args.get('description') if args.get('description') is not None else (old['description'] if old else None)
         if not old and thesis_id is None and (not description or not description.strip()):
             return {'ok':False,'error':'No readable journal details. Ask for a clearer picture or description.'}
@@ -279,6 +304,8 @@ def save_entry(db,guild,user,args):
         details = owned_journal_details(conn,guild,user,record_id)
         merged=json.loads(details['metadata'] or '{}') if details else {}
         display=next(r for r in journal_display(conn,guild,user) if r['id']==record_id)
+    from gbop_voice_web.voice_runtime import journal_write_committed
+    journal_write_committed(guild, user, {'trade_number':display['trade_number'], 'journal_number':display['journal_number']})
     return {'ok':True,'saved':True,'updated':bool(old),'journal_number':display['journal_number'],
             'trade_number':display['trade_number'],'legacy_journal_number':display['legacy_journal_number'] if display['is_legacy'] else None,
             'description':saved['description'],'result_r':saved['result_r'],'metadata':merged,
@@ -488,13 +515,15 @@ COACH_TOOLS=[
     schema('get_shift_plans','Read saved pre-shift plans to compare with execution and reflections.',{'session_date':STR}),
 ]
 COACH_TOOLS.extend(SELF_GRADE_TOOLS)
+COACH_TOOLS.extend(STORY_TOOLS)
 COACH_NAMES={t['name'] for t in COACH_TOOLS}
 
 
 def coach_tool(db,guild,user,name,args):
     if not allowed(db,guild,user):
         return {'ok':False,'error':'Your GBOP access is inactive or revoked.'}
-    handlers={'record_trade_feeling':record_feeling,'save_journal_entry':save_entry,'find_journal_setups':find_setups,
+    handlers={'stage_journal_story':stage_story,'get_journal_story':get_story,'save_journal_story':save_story,
+              'record_trade_feeling':record_feeling,'save_journal_entry':save_entry,'find_journal_setups':find_setups,
               'get_performance_review':performance,'save_shift_plan':save_plan,'get_shift_plans':get_plans,
               'get_activity_check':activity_check,'get_community_review':community_review,
               'record_trade_self_grade':record_self_grade}

@@ -545,6 +545,10 @@ def tool_open_trade(user_id: int, args: dict):
             fields=None if selected_number is not None else {'description': f"{args['asset']} {args['direction']} · {args['play']}"},
             metadata=metadata, timestamp=now_iso())
 
+    from gbop_voice_web.voice_runtime import journal_write_committed
+    journal_write_committed(GTOP_GUILD_ID, user_id, {'execution_id': execution_id})
+    display_number = trade_number(db, GTOP_GUILD_ID, user_id, trade_id)
+    journal_write_committed(GTOP_GUILD_ID, user_id, {'trade_id': display_number, 'execution_id': execution_id})
     warnings = []
     if risk_r > tier_limit(profile, tier) + 1e-6:
         warnings.append(
@@ -557,7 +561,7 @@ def tool_open_trade(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, trade_id),
+        "trade_id": display_number,
         "execution_id": execution_id,
         "tier": tier,
         "risk_r": risk_r,
@@ -615,6 +619,10 @@ def tool_add_entry(user_id: int, args: dict):
         )
         execution_id = cur.lastrowid
 
+    from gbop_voice_web.voice_runtime import journal_write_committed
+    journal_write_committed(GTOP_GUILD_ID, user_id, {'execution_id': execution_id})
+    display_number = trade_number(db, GTOP_GUILD_ID, user_id, row['id'])
+    journal_write_committed(GTOP_GUILD_ID, user_id, {'trade_id': display_number, 'execution_id': execution_id})
     total = used_before + risk_r
     warnings = []
     if risk_r > tier_limit(profile, tier) + 1e-6:
@@ -631,7 +639,7 @@ def tool_add_entry(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": trade_number(db, GTOP_GUILD_ID, user_id, row["id"]),
+        "trade_id": display_number,
         "execution_id": execution_id,
         "risk_r": risk_r,
         "tier": tier,

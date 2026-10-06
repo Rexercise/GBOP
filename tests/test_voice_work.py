@@ -656,7 +656,25 @@ class WorkTests(unittest.IsolatedAsyncioTestCase):
                 gate.set()
                 await settle()
                 provider.assert_awaited_once()
-                session.send_event.assert_not_awaited()
+                if name == 'open_trade':
+                    # Writes get their own metadata-only reconciliation. They
+                    # must never masquerade as interrupted read results or
+                    # restore the old function output, reply, or audio.
+                    events = [c.args[0] for c in session.send_event.await_args_list]
+                    self.assertTrue(events)
+                    self.assertEqual(self.interrupted_outputs(session), [])
+                    for event in events:
+                        self.assertEqual(event['type'], 'conversation.item.create')
+                        self.assertEqual(event['item']['type'], 'message')
+                        self.assertEqual(event['item']['role'], 'system')
+                        text = event['item']['content'][0]['text']
+                        outcome = json.loads(text.split('Outcome JSON: ', 1)[1])
+                        self.assertEqual(set(outcome), {'tool', 'status', 'saved'})
+                        self.assertEqual(outcome['tool'], name)
+                        self.assertIn(outcome['status'], {'pending', 'saved'})
+                        self.assertEqual(outcome['saved'], True if outcome['status'] == 'saved' else None)
+                else:
+                    session.send_event.assert_not_awaited()
                 session.member.send.assert_not_awaited()
 
     async def test_interrupted_read_status_does_not_cross_members(self):

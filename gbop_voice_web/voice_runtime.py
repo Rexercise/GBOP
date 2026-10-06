@@ -1,5 +1,6 @@
 """Small, credential-free helpers for Discord Realtime context management."""
 from copy import deepcopy
+from contextvars import ContextVar
 import asyncio
 import re
 import json
@@ -8,7 +9,7 @@ import random
 import time
 
 READ_ONLY_RECOVERY_NAMES = frozenset({
-    'review_market_contexts', 'select_market_context', 'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_midpoint_preference', 'get_member_plan',
+    'get_journal_story', 'review_market_contexts', 'select_market_context', 'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_midpoint_preference', 'get_member_plan',
     'get_member_dashboard', 'get_shift_plans', 'get_performance_review',
     'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_weekly_structure_study', 'get_trade_assist',
     'list_trade_photos', 'get_market_price', 'list_market_shifts', 'review_market_session',
@@ -17,6 +18,152 @@ READ_ONLY_RECOVERY_NAMES = frozenset({
 })
 PRIVATE_DELIVERY_NAMES = frozenset({'send_journal_history', 'send_trade_photos'})
 RECOVERY_NAMES = READ_ONLY_RECOVERY_NAMES | PRIVATE_DELIVERY_NAMES | frozenset({'manage_market_watch'})
+
+
+# These actions can create or append journal/trade records. A new call ID is
+# never sufficient evidence that an interrupted write should be repeated.
+JOURNAL_WRITE_NAMES = frozenset({
+    'open_trade', 'add_entry', 'save_journal_entry', 'save_journal_story', 'close_trade',
+    'record_trade_event', 'edit_journal', 'record_trade_feeling',
+    'record_trade_self_grade', 'save_ss_review',
+})
+JOURNAL_WRITE_TERMINAL = frozenset({'saved', 'not_saved'})
+_journal_write_sink = ContextVar('gbop_journal_write_sink', default=None)
+
+
+def _journal_write_outcome(name, status, result=None):
+    """Only commit facts, never arguments, record prose, or arbitrary errors."""
+    outcome = {'tool': name, 'status': status, 'saved': status == 'saved'
+               if status in JOURNAL_WRITE_TERMINAL else None}
+    if status == 'saved' and isinstance(result, dict):
+        for field in ('trade_id', 'trade_number', 'journal_number', 'execution_id'):
+            value = result.get(field)
+            if type(value) is int and value > 0:
+                outcome[field] = value
+        if 'trade_id' not in outcome and 'trade_number' in outcome:
+            outcome['trade_id'] = outcome['trade_number']
+    return outcome
+
+
+def _journal_result_status(result):
+    if not isinstance(result, dict) or result.get('status') in {
+            'journal_outcome_uncertain', 'stale_market_context', 'uncertain', 'pending'}:
+        return 'uncertain'
+    if result.get('ok') is True:
+        # Skipping an optional feeling is a successful tool action, not a save.
+        return 'not_saved' if result.get('skipped') or result.get('saved') is False else 'saved'
+    return 'not_saved'
+
+
+def journal_write_committed(guild_id, member_id, result):
+    """Call after transaction commit, before optional post-save work.
+
+    The callback is a server-owned capability propagated by asyncio.to_thread,
+    not a value accepted from model arguments. It has no effect outside a
+    guarded voice write or for a different authenticated guild/member.
+    """
+    sink = _journal_write_sink.get()
+    if sink is not None:
+        sink(guild_id, member_id, result)
+
+
+def journal_write_result_reported(session, name, call_id, result):
+    """Release the write barrier only when its verified result reached context."""
+    entry = getattr(session, '_journal_write_recovery', None)
+    if (entry and entry['tool'] == name and entry['call_id'] == call_id
+            and entry['identity'] == delivery_identity(session)
+            and entry['websocket'] is getattr(session, 'websocket', None)
+            and entry['outcome']['status'] in JOURNAL_WRITE_TERMINAL
+            and isinstance(result, dict)
+            and _journal_result_status(result) == entry['outcome']['status']):
+        entry['published'] = json.dumps(entry['outcome'], sort_keys=True, separators=(',', ':'))
+        entry['reconciled'] = True
+        entry['reconciled_turn'] = getattr(session, '_voice_turn_count', 0)
+
+
+def journal_write_needs_reconciliation(entry, turn):
+    return bool(entry and (not entry['reconciled']
+        or 'interrupted_at' in entry and turn <= entry.get('reconciled_turn', turn)))
+
+
+def journal_write_barrier(session, entry):
+    """Return metadata only; a guard never executes or retries the prior write."""
+    if (entry['identity'] != delivery_identity(session)
+            or entry['websocket'] is not getattr(session, 'websocket', None)):
+        return {'ok': False, 'status': 'journal_write_reconciliation_required',
+                'error': 'A write belongs to an earlier authenticated connection. '
+                         'Reconnect and check saved state before requesting a new action.'}
+    return {'ok': False, 'status': 'journal_write_reconciliation_required',
+            'prior_write': dict(entry['outcome']),
+            'error': 'An earlier record change must be reconciled before another write. '
+                     'Do not repeat open/add/save automatically. Report the verified '
+                     'Trade # if saved; keep pending or uncertain explicit. Once '
+                     'reconciled, only a distinct new user request authorizes a new write.'}
+
+
+async def _run_journal_write(session, name, call_id, runner, identity, turn):
+    loop = asyncio.get_running_loop()
+    entry = dict(tool=name, call_id=call_id, identity=identity, turn=turn,
+                 websocket=getattr(session, 'websocket', None), started=time.monotonic(),
+                 outcome=_journal_write_outcome(name, 'pending'), published=None,
+                 reconciled=False, running=True)
+    session._journal_write_recovery = entry
+
+    def publish(status, result=None):
+        # The commit callback can run in a worker thread before its queued
+        # publication. Read its atomic snapshot before interpreting an error.
+        if entry.get('committed') is not None:
+            status = 'saved'
+            result = {**(result if isinstance(result, dict) else {}), **entry['committed']}
+        # A confirmed commit cannot be undone by a later warning/read failure.
+        if entry['outcome']['status'] == 'saved' and status != 'saved':
+            return
+        outcome = _journal_write_outcome(name, status, result)
+        if status == 'saved' and entry['outcome']['status'] == 'saved':
+            outcome = {**entry['outcome'], **outcome}
+        if outcome != entry['outcome'] and 'interrupted_at' in entry:
+            # A later authoritative display number can enrich an already
+            # recovered commit without reopening the old function or audio.
+            entry['reconciled'] = False
+        entry['outcome'] = outcome
+        work = getattr(session, 'tool_work', None)
+        if work is not None:
+            work.recover_writes()
+
+    def committed(guild, member, result):
+        bound_member, owner, session_id = identity
+        if (not bound_member or not session_id or len(owner) < 2
+                or (guild, member) != tuple(owner[:2]) or member != bound_member):
+            return
+        # Filter on the worker before scheduling. Never retain a mutable result
+        # or private record contents in the recovery capability.
+        safe = _journal_write_outcome(name, 'saved', result)
+        entry['committed'] = safe
+        try:
+            loop.call_soon_threadsafe(publish, 'saved', safe)
+        except RuntimeError:
+            pass  # Closed event loop: no current voice connection can recover.
+
+    token = _journal_write_sink.set(committed)
+    try:
+        result = await runner()
+    except BaseException as exc:
+        entry['running'] = False
+        publish('uncertain')
+        if isinstance(exc, Exception) and entry['outcome']['status'] == 'saved':
+            return {'ok': True, **entry['outcome'], 'post_save_processing': 'unavailable',
+                    'warning': 'The record was saved, but optional post-save processing did not finish.'}
+        raise
+    else:
+        entry['running'] = False
+        status = _journal_result_status(result)
+        publish(status, result)
+        if entry['outcome']['status'] == 'saved' and status != 'saved':
+            return {'ok': True, **entry['outcome'], 'post_save_processing': 'unavailable',
+                    'warning': 'The record was saved, but optional post-save processing did not finish.'}
+        return result
+    finally:
+        _journal_write_sink.reset(token)
 
 
 def recovery_options(session):
@@ -71,15 +218,32 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
     if previous_identity != identity:
         return {'ok': False, 'error': 'This tool cache belongs to an earlier authenticated session. Reconnect before continuing.'}
     session._tool_identity = identity
+    connection = getattr(session, 'websocket', None)
+    if getattr(session, '_tool_connection', connection) is not connection:
+        return {'ok': False, 'error': 'This tool cache belongs to an earlier connection. Reconnect before continuing.'}
+    session._tool_connection = connection
     cache = getattr(session, '_tool_call_results', None)
     if cache is None:
         cache = session._tool_call_results = {}
     if call_id in cache:
+        write = getattr(session, '_journal_write_recovery', None)
+        if name in JOURNAL_WRITE_NAMES and write and write['call_id'] == call_id:
+            return {'ok': write['outcome']['status'] == 'saved', **write['outcome']}
         return cache[call_id]
     if getattr(session, '_recovery_active', False) and name == 'manage_market_watch' and args.get('action') not in ('list', 'cancel'):
         return {'ok': False, 'error': 'New watches are not started during recovery. Existing watches can be listed or cancelled.'}
     if getattr(session, '_recovery_active', False) and name not in RECOVERY_NAMES:
         return {'ok': False, 'error': 'Record changes are disabled during recovery. Check saved state before requesting the action again.'}
+    if name in JOURNAL_WRITE_NAMES:
+        work = getattr(session, 'tool_work', None)
+        barrier = getattr(work, 'write_barriers', {}).pop(call_id, None)
+        previous_write = getattr(session, '_journal_write_recovery', None)
+        if barrier is not None or journal_write_needs_reconciliation(previous_write, turn):
+            result = journal_write_barrier(session, barrier or previous_write)
+            cache[call_id] = result
+            if len(cache) > 256:
+                cache.pop(next(iter(cache)))
+            return result
     deliveries = getattr(session, '_delivery_results', None)
     if deliveries is None:
         deliveries = session._delivery_results = {}
@@ -102,7 +266,8 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
             # recovery. Explicit status lookups can retrieve older receipts.
             session._delivery_recovery = recovery
         cache[call_id] = {'ok': False, 'error': 'The earlier action outcome is uncertain. Check saved state before retrying.'}
-        result = await runner()
+        result = (await _run_journal_write(session, name, call_id, runner, identity, turn)
+                  if name in JOURNAL_WRITE_NAMES else await runner())
         if name in PRIVATE_DELIVERY_NAMES:
             deliveries[key] = result
             # This runs inside the shielded operation, even when the voice waiter
@@ -120,7 +285,11 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
             print('[GBOP-DELIVERY]', name, 'status=', result.get('status', 'unknown'),
                   'sent_count=', result.get('sent_count', 0),
                   'uncertain=', bool(result.get('delivery_uncertain')))
-    cache[call_id] = result
+    if name in JOURNAL_WRITE_NAMES:
+        outcome = getattr(session, '_journal_write_recovery', {}).get('outcome', {})
+        cache[call_id] = {'ok': outcome.get('status') == 'saved', **outcome}
+    else:
+        cache[call_id] = result
     if len(cache) > 256:
         cache.pop(next(iter(cache)))
     if len(deliveries) > 64:

@@ -273,11 +273,12 @@ GBOP_LOCAL_TZ = ZoneInfo("America/Bogota")
 GBOP_EASTERN_TZ = ZoneInfo("America/New_York")
 GBOP_CHECKIN_TASK = None
 GBOP_CHECKIN_PROMPT = (
-    "Quick check-in — reply in one message with: "
-    "(1) whether you followed your trading plan and personal risk protocol, "
-    "(2) whether your trades met your own A+ setup criteria, "
-    "(3) whether you avoided boredom, FOMO, revenge trading, or unnecessary entries, "
-    "plus one pattern you noticed and one adjustment for your next shift."
+    "Post-shift check-in — share a brief or fuller reflection in your own words. "
+    "You might cover your trading plan and personal risk protocol, "
+    "whether your trades met your own A+ setup criteria, "
+    "and how you handled boredom, FOMO, revenge trading, or unnecessary entries. "
+    "Include any patterns you noticed or adjustments for your next shift. "
+    "There is no sentence limit."
 )
 GBOP_CHECKIN_REPLY_HINT = (
     "\n\nTo save this check-in within 24 hours, use Discord Reply on this message "
@@ -4945,7 +4946,8 @@ For ordinary trade conversation:
 - If exactly one open trade clearly matches a natural follow-up such as
   "added another .25R", it may refer to that trade.
 - If multiple plausible open trades exist, ask which one.
-- New trade idea -> open_trade.
+- Multi-entry journal report -> stage_journal_story, then save_journal_story. Missing risk does not block narrative capture.
+- Explicit first execution with known risk -> open_trade; never use it merely to capture a story.
 - Additional entry -> add_entry.
 - Mid-trade development -> record_trade_event.
 - Closing/reflection -> close_trade after gathering the final result when
@@ -5264,6 +5266,10 @@ def ai_open_trade(user_id: int, args: dict):
             fields=None if selected_number is not None else {'description': f'{asset} {direction} · {play}'},
             metadata=metadata, timestamp=now())
 
+    from gbop_voice_web.voice_runtime import journal_write_committed
+    journal_write_committed(GTOP_GUILD_ID, user_id, {'execution_id': execution_id})
+    display_number = trade_number_for_id(user_id, thesis_id)
+    journal_write_committed(GTOP_GUILD_ID, user_id, {'trade_id': display_number, 'execution_id': execution_id})
     warnings = []
     profile = get_profile(db, GTOP_GUILD_ID, user_id)
     effective_tier = ai_infer_tier(entry_model, tier)
@@ -5291,7 +5297,7 @@ def ai_open_trade(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": trade_number_for_id(user_id, thesis_id),
+        "trade_id": display_number,
         "execution_id": execution_id,
         "asset": asset,
         "direction": direction,
@@ -5404,6 +5410,10 @@ def ai_add_entry(user_id: int, args: dict):
         ))
         execution_id = cur.lastrowid
 
+    from gbop_voice_web.voice_runtime import journal_write_committed
+    journal_write_committed(GTOP_GUILD_ID, user_id, {'execution_id': execution_id})
+    display_number = trade_number_for_id(user_id, row['id'])
+    journal_write_committed(GTOP_GUILD_ID, user_id, {'trade_id': display_number, 'execution_id': execution_id})
     warnings = []
     profile = get_profile(db, GTOP_GUILD_ID, user_id)
     effective_tier = ai_infer_tier(entry_model, tier)
@@ -5437,7 +5447,7 @@ def ai_add_entry(user_id: int, args: dict):
 
     return {
         "ok": True,
-        "trade_id": trade_number_for_id(user_id, row["id"]),
+        "trade_id": display_number,
         "execution_id": execution_id,
         "entry_model": entry_model,
         "tier": tier,
@@ -5665,7 +5675,7 @@ GBOP_AI_TOOLS = [
     {
         "type": "function",
         "name": "open_trade",
-        "description": "Create a new trade idea and its first execution.",
+        "description": "Record an actual first execution with known risk. Do not use for an incomplete journal story; stage_journal_story/save_journal_story preserves the whole narrative without inventing executions.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -6937,8 +6947,9 @@ class GBOPRealtimeSession:
         )
         if sent is False or (work is not None and not work.current(scope)):
             return
-        from gbop_voice_web.voice_runtime import delivery_result_reported
+        from gbop_voice_web.voice_runtime import delivery_result_reported, journal_write_result_reported
         delivery_result_reported(self, result)
+        journal_write_result_reported(self, name, call_id, result)
 
         if name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
             # Update the existing voice session so the next answer uses the new
@@ -7023,6 +7034,7 @@ class GBOPRealtimeSession:
                 if work is not None:
                     work.recover_reads()
                     work.recover_delivery()
+                    work.recover_writes()
                 print(
                     "[GBOP-RT-EVENT] speech_started:",
                     self.member,
