@@ -36,6 +36,19 @@ OTHER_RANGES_CONTRACT = (
     'discussed H1 opening; retrieval alone is not completed discussion.')
 
 
+def negative_claim_guard(young_status, story):
+    """Presentation scope only; this does not classify an aggregate shift outcome."""
+    unverified = ['Young Lefty'] if young_status in (None, 'unverified') else []
+    if not story.get('coverage', {}).get('complete') or not story.get('progression_complete'):
+        unverified.append('affected shift ranges')
+    if not unverified:
+        return None
+    return {'shift_wide_absence': 'not_assessed', 'unverified_contexts': unverified,
+        'instruction': 'Qualify negative outcomes by verified named range and cutoff; '
+            'unverified contexts block whole-shift none claims. '
+            'Assess double-purge absence from its own evidence, never from an objective summary.'}
+
+
 def _missing_young_anchor(young):
     """Explain seven's missing evidence separately from whole-shift coverage."""
     anchor = (young or {}).get('anchor', {})
@@ -432,6 +445,7 @@ def build_shift_synopsis(review, asset=None):
     if not opening:
         return {'spoken_summary': 'Shift evidence is unavailable. Young Lefty: unverified.',
                 'ranges': [], 'range_index': [], 'young_lefty_status': 'unverified',
+                'negative_claim_guard': negative_claim_guard('unverified', story),
                 'response_contract': SYNOPSIS_CONTRACT}
     records = story.get('recap', {}).get('paired_interpretation', [])
     lead = _paired_fact(opening, records, _local_fact(opening, '9ate8'))
@@ -511,7 +525,9 @@ def build_shift_synopsis(review, asset=None):
              for start, label, role in sorted(anchors)]
     ending = shift_end_state(story)
     sentences.append(ending['spoken_summary'])
+    guard = negative_claim_guard(young_status, story)
     return {'spoken_summary': ' '.join(sentences), 'ranges': facts, 'range_index': index,
+            **({'negative_claim_guard': guard} if guard else {}),
             **({'young_lefty_coverage': young_coverage} if young_coverage else {}),
             'active_range_context': _compact_active_context(_active_context(story, records, asset=asset)),
             'shift_end': {k: v for k, v in ending.items() if k != 'spoken_summary'},
