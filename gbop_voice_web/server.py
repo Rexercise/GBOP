@@ -340,17 +340,6 @@ def member_context(user_id: int) -> str:
             (GTOP_GUILD_ID, user_id),
         ).fetchall()
 
-        journals = conn.execute(
-            """
-            SELECT *
-            FROM journals
-            WHERE guild_id=? AND user_id=?
-            ORDER BY id DESC
-            LIMIT 8
-            """,
-            (GTOP_GUILD_ID, user_id),
-        ).fetchall()
-
     from gbop_voice_web.midpoint_preferences import preference_context
     lines = [market_clock(), "CURRENT VERIFIED GBOP MEMBER STATE", profile_context(get_profile(db, GTOP_GUILD_ID, user_id)),
              preference_context(db, GTOP_GUILD_ID, user_id, OWNER_USER_ID)]
@@ -1135,6 +1124,7 @@ BACKEND_PROMPT += (
 
 
 def run_backend(history: list[dict[str, str]], user_id: int, market_context=None, client_turn=None) -> str:
+    from gbop_voice_web.api_usage import log_response_usage
     from gbop_voice_web.midpoint_preferences import bind_preference_args
     from gbop_voice_web.market_conversation import MarketConversation, contextual_tools, SCOPED_TOOLS
     from gbop_voice_web.journal_context import WRITE_TOOLS
@@ -1185,6 +1175,7 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
         tools=conversation_tools,
         store=False,
     )
+    log_response_usage(response, 'browser_backend')
 
     for _ in range(6):
         if not market_context.current(market_generation):
@@ -1227,7 +1218,7 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
                 {
                     "type": "function_call_output",
                     "call_id": call.call_id,
-                    "output": json.dumps(voice_tool_payload(call.name, result)),
+                    "output": json.dumps(voice_tool_payload(call.name, result), separators=(",", ":")),
                 }
             )
             if call.name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
@@ -1243,6 +1234,7 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
             tools=conversation_tools,
             store=False,
         )
+        log_response_usage(response, 'browser_backend')
 
     return "The backend hit its internal action limit. Ask me to continue."
 

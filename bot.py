@@ -5121,18 +5121,6 @@ def ai_member_context(user_id: int):
             user_id,
         )).fetchall()
 
-        journals = conn.execute("""
-            SELECT *
-            FROM journals
-            WHERE guild_id=?
-              AND user_id=?
-            ORDER BY id DESC
-            LIMIT 5
-        """, (
-            GTOP_GUILD_ID,
-            user_id,
-        )).fetchall()
-
     profile = get_profile(db, GTOP_GUILD_ID, user_id)
     from gbop_voice_web.midpoint_preferences import preference_context
     lines = [market_clock(), "CURRENT MEMBER STATE", profile_context(profile),
@@ -6090,6 +6078,7 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
 
 
 def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None):
+    from gbop_voice_web.api_usage import log_response_usage
     from gbop_voice_web.midpoint_preferences import bind_preference_args
     from gbop_voice_web.market_conversation import TEXT_MARKET_CONTEXTS, contextual_tools
     market_context = TEXT_MARKET_CONTEXTS.get((GTOP_GUILD_ID, user_id, 'text', conversation_id))
@@ -6128,6 +6117,7 @@ def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None)
         tools=conversation_tools,
         store=False,
     )
+    log_response_usage(response, 'discord_text')
 
     for _ in range(5):
         calls = [
@@ -6158,7 +6148,7 @@ def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None)
             input_items.append({
                 "type": "function_call_output",
                 "call_id": call.call_id,
-                "output": json.dumps(voice_tool_payload(call.name, result)),
+                "output": json.dumps(voice_tool_payload(call.name, result), separators=(",", ":")),
             })
             if call.name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
                 from gbop_voice_web.midpoint_preferences import refresh_instructions
@@ -6172,6 +6162,7 @@ def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None)
             tools=conversation_tools,
             store=False,
         )
+        log_response_usage(response, 'discord_text')
 
     return (
         "I hit the internal action limit for this turn. "
@@ -6986,6 +6977,8 @@ class GBOPRealtimeSession:
         # profile/journal/coach snapshot here delayed the reply and busted caches.
 
     async def receiver_loop(self):
+        from gbop_voice_web.api_usage import RealtimeUsageRecorder
+        usage_recorder = RealtimeUsageRecorder()
         async for raw in self.websocket:
             try:
                 event = json.loads(raw)
@@ -6993,6 +6986,8 @@ class GBOPRealtimeSession:
                 continue
 
             event_type = event.get("type", "")
+            if event_type == "response.done":
+                usage_recorder.record(event.get("response") or {})
             work = getattr(self, 'tool_work', None)
             if work is not None and not work.accepts(event):
                 response = event.get('response') or {}
@@ -7182,9 +7177,6 @@ class GBOPRealtimeSession:
                     delivery.response_done(response)
                 if work is not None:
                     work.response_done(response)
-                usage = response.get("usage") or {}
-                print("[GBOP-RT-USAGE] input_tokens=", usage.get("input_tokens"),
-                      "output_tokens=", usage.get("output_tokens"))
                 if status == "failed":
                     error = (response.get("status_details") or {}).get("error") or {}
                     self.last_error = ("OpenAI voice rate limit reached. Wait briefly before retrying."
