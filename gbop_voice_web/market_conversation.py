@@ -430,6 +430,7 @@ class MarketConversation:
         self.generation = 0
         self.closed = False
         self.client_turn = -1
+        self._begun_client_turn = None
         self.selected = None
         self.requested = None
         self.evidence = None
@@ -484,13 +485,18 @@ class MarketConversation:
                 return None
             if client_turn is not None and client_turn < self.client_turn:
                 return None
-            if client_turn is not None and client_turn == self.client_turn and self.generation and getattr(self, '_client_text', None) == text:
+            if (client_turn is not None and client_turn == self._begun_client_turn
+                    and self.generation and getattr(self, '_client_text', None) == text):
                 return self.generation
             if client_turn is not None:
-                self.client_turn = client_turn
+                if self.client_turn >= 0 and client_turn > self.client_turn + 1:
+                    self._feeling_note = self._feeling_clarification = self._feeling_reply = self._feeling_prompt = None
+                self.client_turn = self._begun_client_turn = client_turn
             self._client_text = text
             self._turn_now = time.time() if now is None else now
             self.generation += 1
+            from gbop_voice_web.trade_feelings import begin_feeling_turn
+            begin_feeling_turn(self, text)
             self._current_result = None
             self._other_result = None
             self._retrieved_discussion.clear()
@@ -687,7 +693,9 @@ class MarketConversation:
             if client_turn is not None:
                 self.client_turn = client_turn
             self.generation += 1
+            self._begun_client_turn = None
             self._feeling_prompt = None
+            self._feeling_note = self._feeling_clarification = self._feeling_reply = None
             self.pending = None
             self.intent = None
             self._required_detail = None
@@ -700,13 +708,26 @@ class MarketConversation:
             self._current_result = None
             self.detail_focus = None
 
-    def advance_client_turn(self, client_turn):
+    def advance_client_turn(self, client_turn, *, continuation=False, response_id=None):
         # A cancellation notification can arrive after delegation for that same
         # speech turn. Never cancel the newer request in that network ordering.
         with self._lock:
             if client_turn <= self.client_turn:
                 return
+            from gbop_voice_web.trade_feelings import _fresh
+            note = getattr(self, '_feeling_note', None)
+            question = getattr(self, '_feeling_clarification', None)
+            carry = (continuation and client_turn == self.client_turn + 1
+                and _fresh(self, note) and 'advanced_client_turn' not in note
+                and question and question['generation'] == self.generation
+                and response_id == question['response_id'])
             self.invalidate(client_turn=client_turn)
+            if carry:
+                # One ordinary speech-start fence may precede the text delegate.
+                # It cannot revive a partial question or carry across two turns.
+                self._feeling_note = {**note, 'generation': self.generation,
+                                      'advanced_client_turn': client_turn}
+                self._feeling_clarification = {**question, 'generation': self.generation}
 
     def close(self):
         """Terminal logout/replacement fence; detached queued work cannot revive it."""
@@ -766,12 +787,19 @@ class MarketConversation:
         with self._lock:
             ticket = self.generation if generation is None else generation
             if not completed or not text or not self.current(ticket):
-                return 0
-            scope = _discussion_scope(self.selected)
-            if not scope or scope != _discussion_scope(self.requested):
+                if not completed and self.current(ticket):
+                    self._feeling_clarification = None
                 return 0
             receipt = (ticket, str(response_id) if response_id is not None else _digest(text))
             if receipt in self._completed_responses:
+                return 0
+            self._completed_responses[receipt] = True
+            while len(self._completed_responses) > 128:
+                self._completed_responses.popitem(last=False)
+            from gbop_voice_web.trade_feelings import delivered_feeling_clarification
+            delivered_feeling_clarification(self, text, ticket, receipt[1])
+            scope = _discussion_scope(self.selected)
+            if not scope or scope != _discussion_scope(self.requested):
                 return 0
             # The bounded evidence cache belongs to this generation. A successful
             # read of five ranges does not imply that any one was actually said.
@@ -780,11 +808,8 @@ class MarketConversation:
             seen = self._discussed.pop(scope, set())
             count = len(anchors - seen)
             self._discussed[scope] = seen | anchors
-            self._completed_responses[receipt] = True
             while len(self._discussed) > 24:
                 self._discussed.popitem(last=False)
-            while len(self._completed_responses) > 128:
-                self._completed_responses.popitem(last=False)
             return count
 
     def prompt(self):
