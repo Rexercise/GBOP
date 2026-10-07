@@ -43,10 +43,20 @@ def contextual_tools(tools):
                 'with the market review just discussed; selected_candle for an entry on this/that candle; none for an unrelated journal. The server binds '
                 'verified scope and candle facts. Never copy market delivery into a member result. '
                 'A candle interval is not an exact execution timestamp. Unknown R stays null.')
+            if tool['name'] in {'open_trade', 'add_entry'}:
+                from gbop_voice_web.execution_identity import REPORTED_SCHEMA
+                for key, definition in REPORTED_SCHEMA.items():
+                    params['properties'].setdefault(key, deepcopy(definition))
+                    if key not in params['required']:
+                        params['required'].append(key)
+                tool['description'] += (' Each separately reported execution needs its own call even if model, tier and risk match. '
+                    'Do not repeat an entry already confirmed saved. Use persisted_entry_count from the verified receipt '
+                    'when confirming how many actual executions were saved; story entries are not executions.')
             if tool['name'] in {'open_trade', 'close_trade'}:
                 for key in ('reported_entry_at', 'reported_exit_at', 'reported_outcome'):
-                    params['properties'][key] = {'type': ['string', 'null']}
-                    params['required'].append(key)
+                    params['properties'].setdefault(key, {'type': ['string', 'null']})
+                    if key not in params['required']:
+                        params['required'].append(key)
                 tool['description'] += (' Reported entry/exit timestamps require a date and explicit timezone; '
                     'leave unknown timestamps null. reported_outcome: stopped_out, win, loss, breakeven, open, unknown.')
         if tool.get('name') not in SCOPED_TOOLS or tool.get('name') in MULTI_TOOLS:
@@ -431,6 +441,9 @@ class MarketConversation:
         self.auth_provider = auth_provider
         self.owner = owner  # Set only by authenticated entry points; never tool arguments.
         self.session_id = uuid4().hex
+        # Auth revisions rotate review/session evidence, not the identity of an
+        # already admitted execution or browser request in this conversation.
+        self._execution_namespace = self.session_id
         self.generation = 0
         self.closed = False
         self.client_turn = -1
@@ -463,6 +476,7 @@ class MarketConversation:
         self._journal_reference = False
         self._journal_candle_reference = False
         self._journal_results = {}
+        self._execution_results = {}
         self._auth_revision = None
         from gbop_voice_web.multi_market_context import ContextBank
         self.context_bank = ContextBank(self.session_id)
@@ -519,8 +533,6 @@ class MarketConversation:
             self._multi_read_lock = threading.Lock()
             from gbop_voice_web.trade_feelings import begin_feeling_turn
             begin_feeling_turn(self, text)
-            from gbop_voice_web.journal_story import begin_story_turn
-            begin_story_turn(self, text)
             self._current_result = None
             self._other_result = None
             self._retrieved_discussion.clear()
@@ -628,7 +640,12 @@ class MarketConversation:
                 self._required_detail = None
                 self._required_current = self._required_other = self._required_active = False
                 self._scan_request = None
-            return self.generation
+            generation = self.generation
+        # Draft persistence acquires DB/member locks before the conversation
+        # guard, exactly like all other journal writes. Never invert that order.
+        from gbop_voice_web.journal_story import begin_story_turn
+        begin_story_turn(self, text, generation=generation)
+        return generation
 
     def required_evidence_request(self):
         # Deterministic text retrieval includes no-tool model replies.
@@ -875,26 +892,29 @@ class MarketConversation:
                 self._completed_responses.popitem(last=False)
             from gbop_voice_web.trade_feelings import delivered_feeling_clarification
             delivered_feeling_clarification(self, text, ticket, receipt[1])
-            from gbop_voice_web.journal_story import delivered_story_question
-            delivered_story_question(self, text, ticket)
             scope = _discussion_scope(self.selected)
-            if not scope or scope != _discussion_scope(self.requested):
-                return 0
-            # The bounded evidence cache belongs to this generation. A successful
-            # read of five ranges does not imply that any one was actually said.
-            anchors = {anchor for (row_scope, anchor), row in self._retrieved_discussion.items()
-                       if row_scope == scope and _spoken_range(text, row)}
-            seen = self._discussed.pop(scope, set())
-            count = len(anchors - seen)
-            self._discussed[scope] = seen | anchors
-            while len(self._discussed) > 24:
-                self._discussed.popitem(last=False)
-            return count
+            count = 0
+            if scope and scope == _discussion_scope(self.requested):
+                # Only ranges actually spoken in the delivered response count.
+                anchors = {anchor for (row_scope, anchor), row in self._retrieved_discussion.items()
+                           if row_scope == scope and _spoken_range(text, row)}
+                seen = self._discussed.pop(scope, set())
+                count = len(anchors - seen)
+                self._discussed[scope] = seen | anchors
+                while len(self._discussed) > 24:
+                    self._discussed.popitem(last=False)
+        # This hook can persist the delivered-question receipt. Acquire its DB
+        # lock before its generation guard, never while holding self._lock.
+        from gbop_voice_web.journal_story import delivered_story_question
+        delivered_story_question(self, text, ticket)
+        return count
 
     def prompt(self):
+        from gbop_voice_web.journal_story import story_prompt_context
         with self._lock:
+            story_context = story_prompt_context(self)
             if not self.selected and not self.requested and not self.context_bank.entries and not self._multi_request:
-                return ''
+                return story_context
             snapshot = {'requested_context': self.requested, 'selection': self.selected,
                         'verified_evidence': self.evidence,
                         'discussion_context': self.discussion_context()}
@@ -914,7 +934,7 @@ class MarketConversation:
                 snapshot.pop('verified_evidence', None)
                 snapshot.pop('requested_context', None)
                 snapshot.pop('discussion_context', None)
-                return ('\nMULTIPLE MARKET CONTEXTS (this conversation only)\n'
+                return (story_context + '\nMULTIPLE MARKET CONTEXTS (this conversation only)\n'
                         + json.dumps(snapshot, separators=(',', ':'))
                         + '\nNo single context is selected for this comparison. Never answer an ambiguous '
                         'it/that/this from a previous focus. Use review_market_contexts to recall the named '
@@ -924,7 +944,7 @@ class MarketConversation:
             if self.requested and self.requested != self.selected:
                 snapshot['warning'] = ('Requested context has no matching verified evidence yet. '
                                        'Do not answer it from the previous selection; retrieve the exact requested scope.')
-        return ('\nCURRENT VERIFIED MARKET REVIEW (this conversation only)\n' +
+        return (story_context + '\nCURRENT VERIFIED MARKET REVIEW (this conversation only)\n' +
                 json.dumps(snapshot, separators=(',', ':')) +
                 '\nElliptical follow-ups keep this asset, NY date, shift and selected range. '
                 'A named H1 range or returned detail_request may navigate within the same shift '
@@ -1071,7 +1091,7 @@ class MarketConversation:
         return {'ok': False, 'status': 'stale_market_context',
                 'error': 'This market request was cancelled or superseded; do not reuse its result.'}
 
-    def _run_journal(self, name, arguments, runner, ticket):
+    def _run_journal(self, name, arguments, runner, ticket, operation_id=None):
         args = {key: value for key, value in dict(arguments).items() if not key.startswith('_')}
         reference = args.pop('market_reference', None)
         if name in {'stage_journal_story','get_journal_story','save_journal_story'} and reference not in (None,'none'):
@@ -1105,14 +1125,65 @@ class MarketConversation:
                                 'error': 'Which candle opening and timeframe was your entry? Several or unverified candle identities remain in this review.'}
                 story_revision = (getattr(self, '_journal_story', None) or {}).get('revision') if name == 'save_journal_story' else None
                 cache_result = name not in {'stage_journal_story','get_journal_story'}
-                key = _digest({'tool': name, 'args': args, 'review': review, 'story_revision':story_revision})
+                from gbop_voice_web.execution_identity import EXECUTION_TOOLS, bind_operation
+                execution_op = bind_operation(self, ticket, name, args, operation_id) if name in EXECUTION_TOOLS else None
+                if execution_op:
+                    previous = self._execution_results.get(execution_op.operation_id)
+                    if previous:
+                        if previous['payload_digest'] != execution_op.payload_digest:
+                            return {'ok': False, 'status': 'execution_identity_conflict',
+                                    'error': 'This execution call already identified different details. Check its saved entry before correcting it.'}
+                        return deepcopy(previous['result'])
+                    if any(value['result'].get('status') == 'journal_outcome_uncertain'
+                           for value in self._execution_results.values()):
+                        return {'ok': False, 'status': 'journal_write_reconciliation_required',
+                                'error': 'An earlier execution outcome is uncertain. Check saved state in a fresh conversation before recording another execution.'}
+                    if len(self._execution_results) >= 512:
+                        return {'ok': False, 'status': 'execution_session_full',
+                                'error': 'Start a fresh conversation and check saved state before recording more executions.'}
+                key = _digest({'tool': name, 'args': args, 'review': review, 'story_revision':story_revision,
+                               'operation_id': execution_op.operation_id if execution_op else None})
                 if cache_result and key in self._journal_results:
                     return deepcopy(self._journal_results[key])
                 args['_journal_binding'] = JournalBinding(self, ticket, review)
+                if execution_op:
+                    args['_execution_operation'] = execution_op
+                    self._execution_results[execution_op.operation_id] = {
+                        'payload_digest': execution_op.payload_digest,
+                        'result': {'ok': False, 'status': 'journal_outcome_uncertain',
+                            'error': 'This execution was already started. Check its saved state before retrying; do not create another entry.'}}
                 if cache_result:
                     self._journal_results[key] = {'ok': False, 'status': 'journal_outcome_uncertain',
                         'error': 'This write was already started. Check saved journal/trade state before retrying; do not create a duplicate.'}
-            result = runner(name, args)
+            try:
+                result = runner(name, args)
+            except Exception:
+                # A committed execution receipt survives optional warning failures.
+                # Recovery only reads its exact operation; it never repeats a write.
+                recovered = None
+                recovery_checked = False
+                if execution_op and self.auth_provider:
+                    from gbop_voice_web.execution_identity import replay_receipt
+                    from gbop_voice_web.journal_context import journal_transaction
+                    db, guild, user = self.auth_provider
+                    try:
+                        with journal_transaction(db, args, guild, user, serialize=True) as conn:
+                            recovered = replay_receipt(conn, execution_op)
+                        recovery_checked = True
+                    except Exception:
+                        pass
+                if not recovered:
+                    if execution_op and recovery_checked:
+                        # Every admitted execution and receipt is atomic. After
+                        # its serialized transaction has ended, no receipt is
+                        # positive evidence this operation did not commit.
+                        with self._lock:
+                            self._execution_results[execution_op.operation_id]['result'] = {
+                                'ok': False, 'saved': False, 'status': 'execution_not_saved',
+                                'error': 'This execution was not saved. Correct the reported details before a new request.'}
+                    raise
+                result = {**recovered, 'post_save_processing': 'unavailable',
+                          'warning': 'The execution was saved; optional post-save processing did not finish.'}
             if result.get('ok') and self.auth_provider:
                 from gbop_voice_web.trade_feelings import optional_prompt
                 try:
@@ -1124,6 +1195,10 @@ class MarketConversation:
                     # reflection must never induce an unsafe repeat execution.
                     result = {**result, 'optional_feeling_prompt_unavailable': True}
             with self._lock:
+                if execution_op:
+                    # Retain exact transport outcomes across later turns. Admission
+                    # and final transaction guards still fence stale/member calls.
+                    self._execution_results[execution_op.operation_id]['result'] = deepcopy(result)
                 if cache_result and result.get('ok') and ticket == self.generation:
                     self._journal_results[key] = deepcopy(result)
                     self._journal_results = dict(list(self._journal_results.items())[-32:])
@@ -1188,7 +1263,7 @@ class MarketConversation:
             self._current_result_generation = ticket
             return output
 
-    def run(self, name, arguments, runner, *, generation=None):
+    def run(self, name, arguments, runner, *, generation=None, operation_id=None):
         # Serialize scope-changing reads within a conversation, including batch
         # and focus selection. The state lock remains free for cancellation/new
         # turns; a queued old read keeps its original ticket and cannot revive.
@@ -1199,10 +1274,10 @@ class MarketConversation:
                     return self._stale()
                 scope_lock = self._scoped_read_lock
             with scope_lock:
-                return self._run(name, arguments, runner, generation=ticket)
-        return self._run(name, arguments, runner, generation=generation)
+                return self._run(name, arguments, runner, generation=ticket, operation_id=operation_id)
+        return self._run(name, arguments, runner, generation=generation, operation_id=operation_id)
 
-    def _run(self, name, arguments, runner, *, generation=None):
+    def _run(self, name, arguments, runner, *, generation=None, operation_id=None):
         """Runner is the existing authenticated dispatcher, including catalogue reads.
 
         Only finished matching evidence can update selection. DB/model work is
@@ -1219,6 +1294,9 @@ class MarketConversation:
                 return self._stale()
             active = deepcopy(self.pending or self.requested or self.selected)
             intent = deepcopy(self.intent)
+        if name == 'review_post_shift_followthrough':
+            from gbop_voice_web.post_shift_followthrough import run_context_followthrough
+            return run_context_followthrough(self, arguments, runner, ticket)
         if self._comparison_asset_ambiguous and name in SCOPED_TOOLS:
             return {'ok': False, 'status': 'market_asset_required',
                     'error': 'Which requested market should this new review use? A partial comparison cannot select its sole successful asset for you.'}
@@ -1251,7 +1329,7 @@ class MarketConversation:
                     'next_arguments': deepcopy(self._multi_request) if self._multi_request and self._multi_result is None else None,
                     'error': 'Review all requested contexts, then select the member-identified context for a single-range follow-up. Do not reuse an arbitrary old focus.'}
         if name in WRITE_TOOLS:
-            return self._run_journal(name, arguments, runner, ticket)
+            return self._run_journal(name, arguments, runner, ticket, operation_id)
         from gbop_voice_web.journal_recall import bind_recall_intent
         arguments, denial = bind_recall_intent(name, arguments, getattr(self, '_client_text', None))
         if denial:

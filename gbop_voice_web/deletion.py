@@ -23,6 +23,14 @@ def validate_owned_relations(conn, guild_id, user_id, *, trade_id=None, journal_
         journal_ids = [r['id'] for r in conn.execute(
             'SELECT id FROM journals WHERE thesis_id=? AND guild_id=? AND user_id=?',
             (trade_id, guild_id, user_id)).fetchall()]
+    from gbop_voice_web.journal_drafts import available
+    if available(conn):
+        clauses=[];params=[]
+        if trade_id is not None:clauses.append('thesis_id=?');params.append(trade_id)
+        if journal_ids:
+            clauses.append('journal_id IN ('+','.join('?' for _ in journal_ids)+')');params.extend(journal_ids)
+        if clauses and conn.execute('SELECT 1 FROM journal_story_drafts WHERE ('+' OR '.join(clauses)+') AND (guild_id<>? OR user_id<>?) LIMIT 1',(*params,guild_id,user_id)).fetchone():
+            raise ValueError('Linked draft ownership is inconsistent. Nothing deleted; contact support.')
     if journal_ids:
         placeholders = ','.join('?' for _ in journal_ids)
         foreign = conn.execute(f"""SELECT 1 FROM journal_details WHERE journal_id IN ({placeholders}) AND
@@ -97,6 +105,17 @@ def deletion_snapshot(conn, guild_id, user_id, *, journal_id=None, trade_id=None
         records['journal_details'] = [dict(r) for r in conn.execute(
             f'SELECT * FROM journal_details WHERE guild_id=? AND user_id=? AND journal_id IN ({placeholders}) ORDER BY journal_id',
             (guild_id, user_id, *journal_ids)).fetchall()]
+    from gbop_voice_web.journal_drafts import available
+    records['journal_story_drafts']=[]
+    if available(conn):
+        clauses=[];params=[]
+        if trade_id is not None:clauses.append('thesis_id=?');params.append(trade_id)
+        if journal_ids:
+            clauses.append('journal_id IN ('+','.join('?' for _ in journal_ids)+')');params.extend(journal_ids)
+        if clauses:
+            records['journal_story_drafts']=[dict(r) for r in conn.execute(
+                'SELECT * FROM journal_story_drafts WHERE guild_id=? AND user_id=? AND ('+' OR '.join(clauses)+') ORDER BY id',
+                (guild_id,user_id,*params)).fetchall()]
     source_ids = set()
     for detail in records['journal_details']:
         if detail.get('photo_id'):
@@ -134,7 +153,7 @@ def deletion_snapshot(conn, guild_id, user_id, *, journal_id=None, trade_id=None
             'fingerprint': digest, 'counts': {'journals': len(records['journals']),
             'events': len(records['thesis_events']), 'executions': len(records['thesis_executions']),
             'risk_flags': len(records['risk_flags']), 'photos': len(records['trade_photos']),
-            'coaching_observations': len(records['coaching_observations'])}}
+            'coaching_observations': len(records['coaching_observations']), 'journal_drafts':len(records['journal_story_drafts'])}}
 
 
 def validate_deletion_snapshot(snapshot, expected_fingerprint):
@@ -156,6 +175,10 @@ def delete_trade_records(conn, guild_id, user_id, trade_id):
     risk_ids = [r['id'] for r in conn.execute(
         'SELECT id FROM risk_flags WHERE thesis_id=? AND guild_id=? AND user_id=?', params).fetchall()]
     counts = {}
+    from gbop_voice_web.journal_drafts import available
+    if available(conn):
+        counts['journal_drafts']=conn.execute('SELECT COUNT(*) FROM journal_story_drafts WHERE thesis_id=? AND guild_id=? AND user_id=?',params).fetchone()[0]
+        conn.execute('DELETE FROM journal_story_drafts WHERE thesis_id=? AND guild_id=? AND user_id=?',params)
     counts['coaching_observations'] = len(_coaching_sources(
         conn, guild_id, user_id, journal_ids, risk_ids, delete=True))
     for table, label in (('risk_flags', 'risk_flags'), ('thesis_events', 'events'),
@@ -179,6 +202,9 @@ def delete_journal_records(conn, guild_id, user_id, journal_id):
         return delete_trade_records(conn, guild_id, user_id, row['thesis_id'])
     validate_owned_relations(conn, guild_id, user_id, journal_ids=(journal_id,))
     observations = _coaching_sources(conn, guild_id, user_id, (journal_id,), delete=True)
+    from gbop_voice_web.journal_drafts import available
+    if available(conn):
+        conn.execute('DELETE FROM journal_story_drafts WHERE journal_id=? AND guild_id=? AND user_id=?',(journal_id,guild_id,user_id))
     conn.execute('DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?',
                  (journal_id, guild_id, user_id))
     return {'journals': 1, 'coaching_observations': len(observations)}

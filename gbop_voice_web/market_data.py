@@ -441,6 +441,12 @@ FRACTAL_ARGS = {
 }
 
 MARKET_TOOLS = [
+    schema('review_post_shift_followthrough', 'Append later candle evidence for a qualified relevant range whose full objective was pending at the ORIGINAL frozen GTOP shift cutoff. Use a returned post_shift_followthrough candidate exactly: same asset/date/shift/anchor/phase and source_scope_id as expected_scope_id. If its source_scope_id was not supplied, use expected_scope_id=null to read the frozen snapshot first, then continue with returned next_arguments; no new user question. No new qualification from later candles. Null through_ny uses closed available evidence bounded by now; an explicit horizon is optional. Preserve the original shift outcome and distinguish later valid delivery, structural invalidation, and physical touches after invalidation. No entry, fill or profit inference; gaps never justify never.', {
+        'asset': {'type': 'string'}, 'date_ny': {'type': 'string'},
+        'shift': {'type': 'string', 'enum': ['day', 'night']},
+        'anchor_start_ny': {'type': 'string'},
+        'phase': {'type': 'string', 'enum': ['original', 'double_purge']},
+        'expected_scope_id': {'type': ['string', 'null']}, 'through_ny': {'type': ['string', 'null']}}),
     schema('scan_young_lefty', 'On explicit anywhere/any other pair/whatever applicable Young Lefty requests, scan all supported instruments once. Preserve the reviewed NY date/shift/cutoff; null scope uses current NY day/window, never latest completed data. exclude_asset omits the already-reviewed market for other-pair requests. Missing evidence is not absence. Read-only, no alerts or trades.', {
         'date_ny': {'type': ['string', 'null']},
         'shift': {'type': ['string', 'null'], 'enum': ['day', 'night', None]},
@@ -565,6 +571,12 @@ automatic PD-array recognition is not required.
 MARKET_RESPONSE_CONTRACT = """
 NAMED-RANGE ANSWERS
 Use shift_synopsis.chronological_context: under review is not CRT confirmation. Keep source/H1 returns distinct; count event-time ranges, not Soup/closure votes. End at the GTOP shift boundary.
+POST-SHIFT: For qualified full DOL pending at cutoff, review_post_shift_followthrough
+appends later closed evidence for the same parent/phase without changing the shift
+verdict. through_ny=null uses latest closed evidence bounded by now; expected_scope_id=null
+reads original scope. No extra user parameter. Stop first delivery/invalidation;
+later physical touch is not valid success. State horizon/gaps; no never, later
+qualification of cutoff trades, or member results.
 Outcomes: first name the range and direction, then full delivery, midpoint only, pending, failed or unverified; then mechanism.
 Name acting candle AND affected range. Own CRT needs subsequent purge/return evidence beyond anchor closure. Recheck the same parent.
 Use directional_outcome/variant_evidence; later invalidation preserves earlier V2 delivery.
@@ -864,6 +876,9 @@ def market_tool(db, name, args, now=None):
         # Source W1 bounds are for weekly reviews; preserve existing market
         # tool response contracts and their conversational payload budgets.
         result.pop('weekly_periods', None)
+        if name == 'review_post_shift_followthrough':
+            from gbop_voice_web.post_shift_followthrough import review_post_shift_followthrough
+            return review_post_shift_followthrough(db, result, args, now)
         if name == 'review_current_market':
             from gbop_voice_web.current_market import review_current_market
             return review_current_market(db, result, args, now)
@@ -974,6 +989,15 @@ def market_tool(db, name, args, now=None):
             reconcile_paired_recap(result['review'], result['asset'])
             if name == 'review_market_session':
                 result['review']['shift_synopsis'] = build_shift_synopsis(result['review'], result['asset'])
+                from gbop_voice_web.post_shift_followthrough import continuation_candidates
+                candidates = continuation_candidates(result['review'], result['asset'], result['symbol'])
+                if candidates:
+                    result['post_shift_followthrough'] = {
+                        'tool': 'review_post_shift_followthrough',
+                        'date_ny': result['review']['date_ny'], 'shift': result['review']['shift'],
+                        'frozen_cutoff_ny': result['review']['shift_story']['end_ny'],
+                        'candidates': candidates,
+                        'instruction': 'Use the exact candidate source_scope_id as expected_scope_id. through_ny=null uses closed available evidence bounded by now. Keep the shift verdict unchanged.'}
         if name == 'review_market_crt':
             from gbop_voice_web.target_approach import owner_inducement_example
             review = result['review']

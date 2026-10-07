@@ -1,0 +1,6 @@
+SOUPIER SOUP — TERMINOLOGY ONLY
+Use the exact name Soupier Soup (S O U P I E R Soup).
+Soupier Soup is conceptually a "soup of a Super Soup".
+This clarification establishes the name and concept only. Qualification, timeframe, confirmation, entry sequence, entry timing, tier, invalidation and targets remain unspecified.
+Do not infer a tier, entry model classification or trade classification from this term or its definition. Do not inherit Super Soup's tier, timing or qualification merely because the definition mentions Super Soup. Do not detect or confirm Soupier Soup from market evidence without further user-defined rules.
+All existing rules for other named models remain unchanged.

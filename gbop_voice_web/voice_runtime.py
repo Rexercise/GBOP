@@ -9,7 +9,7 @@ import random
 import time
 
 READ_ONLY_RECOVERY_NAMES = frozenset({
-    'get_journal_story', 'review_market_contexts', 'select_market_context', 'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_midpoint_preference', 'get_member_plan',
+    'review_post_shift_followthrough', 'get_journal_story', 'review_market_contexts', 'select_market_context', 'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_midpoint_preference', 'get_member_plan',
     'get_member_dashboard', 'get_shift_plans', 'get_performance_review',
     'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_weekly_structure_study', 'get_trade_assist',
     'list_trade_photos', 'get_market_price', 'list_market_shifts', 'review_market_session',
@@ -23,7 +23,7 @@ RECOVERY_NAMES = READ_ONLY_RECOVERY_NAMES | PRIVATE_DELIVERY_NAMES | frozenset({
 # These actions can create or append journal/trade records. A new call ID is
 # never sufficient evidence that an interrupted write should be repeated.
 JOURNAL_WRITE_NAMES = frozenset({
-    'open_trade', 'add_entry', 'save_journal_entry', 'save_journal_story', 'close_trade',
+    'open_trade', 'add_entry', 'save_journal_entry', 'stage_journal_story', 'save_journal_story', 'close_trade',
     'record_trade_event', 'edit_journal', 'record_trade_feeling',
     'record_trade_self_grade', 'save_ss_review',
 })
@@ -42,6 +42,17 @@ def _journal_write_outcome(name, status, result=None):
                 outcome[field] = value
         if 'trade_id' not in outcome and 'trade_number' in outcome:
             outcome['trade_id'] = outcome['trade_number']
+        count = result.get('persisted_entry_count')
+        if result.get('entry_count_verified') is True and type(count) is int and count > 0:
+            outcome.update(persisted_entry_count=count, entry_count_verified=True)
+        draft_id = result.get('draft_id')
+        if (result.get('persisted') is True and isinstance(draft_id, str)
+                and re.fullmatch(r'[a-f0-9]{32}', draft_id)
+                and result.get('draft_status') in ('unfinished', 'finalized')):
+            outcome.update(draft_id=draft_id, persisted=True, draft_status=result['draft_status'])
+            revision = result.get('revision')
+            if type(revision) is int and revision > 0:
+                outcome['revision'] = revision
     return outcome
 
 
@@ -49,9 +60,17 @@ def _journal_result_status(result):
     if not isinstance(result, dict) or result.get('status') in {
             'journal_outcome_uncertain', 'stale_market_context', 'uncertain', 'pending'}:
         return 'uncertain'
+    if result.get('persisted') is True:
+        return 'saved'  # Raw narration may commit even when its extraction needs correction.
     if result.get('ok') is True:
         # Skipping an optional feeling is a successful tool action, not a save.
-        return 'not_saved' if result.get('skipped') or result.get('saved') is False else 'saved'
+        if result.get('skipped'):
+            return 'not_saved'
+        # Story `saved` means finalized; `persisted` also proves an unfinished
+        # journal committed and must survive interruption as a successful write.
+        if result.get('persisted') is True:
+            return 'saved'
+        return 'not_saved' if result.get('saved') is False else 'saved'
     return 'not_saved'
 
 

@@ -81,6 +81,8 @@ COACH_PROMPT += STORY_PROMPT
 COACH_PROMPT += FEELING_PROMPT
 COACH_PROMPT += "\n\n" + SELF_GRADE_PROMPT
 
+from gbop_voice_web.journal_drafts import SCHEMA_SQL as DRAFT_SCHEMA_SQL
+
 SCHEMA_SQL = [
     '''CREATE TABLE IF NOT EXISTS journal_details (
         journal_id INTEGER PRIMARY KEY REFERENCES journals(id) ON DELETE CASCADE,
@@ -104,7 +106,7 @@ def init_coach(db):
     init_photos(db)
     with db() as conn:
         conn.execute('SELECT pg_advisory_xact_lock(739204712)')
-        for sql in SCHEMA_SQL:
+        for sql in SCHEMA_SQL + DRAFT_SCHEMA_SQL:
             conn.execute(sql)
 
 
@@ -123,7 +125,7 @@ def allowed(db, guild, user):
 
 META_KEYS = {'transcription','uncertainties','asset','direction','play','entry_model','tier',
              'session','trade_date','entry_price','exit_price','stop_price','target_price',
-             'pnl','risk','exit_reason','emotion','labels','kind','adherence'} | REPORTED_KEYS
+             'pnl','risk','exit_reason','emotion','labels','kind','adherence','title','reported_entry_time_text','reported_exit_time_text','time_zone'} | REPORTED_KEYS
 
 
 def clean_metadata(value):
@@ -158,6 +160,9 @@ def save_entry(db,guild,user,args):
         if not isinstance(story_payload,StoryPayload) or binding(args) is None:
             return {'ok':False,'error':'Story payload must come from the authenticated draft.'}
         meta['journal_story']=story_payload.encoded
+        if story_payload.provenance is not None:
+            from copy import deepcopy
+            meta['story_provenance']=deepcopy(story_payload.provenance)
     if any(k in args for k in ('journal_id', 'thesis_id', '_thesis_id')):
         return {'ok':False,'error':'Use the displayed Trade #, not an internal record identity.'}
     result = args.get('result_r')
@@ -175,6 +180,12 @@ def save_entry(db,guild,user,args):
         return {'ok':False,'error':'Journal target must come from the authenticated account lookup.'}
     init_coach(db)
     with journal_transaction(db, args, guild, user, serialize=True) as conn:
+        if story_payload is not None:
+            from gbop_voice_web import journal_drafts
+            story_data=json.loads(story_payload.encoded)
+            unfinished=journal_drafts.read(conn,guild,user,story_data['draft_id'])
+            if not unfinished or unfinished[0]['storage_revision']!=story_payload.storage_revision:
+                return {'ok':False,'error':'This unfinished journal changed or was deleted. Read it before finalizing; no record was created.'}
         record_id, thesis_id, explicit_legacy = None, None, False
         if thesis_target is not None:
             owned=conn.execute('SELECT id FROM theses WHERE id=? AND guild_id=? AND user_id=?',
@@ -243,6 +254,15 @@ def save_entry(db,guild,user,args):
             text_changes={key: {'before': old[key] or '', 'after': args[key]}
                 for key in ('description', 'rule_adherence', 'study_note') if old and args.get(key) is not None
                 and (old[key] or '') != args[key]})
+        if story_payload is not None:
+            # Keep inferred narration defaults distinct from explicit reports
+            # even in the canonical metadata's aggregate provenance lists.
+            inferred={key for key,value in (story_payload.provenance or {}).items()
+                      if key in meta and isinstance(value,dict) and value.get('kind')=='inferred'}
+            provenance=merged.setdefault('provenance',{})
+            provenance['member_reported']=sorted(set(provenance.get('member_reported',[]))-inferred)
+            prior_inferred=set(provenance.get('narration_inferred',[]))
+            provenance['narration_inferred']=sorted((prior_inferred-set(meta))|inferred)
         # Reconcile again under the same member lock as creation. A matching
         # trade may have committed in another channel after draft preflight.
         if story_payload is not None and record_id is None and thesis_id is None and not story_payload.new_trade:
@@ -304,6 +324,12 @@ def save_entry(db,guild,user,args):
         details = owned_journal_details(conn,guild,user,record_id)
         merged=json.loads(details['metadata'] or '{}') if details else {}
         display=next(r for r in journal_display(conn,guild,user) if r['id']==record_id)
+        if story_payload is not None:
+            finalized=unfinished[0]
+            finalized.update(saved_revision=story_data['revision'],saved_journal_id=record_id,
+                             selected_key=(record_id,thesis_id),trade_number=display['trade_number'])
+            journal_drafts.write(conn,guild,user,finalized,expected_revision=story_payload.storage_revision,
+                                 finalized=True,journal_id=record_id,thesis_id=thesis_id)
     from gbop_voice_web.voice_runtime import journal_write_committed
     journal_write_committed(guild, user, {'trade_number':display['trade_number'], 'journal_number':display['journal_number']})
     return {'ok':True,'saved':True,'updated':bool(old),'journal_number':display['journal_number'],
