@@ -18,7 +18,7 @@ class PhotoTests(unittest.TestCase):
         INSERT INTO theses VALUES(41,10,20,'XAUUSD','9ate8','CLOSED'),(42,10,30,'NAS100','GCT','OPEN'),(43,11,20,'BTCUSD','Other','OPEN');
         CREATE TABLE journals(id INTEGER PRIMARY KEY,thesis_id INTEGER,guild_id INTEGER,user_id INTEGER,description TEXT,rule_adherence TEXT,result_r REAL,study_note TEXT);
         INSERT INTO journals VALUES(1,41,10,20,'Gold trade','Yes',3,'Waited');
-        CREATE TABLE members(guild_id INTEGER,user_id INTEGER,activated INTEGER,revoked INTEGER);
+        CREATE TABLE members(guild_id INTEGER,user_id INTEGER,activated INTEGER,revoked INTEGER,PRIMARY KEY(guild_id,user_id));
         INSERT INTO members VALUES(10,20,1,0),(10,30,1,1);
         ''')
         conn = self.conn

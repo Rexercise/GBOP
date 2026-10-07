@@ -3406,7 +3406,7 @@ class DeleteJournalView(discord.ui.View):
             content=(
                 f"🗑️ **{self.label} deleted.**"
                 f"{trade_note}\n"
-                "Linked trade, executions, events, risk flags, journals, and their derived coaching observations are removed together."
+                "Linked trade, executions, events, risk flags, journals, linked unfinished narration and correction history, and their derived coaching observations are removed together."
             ),
             view=None,
         )
@@ -3469,7 +3469,7 @@ async def deletejournal(
         f"**Delete {label}?**\nResult: **{result_text}**\n"
         f"Rule Adherence: **{preview['rule_adherence'] or 'Not specified'}**\n\n"
         'This permanently deletes the journal and its linked trade. All linked executions, events, risk flags, '
-        'photos linked to the trade, journals, and coaching observations derived from those journals and risk flags will also be removed.',
+        'photos linked to the trade, journals, linked unfinished narration and correction history, and coaching observations derived from those journals and risk flags will also be removed.',
         view=DeleteJournalView(interaction.user.id, preview), ephemeral=True)
 
 
@@ -3572,7 +3572,7 @@ class DeleteTradeView(discord.ui.View):
                 f"**{result['events']} event(s)**, "
                 f"**{result['journals']} linked journal(s)**, and "
                 f"**{result['risk_flags']} risk flag(s)**. "
-                f"Also removed **{result['coaching_observations']} derived coaching observation(s)**."
+                f"Also removed **{result['coaching_observations']} derived coaching observation(s)** and **{result.get('journal_drafts', 0)} saved narration draft(s)** with their correction history."
             ),
             view=None,
         )
@@ -3656,7 +3656,7 @@ async def deletetrade(
             f"**{preview['events']} event(s)**, "
             f"**{preview['journals']} linked journal(s)**, and "
             f"**{preview['risk_flags']} risk flag(s)**. "
-            f"Also removes **{preview['coaching_observations']} coaching observation(s)** derived from those journals and risk flags.\n\n"
+            f"Also removes **{preview['coaching_observations']} coaching observation(s)** derived from those journals and risk flags, plus **{preview.get('journal_drafts', 0)} saved narration draft(s)**, including linked unfinished narration and correction history.\n\n"
             "**This cannot be undone.**"
         ),
         view=DeleteTradeView(interaction.user.id, preview),
@@ -4959,7 +4959,7 @@ For ordinary trade conversation:
   removed; call delete_trade with confirm=true only after explicit confirmation.
 - Journal deletion -> identify/preview the exact journal; call delete_journal
   with confirm=true only after explicit confirmation.
-- Deleting a journal also deletes its linked trade, executions, events, risk flags, and all linked journals.
+- Deleting a journal also deletes its linked trade, executions, events, risk flags, all linked journals, and linked unfinished narration with correction history.
 
 # JOURNAL NUMBER DISPLAY
 Use one member-facing Trade # for its trade and journal. journal_id is an internal database key. Use trade_number to append or correct the matching canonical journal. Old unlinked records use the explicit legacy_journal_number from current history; ask when a legacy alias is ambiguous. Never fabricate executions or risk just to save a journal.
@@ -5172,6 +5172,8 @@ def ai_flag_risk(thesis_id, execution_id, user_id, rule_code, message):
 
 
 def ai_open_trade(user_id: int, args: dict):
+    from gbop_voice_web.execution_identity import operation, reported_fields, execution_note, replay_receipt, record_receipt
+    reported = reported_fields(args)
     asset = str(args["asset"]).strip()
     direction = str(args["direction"]).strip()
     play = str(args["play"]).strip()
@@ -5200,7 +5202,11 @@ def ai_open_trade(user_id: int, args: dict):
     from gbop_voice_web.journal_context import prepare_trade_metadata, save_trade_metadata, journal_transaction
     metadata = prepare_trade_metadata(GTOP_GUILD_ID, user_id, args)
     metadata['kind'] = 'trade'
+    execution_op = operation(args, GTOP_GUILD_ID, user_id, 'open_trade')
     with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        previous = replay_receipt(conn, execution_op)
+        if previous:
+            return previous
         selected_number = args.get('trade_id')
         if selected_number is not None:
             from gbop_voice_web.trade_numbers import trade_record_id
@@ -5247,7 +5253,7 @@ def ai_open_trade(user_id: int, args: dict):
                 thesis_id, guild_id, user_id, entry_model, tier, risk_r,
                 entry_invalidation, note, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, '', '', ?)
+            VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)
         """, (
             thesis_id,
             GTOP_GUILD_ID,
@@ -5255,6 +5261,7 @@ def ai_open_trade(user_id: int, args: dict):
             entry_model,
             tier,
             risk_r,
+            execution_note(reported),
             now(),
         ))
         execution_id = cur.lastrowid
@@ -5266,10 +5273,11 @@ def ai_open_trade(user_id: int, args: dict):
             fields=None if selected_number is not None else {'description': f'{asset} {direction} · {play}'},
             metadata=metadata, timestamp=now())
 
+        receipt = record_receipt(conn, execution_op, thesis_id, execution_id, reported, now())
+
     from gbop_voice_web.voice_runtime import journal_write_committed
-    journal_write_committed(GTOP_GUILD_ID, user_id, {'execution_id': execution_id})
-    display_number = trade_number_for_id(user_id, thesis_id)
-    journal_write_committed(GTOP_GUILD_ID, user_id, {'trade_id': display_number, 'execution_id': execution_id})
+    journal_write_committed(GTOP_GUILD_ID, user_id, receipt)
+    display_number = receipt['trade_id']
     warnings = []
     profile = get_profile(db, GTOP_GUILD_ID, user_id)
     effective_tier = ai_infer_tier(entry_model, tier)
@@ -5296,6 +5304,7 @@ def ai_open_trade(user_id: int, args: dict):
         )
 
     return {
+        **receipt,
         "ok": True,
         "trade_id": display_number,
         "execution_id": execution_id,
@@ -5357,15 +5366,15 @@ def ai_choose_open_trade(user_id: int, trade_id):
 
 
 def ai_add_entry(user_id: int, args: dict):
+    from gbop_voice_web.execution_identity import operation, reported_fields, execution_note, replay_receipt, record_receipt
+    reported = reported_fields(args)
     row, err = ai_choose_open_trade(user_id, args.get("trade_id"))
-    if err:
-        return {"ok": False, "error": err}
 
     entry_model = str(args["entry_model"]).strip()
     risk_r = float(args["risk_r"])
     tier = ai_infer_tier(entry_model, args.get("tier"))
 
-    if risk_r <= 0:
+    if not math.isfinite(risk_r) or risk_r <= 0:
         return {"ok": False, "error": "Risk must be greater than 0R."}
 
     if tier is None:
@@ -5378,11 +5387,15 @@ def ai_add_entry(user_id: int, args: dict):
             ),
         }
 
-    used_before = thesis_used_r(row["id"])
-    projected = used_before + risk_r
 
     from gbop_voice_web.journal_context import journal_transaction
+    execution_op = operation(args, GTOP_GUILD_ID, user_id, 'add_entry')
     with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        previous = replay_receipt(conn, execution_op)
+        if previous:
+            return previous
+        if err:
+            return {"ok": False, "error": err}
         current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
             (row['id'], GTOP_GUILD_ID, user_id)).fetchone()
         if not current or current['status'] != 'OPEN':
@@ -5398,7 +5411,7 @@ def ai_add_entry(user_id: int, args: dict):
                 thesis_id, guild_id, user_id, entry_model, tier, risk_r,
                 entry_invalidation, note, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, '', '', ?)
+            VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)
         """, (
             row["id"],
             GTOP_GUILD_ID,
@@ -5406,14 +5419,16 @@ def ai_add_entry(user_id: int, args: dict):
             entry_model,
             tier,
             risk_r,
+            execution_note(reported),
             now(),
         ))
         execution_id = cur.lastrowid
 
+        receipt = record_receipt(conn, execution_op, row['id'], execution_id, reported, now())
+
     from gbop_voice_web.voice_runtime import journal_write_committed
-    journal_write_committed(GTOP_GUILD_ID, user_id, {'execution_id': execution_id})
-    display_number = trade_number_for_id(user_id, row['id'])
-    journal_write_committed(GTOP_GUILD_ID, user_id, {'trade_id': display_number, 'execution_id': execution_id})
+    journal_write_committed(GTOP_GUILD_ID, user_id, receipt)
+    display_number = receipt['trade_id']
     warnings = []
     profile = get_profile(db, GTOP_GUILD_ID, user_id)
     effective_tier = ai_infer_tier(entry_model, tier)
@@ -5446,13 +5461,14 @@ def ai_add_entry(user_id: int, args: dict):
         )
 
     return {
+        **receipt,
         "ok": True,
         "trade_id": display_number,
         "execution_id": execution_id,
         "entry_model": entry_model,
         "tier": tier,
         "risk_r": risk_r,
-        "total_recorded_risk": thesis_used_r(row["id"]),
+        "total_recorded_risk": receipt["total_recorded_risk"],
         "warnings": warnings,
     }
 
@@ -5694,6 +5710,11 @@ GBOP_AI_TOOLS = [
                 "risk_r": {"type": "number"},
                 "objective": {"type": ["string", "null"]},
                 "thesis_invalidation": {"type": ["string", "null"]},
+                'reported_entry_at': {'type': ['string', 'null'], 'description': 'Member-reported exact entry timestamp with date and timezone. Unknown date/time stays null; never use logging time.'},
+                'reported_exit_at': {'type': ['string', 'null'], 'description': 'Member-reported exact exit timestamp with date and timezone, including the next date after midnight. Unknown stays null.'},
+                'reported_entry_time_text': {'type': ['string', 'null'], 'maxLength': 256, 'description': "Preserve approximate or date-unknown entry time in the member's own words, such as around 11:50 PM. Never guess a date."},
+                'reported_exit_time_text': {'type': ['string', 'null'], 'maxLength': 256, 'description': "Preserve approximate or date-unknown exit time in the member's own words, including after midnight when reported."},
+                'notes': {'type': ['string', 'null'], 'maxLength': 2000, 'description': "Notes for this execution only, in the member's own words."},
             },
             "required": ["trade_id",
                 "asset",
@@ -5704,6 +5725,7 @@ GBOP_AI_TOOLS = [
                 "risk_r",
                 "objective",
                 "thesis_invalidation",
+                'reported_entry_at', 'reported_exit_at', 'reported_entry_time_text', 'reported_exit_time_text', 'notes'
             ],
             "additionalProperties": False,
         },
@@ -5723,8 +5745,13 @@ GBOP_AI_TOOLS = [
                     "enum": [1, 2, 3, None],
                 },
                 "risk_r": {"type": "number"},
+                'reported_entry_at': {'type': ['string', 'null'], 'description': 'Member-reported exact entry timestamp with date and timezone. Unknown date/time stays null; never use logging time.'},
+                'reported_exit_at': {'type': ['string', 'null'], 'description': 'Member-reported exact exit timestamp with date and timezone, including the next date after midnight. Unknown stays null.'},
+                'reported_entry_time_text': {'type': ['string', 'null'], 'maxLength': 256, 'description': "Preserve approximate or date-unknown entry time in the member's own words, such as around 11:50 PM. Never guess a date."},
+                'reported_exit_time_text': {'type': ['string', 'null'], 'maxLength': 256, 'description': "Preserve approximate or date-unknown exit time in the member's own words, including after midnight when reported."},
+                'notes': {'type': ['string', 'null'], 'maxLength': 2000, 'description': "Notes for this execution only, in the member's own words."},
             },
-            "required": ["trade_id", "entry_model", "tier", "risk_r"],
+            "required": ["trade_id", "entry_model", "tier", "risk_r", 'reported_entry_at', 'reported_exit_at', 'reported_entry_time_text', 'reported_exit_time_text', 'notes'],
             "additionalProperties": False,
         },
         "strict": True,
@@ -5934,7 +5961,7 @@ def ai_delete_journal(user_id: int, args: dict):
     return {'ok': True, 'requires_click_confirmation': True, 'requires_confirmation': True,
             'preview': {k: v for k, v in preview.items() if k != 'fingerprint'},
             'command': command,
-            'message': f'Nothing deleted. Open {command}, review the records, and press Delete Journal to confirm. This also removes its linked trade and linked records.'}
+            'message': f'Nothing deleted. Open {command}, review the records, and press Delete Journal to confirm. This also removes its linked trade and linked records, including saved unfinished narration and correction history.'}
 
 
 
@@ -5973,7 +6000,7 @@ def ai_delete_trade(user_id: int, args: dict):
     return {'ok': True, 'requires_click_confirmation': True, 'requires_confirmation': True,
             'preview': {k: v for k, v in preview.items() if k not in ('fingerprint', 'record_id')},
             'command': command,
-            'message': f'Nothing deleted. Open {command}, review the records, and press Delete Entire Trade to confirm permanent deletion.'}
+            'message': f'Nothing deleted. Open {command}, review the records, and press Delete Entire Trade to confirm permanent deletion, including linked saved narration, unfinished drafts, and correction history.'}
 
 
 
@@ -6144,7 +6171,7 @@ def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None)
                 result = market_context.run(call.name, args,
                     lambda name, values: ai_execute_tool(user_id, name,
                         bind_preference_args(market_context, name, values, market_generation)),
-                    generation=market_generation)
+                    generation=market_generation, operation_id=call.call_id)
             except Exception as exc:
                 result = {
                     "ok": False,
@@ -6901,7 +6928,7 @@ class GBOPRealtimeSession:
                     return await asyncio.to_thread(context.run, name, args,
                         lambda tool, values: ai_execute_tool(self.member.id, tool,
                             bind_preference_args(context, tool, values, generation)),
-                        generation=generation)
+                        generation=generation, operation_id=call_id)
                 return await asyncio.to_thread(ai_execute_tool, self.member.id, name, args)
             async def read_delivery_receipt(receipt_id):
                 # Exact, member-scoped read only. Rebind current authorization in

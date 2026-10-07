@@ -20,7 +20,7 @@ class CoachTests(unittest.TestCase):
         CREATE TABLE thesis_events(id INTEGER PRIMARY KEY,thesis_id INTEGER,guild_id INTEGER,user_id INTEGER,event TEXT,details TEXT,result_r REAL,created_at TEXT);
         CREATE TABLE thesis_executions(id INTEGER PRIMARY KEY,thesis_id INTEGER,guild_id INTEGER,user_id INTEGER,entry_model TEXT,tier INTEGER);
         CREATE TABLE risk_flags(id INTEGER PRIMARY KEY,guild_id INTEGER,user_id INTEGER,rule_code TEXT,message TEXT,created_at TEXT);
-        CREATE TABLE members(guild_id INTEGER,user_id INTEGER,activated INTEGER,revoked INTEGER);
+        CREATE TABLE members(guild_id INTEGER,user_id INTEGER,activated INTEGER,revoked INTEGER,PRIMARY KEY(guild_id,user_id));
         INSERT INTO members VALUES(10,20,1,0),(10,30,1,0),(11,20,1,0),(10,40,1,1);
         ''')
         conn=self.conn

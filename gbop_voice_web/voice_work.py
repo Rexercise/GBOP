@@ -245,7 +245,9 @@ class VoiceToolWork:
                 text = ('JOURNAL WRITE STATUS CONTEXT. Metadata for the earlier interrupted '
                         'record change, not a new request. Use only for that save or its status. '
                         'Saved means the database transaction committed: report the actual Trade # '
-                        'and replace any earlier waiting claim. Pending means its worker has not '
+                        'and replace any earlier waiting claim. If draft_status is unfinished, say the '
+                        'unfinished journal was saved; do not claim it is finalized or invent a Trade #. '
+                        'Pending means its worker has not '
                         'finished; it does not promise a reply. Uncertain means a save may have '
                         'happened and no outcome is verified. Never repeat open/add/save '
                         'automatically. A distinct new user request is required for a new write '
@@ -363,10 +365,18 @@ class VoiceToolWork:
         self.seen_calls.append(call_id)
         scope = self.scope()
         write = getattr(self.session, '_journal_write_recovery', None)
+        queued_same_turn = bool(write and self.tail is not None and not self.tail.done()
+            and write['turn'] == self.session._voice_turn_count
+            and 'interrupted_at' not in write
+            and write['identity'] == delivery_identity(self.session)
+            and write['websocket'] is self.session.websocket)
         if (item['name'] in JOURNAL_WRITE_NAMES
-                and journal_write_needs_reconciliation(write, self.session._voice_turn_count)):
-            # Capture admission, not later execution time: waiting behind the
-            # old worker must not turn a premature retry into a fresh write.
+                and journal_write_needs_reconciliation(write, self.session._voice_turn_count)
+                and not queued_same_turn):
+            # Preserve admission barriers for interrupted/older-turn retries.
+            # An uninterrupted same-turn call instead waits for its scheduled
+            # predecessor. guarded_voice_tool still requires that predecessor's
+            # verified result to have reached context before executing this one.
             self.write_barriers[call_id] = write
             if len(self.write_barriers) > 256:
                 self.write_barriers.pop(next(iter(self.write_barriers)))

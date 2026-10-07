@@ -51,12 +51,13 @@ class JournalStoryTests(unittest.TestCase):
         self.context.complete_response(question,completed=False)
         second=self.stage({});self.assertEqual(second['next_question'],question)
         self.context.complete_response(question,completed=True)
-        third=self.stage({});self.assertIsNone(third['next_question'])
+        third=self.stage({});self.assertNotEqual(third['next_question'],question)
+        self.assertIn('when did you enter',third['next_question'])
         self.assertEqual(third['story']['thesis_invalidation'],STORY['thesis_invalidation'])
         self.assertNotIn('invalidation_boundary',third['story'])
     def test_clarified_boundary_does_not_need_repeated_question(self):
         first=self.stage();result=self.stage({'invalidation_boundary':'10 AM candle high'},draft_id=first['draft_id'])
-        self.assertIsNone(result['next_question']);self.assertIn('10 AM candle high',result['draft_summary'])
+        self.assertIn('when did you enter',result['next_question']);self.assertIn('10 AM candle high',result['draft_summary'])
     def test_unknown_entry_risks_do_not_block_narrative_or_create_execution_rows(self):
         saved=self.saved(self.stage());self.assertTrue(saved['ok'],saved);self.assertEqual(saved['trade_number'],1)
         self.assertFalse(saved['execution_records_changed']);self.assertIsNone(saved['result_r'])
@@ -128,7 +129,7 @@ class JournalStoryTests(unittest.TestCase):
         self.assertIn('Which boundary',result['next_question'])
         self.assertEqual(result['story']['thesis_invalidation'],story['thesis_invalidation'])
     def test_same_turn_read_and_save_cache_tracks_story_revision(self):
-        self.context.begin_turn('Journal this reported story.')
+        self.context.begin_turn('Save this reported story.')
         runner=lambda n,a:coach.coach_tool(self.db,10,20,n,a)
         first=self.context.run('stage_journal_story',{'story_json':json.dumps(STORY)},runner)
         args={'draft_id':first['draft_id']}

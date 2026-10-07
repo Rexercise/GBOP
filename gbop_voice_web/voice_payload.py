@@ -344,6 +344,8 @@ def _budget_overview(out):
             'Keep own/parent/paired scopes distinct. Do not infer absence; use detail_request. '
             'same_evidence_as resolves here. Gaps/order uncertain; no fills/restored validity.')
         _factor_review(out)
+    if size() > SHIFT_OVERVIEW_TARGET_CHARS and 'post_shift_followthrough' in out:
+        out.pop('post_shift_followthrough')  # Registered tool's null-scope lookup retains exact access.
     if size() > SHIFT_OVERVIEW_TARGET_CHARS:
         # Fail explicitly rather than serialize an unbounded request or pretend
         # to include a complete overview. Scope and provenance stay pinned.
@@ -478,6 +480,11 @@ def shift_voice_synopsis(result):
     if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
         _factor_review(out)
         out['voice_view']['fact_references'] = 'same_evidence_as is an in-payload pointer.'
+    if _encoded_size(out) >= SHIFT_SYNOPSIS_TARGET_CHARS - 300 and 'post_shift_followthrough' in out:
+        # Optional navigation is re-readable with expected_scope_id=null. Never
+        # drop original shift evidence or fail a previously fitting synopsis
+        # merely to carry future-context hashes in every spoken recap.
+        out.pop('post_shift_followthrough')
     if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
         return _bounded_error({'ok': False, 'status': 'voice_synopsis_budget_exceeded',
             'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),

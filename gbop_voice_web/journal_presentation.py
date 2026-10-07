@@ -92,7 +92,8 @@ def metadata_summary(value, result_r=None):
     if (value.get('presentation') or {}).get('kind') == 'bounded_journal_metadata':
         return deepcopy(value)
     result = _exact(value, ('asset', 'direction', 'play', 'entry_model', 'tier', 'session',
-        'trade_date', 'reported_entry_at', 'reported_exit_at', 'reported_outcome',
+        'trade_date', 'reported_entry_at', 'reported_exit_at', 'reported_entry_time_text',
+        'reported_exit_time_text', 'time_zone', 'title', 'objective', 'reported_outcome',
         'entry_price', 'exit_price', 'stop_price', 'target_price', 'pnl', 'risk',
         'exit_reason', 'kind', 'adherence', 'emotion'))
     feelings = value.get('feeling_history')
@@ -121,6 +122,16 @@ def metadata_summary(value, result_r=None):
         result['labels'] = [v for v in value['labels'][:8] if isinstance(v, str) and len(v) <= 80]
     if isinstance(value.get('market_review'), dict):
         result['market_review'] = _review(value['market_review'])
+    story_provenance = value.get('story_provenance')
+    if isinstance(story_provenance, dict):
+        result['story_provenance'] = {
+            str(field): _exact(fact, ('kind', 'source', 'evidence', 'timezone',
+                'reference_at', 'source_key', 'recorded_at', 'precision'))
+            for field, fact in list(story_provenance.items())[:48]
+            if isinstance(field, str) and len(field) <= 100 and isinstance(fact, dict)}
+        result['story_provenance_details_omitted'] = (len(story_provenance) > 48 or
+            any(isinstance(fact, dict) and set(fact) != set(result['story_provenance'].get(field, {}))
+                for field, fact in story_provenance.items()))
     provenance = value.get('provenance')
     if isinstance(provenance, dict):
         summary = _exact(provenance, ('version', 'association_status'))
@@ -273,7 +284,7 @@ def journal_tool_payload(name, result):
         'result_r', 'final_result_r', 'journal_count', 'canonical_journal_count',
         'legacy_journal_count', 'preserved_legacy_history_count', 'stored_journal_entry_count', 'trade_count',
         'open_trade_count', 'closed_trade_count', 'error', 'status', 'rule_adherence',
-        'risk_flags', 'recorded_thesis_risk', 'advisory_status'))
+        'risk_flags', 'recorded_thesis_risk', 'advisory_status', 'selection_basis', 'selection_note', 'latest'))
     minimal['journal_view'] = {'kind': 'journal_details_omitted',
         'character_budget': JOURNAL_PRESENTATION_MAX_CHARS, 'saved_records_unchanged': True,
         'note': 'Details exceed one reply and were not supplied. Check a smaller history page '

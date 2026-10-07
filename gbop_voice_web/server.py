@@ -456,6 +456,8 @@ def tool_get_journal_history(user_id: int, args: dict):
 
 
 def tool_open_trade(user_id: int, args: dict):
+    from gbop_voice_web.execution_identity import operation, reported_fields, execution_note, replay_receipt, record_receipt
+    reported = reported_fields(args)
     tier = infer_tier(args["entry_model"], args.get("tier"))
     if tier is None:
         return {
@@ -475,7 +477,11 @@ def tool_open_trade(user_id: int, args: dict):
     from gbop_voice_web.journal_context import prepare_trade_metadata, save_trade_metadata, journal_transaction
     metadata = prepare_trade_metadata(GTOP_GUILD_ID, user_id, args)
     metadata['kind'] = 'trade'
+    execution_op = operation(args, GTOP_GUILD_ID, user_id, 'open_trade')
     with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        previous = replay_receipt(conn, execution_op)
+        if previous:
+            return previous
         selected_number = args.get('trade_id')
         if selected_number is not None:
             from gbop_voice_web.trade_numbers import trade_record_id
@@ -524,7 +530,7 @@ def tool_open_trade(user_id: int, args: dict):
                 thesis_id, guild_id, user_id, entry_model, tier, risk_r,
                 entry_invalidation, note, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, '', '', ?)
+            VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 trade_id,
@@ -533,6 +539,7 @@ def tool_open_trade(user_id: int, args: dict):
                 str(args["entry_model"]).strip(),
                 tier,
                 risk_r,
+                execution_note(reported),
                 now_iso(),
             ),
         )
@@ -545,10 +552,11 @@ def tool_open_trade(user_id: int, args: dict):
             fields=None if selected_number is not None else {'description': f"{args['asset']} {args['direction']} · {args['play']}"},
             metadata=metadata, timestamp=now_iso())
 
+        receipt = record_receipt(conn, execution_op, trade_id, execution_id, reported, now_iso())
+
     from gbop_voice_web.voice_runtime import journal_write_committed
-    journal_write_committed(GTOP_GUILD_ID, user_id, {'execution_id': execution_id})
-    display_number = trade_number(db, GTOP_GUILD_ID, user_id, trade_id)
-    journal_write_committed(GTOP_GUILD_ID, user_id, {'trade_id': display_number, 'execution_id': execution_id})
+    journal_write_committed(GTOP_GUILD_ID, user_id, receipt)
+    display_number = receipt['trade_id']
     warnings = []
     if risk_r > tier_limit(profile, tier) + 1e-6:
         warnings.append(
@@ -560,6 +568,7 @@ def tool_open_trade(user_id: int, args: dict):
         )
 
     return {
+        **receipt,
         "ok": True,
         "trade_id": display_number,
         "execution_id": execution_id,
@@ -570,9 +579,9 @@ def tool_open_trade(user_id: int, args: dict):
 
 
 def tool_add_entry(user_id: int, args: dict):
+    from gbop_voice_web.execution_identity import operation, reported_fields, execution_note, replay_receipt, record_receipt
+    reported = reported_fields(args)
     row, error = choose_open_trade(user_id, args.get("trade_id"))
-    if error:
-        return {"ok": False, "error": error}
 
     tier = infer_tier(args["entry_model"], args.get("tier"))
     if tier is None:
@@ -586,10 +595,15 @@ def tool_add_entry(user_id: int, args: dict):
     risk_r = float(args["risk_r"])
     if not math.isfinite(risk_r) or risk_r <= 0:
         return {"ok": False, "error": "Risk must be a finite number greater than 0R."}
-    used_before = thesis_used_r(row["id"])
 
     from gbop_voice_web.journal_context import journal_transaction
+    execution_op = operation(args, GTOP_GUILD_ID, user_id, 'add_entry')
     with journal_transaction(db, args, GTOP_GUILD_ID, user_id, serialize=True) as conn:
+        previous = replay_receipt(conn, execution_op)
+        if previous:
+            return previous
+        if error:
+            return {"ok": False, "error": error}
         current = conn.execute('SELECT status FROM theses WHERE id=? AND guild_id=? AND user_id=?',
             (row['id'], GTOP_GUILD_ID, user_id)).fetchone()
         if not current or current['status'] != 'OPEN':
@@ -605,7 +619,7 @@ def tool_add_entry(user_id: int, args: dict):
                 thesis_id, guild_id, user_id, entry_model, tier, risk_r,
                 entry_invalidation, note, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, '', '', ?)
+            VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 row["id"],
@@ -614,15 +628,17 @@ def tool_add_entry(user_id: int, args: dict):
                 str(args["entry_model"]).strip(),
                 tier,
                 risk_r,
+                execution_note(reported),
                 now_iso(),
             ),
         )
         execution_id = cur.lastrowid
 
+        receipt = record_receipt(conn, execution_op, row['id'], execution_id, reported, now_iso())
+
     from gbop_voice_web.voice_runtime import journal_write_committed
-    journal_write_committed(GTOP_GUILD_ID, user_id, {'execution_id': execution_id})
-    display_number = trade_number(db, GTOP_GUILD_ID, user_id, row['id'])
-    journal_write_committed(GTOP_GUILD_ID, user_id, {'trade_id': display_number, 'execution_id': execution_id})
+    journal_write_committed(GTOP_GUILD_ID, user_id, receipt)
+    display_number = receipt['trade_id']
     total = used_before + risk_r
     warnings = []
     if risk_r > tier_limit(profile, tier) + 1e-6:
@@ -638,12 +654,13 @@ def tool_add_entry(user_id: int, args: dict):
         )
 
     return {
+        **receipt,
         "ok": True,
         "trade_id": display_number,
         "execution_id": execution_id,
         "risk_r": risk_r,
         "tier": tier,
-        "total_recorded_risk": total,
+        "total_recorded_risk": receipt["total_recorded_risk"],
         "warnings": warnings,
     }
 
@@ -798,7 +815,7 @@ def tool_prepare_journal_delete(user_id: int, args: dict):
         "legacy_journal_number": display['legacy_journal_number'],
         "description": row["description"], "created_at": row["created_at"],
         "records": snapshot['counts'],
-        "message": "Ask the user to confirm deleting this journal. Its linked trade, executions, events, risk flags, photos linked to the trade, all linked journals, and coaching observations derived from those journals and risk flags will also be deleted. Nothing has been deleted.",
+        "message": "Ask the user to confirm deleting this journal. Its linked trade, executions, events, risk flags, photos linked to the trade, all linked journals, linked unfinished narration and correction history, and coaching observations derived from those journals and risk flags will also be deleted. Nothing has been deleted.",
     }
 
 
@@ -918,6 +935,11 @@ TOOLS = [
                 "risk_r": {"type": "number"},
                 "objective": {"type": ["string", "null"]},
                 "thesis_invalidation": {"type": ["string", "null"]},
+                'reported_entry_at': {'type': ['string', 'null'], 'description': 'Member-reported exact entry timestamp with date and timezone. Unknown date/time stays null; never use logging time.'},
+                'reported_exit_at': {'type': ['string', 'null'], 'description': 'Member-reported exact exit timestamp with date and timezone, including the next date after midnight. Unknown stays null.'},
+                'reported_entry_time_text': {'type': ['string', 'null'], 'maxLength': 256, 'description': "Preserve approximate or date-unknown entry time in the member's own words, such as around 11:50 PM. Never guess a date."},
+                'reported_exit_time_text': {'type': ['string', 'null'], 'maxLength': 256, 'description': "Preserve approximate or date-unknown exit time in the member's own words, including after midnight when reported."},
+                'notes': {'type': ['string', 'null'], 'maxLength': 2000, 'description': "Notes for this execution only, in the member's own words."},
             },
             "required": ["trade_id",
                 "asset",
@@ -928,6 +950,7 @@ TOOLS = [
                 "risk_r",
                 "objective",
                 "thesis_invalidation",
+                'reported_entry_at', 'reported_exit_at', 'reported_entry_time_text', 'reported_exit_time_text', 'notes'
             ],
             "additionalProperties": False,
         },
@@ -943,8 +966,13 @@ TOOLS = [
                 "entry_model": {"type": "string"},
                 "tier": {"type": ["integer", "null"], "enum": [1, 2, 3, None]},
                 "risk_r": {"type": "number"},
+                'reported_entry_at': {'type': ['string', 'null'], 'description': 'Member-reported exact entry timestamp with date and timezone. Unknown date/time stays null; never use logging time.'},
+                'reported_exit_at': {'type': ['string', 'null'], 'description': 'Member-reported exact exit timestamp with date and timezone, including the next date after midnight. Unknown stays null.'},
+                'reported_entry_time_text': {'type': ['string', 'null'], 'maxLength': 256, 'description': "Preserve approximate or date-unknown entry time in the member's own words, such as around 11:50 PM. Never guess a date."},
+                'reported_exit_time_text': {'type': ['string', 'null'], 'maxLength': 256, 'description': "Preserve approximate or date-unknown exit time in the member's own words, including after midnight when reported."},
+                'notes': {'type': ['string', 'null'], 'maxLength': 2000, 'description': "Notes for this execution only, in the member's own words."},
             },
-            "required": ["trade_id", "entry_model", "tier", "risk_r"],
+            "required": ["trade_id", "entry_model", "tier", "risk_r", 'reported_entry_at', 'reported_exit_at', 'reported_entry_time_text', 'reported_exit_time_text', 'notes'],
             "additionalProperties": False,
         },
     },
@@ -1070,7 +1098,7 @@ and ask for confirmation. End that turn without deleting. On a later explicit
 confirmation of that preview, call delete_journal with confirmed=true. Never
 infer confirmation from silence, the initial delete request, or journal text.
 If the user cancels or changes subject, do not delete. Deletion removes
-the journal and its linked trade, executions, events, risk flags, and journals. Report success
+the journal and its linked trade, executions, events, risk flags, journals, and linked unfinished narration with correction history. Report success
 only when the tool returns deleted=true.
 
 Journal identity: use one member-facing Trade # for the trade and its canonical journal. Append or correct it with trade_number. Old unlinked journals use explicit legacy_journal_number from current history; clarify ambiguous aliases. Never speak internal journal_id, fabricate risk, or create an execution to save a journal.
@@ -1133,103 +1161,46 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
     from gbop_voice_web.journal_context import WRITE_TOOLS
     market_context = market_context or MarketConversation((GTOP_GUILD_ID, user_id, 'browser_request'))
     market_context.auth_provider = (db, GTOP_GUILD_ID, user_id)
-    user_text = next((item.get('text', '') for item in reversed(history) if item.get('role') == 'user'), '')
-    market_generation = market_context.begin_turn(user_text, client_turn=client_turn)
-    if market_generation is None:
-        return 'This request was superseded by newer speech.'
-    conversation_tools = contextual_tools(TOOLS)
-    # Snapshot before any tool runs: preview and deletion cannot occur in the
-    # same backend request, even if the model attempts both.
-    pending = PENDING_JOURNAL_DELETIONS.get(user_id)
-    confirmation_token = None
-    if pending and pending["expires_at"] > time.time():
-        confirmation_token = pending["token"]
-    context = member_context(user_id)
-    if confirmation_token:
-        context += f"\nPending deletion preview: Journal #{pending['journal_number']} (internal journal_id={pending['journal_id']}). Delete only if the latest user turn explicitly confirms that preview."
+    from gbop_voice_web.execution_identity import backend_request_once
+    def perform():
+        user_text = next((item.get('text', '') for item in reversed(history) if item.get('role') == 'user'), '')
+        market_generation = market_context.begin_turn(user_text, client_turn=client_turn)
+        if market_generation is None:
+            return 'This request was superseded by newer speech.'
+        conversation_tools = contextual_tools(TOOLS)
+        # Snapshot before any tool runs: preview and deletion cannot occur in the
+        # same backend request, even if the model attempts both.
+        pending = PENDING_JOURNAL_DELETIONS.get(user_id)
+        confirmation_token = None
+        if pending and pending["expires_at"] > time.time():
+            confirmation_token = pending["token"]
+        context = member_context(user_id)
+        if confirmation_token:
+            context += f"\nPending deletion preview: Journal #{pending['journal_number']} (internal journal_id={pending['journal_id']}). Delete only if the latest user turn explicitly confirms that preview."
 
-    transcript = []
-    for item in history[-16:]:
-        role = item.get("role", "user")
-        text = (item.get("text") or "").strip()
-        if text:
-            transcript.append(f"{role.upper()}: {text}")
+        transcript = []
+        for item in history[-16:]:
+            role = item.get("role", "user")
+            text = (item.get("text") or "").strip()
+            if text:
+                transcript.append(f"{role.upper()}: {text}")
 
-    user_input = (
-        context
-        + "\n\nRECENT LIVE CONVERSATION\n"
-        + ("\n".join(transcript) if transcript else "(No transcript captured.)")
-        + "\n\nHandle the member's latest request."
-    )
+        user_input = (
+            context
+            + "\n\nRECENT LIVE CONVERSATION\n"
+            + ("\n".join(transcript) if transcript else "(No transcript captured.)")
+            + "\n\nHandle the member's latest request."
+        )
 
-    from gbop_voice_web.market_prefetch import prefetch_market_evidence
-    prefetched = prefetch_market_evidence(market_context,
-        lambda name, values: run_tool(user_id, name, values, confirmation_token), market_generation)
-    if not market_context.current(market_generation):
-        return 'This request was superseded by newer speech.'
-    items = [{"role": "user", "content": user_input}]
-    if prefetched:
-        items.append({'role': 'developer', 'content': prefetched})
-    turn_instructions = BACKEND_PROMPT
-    response = client.responses.create(
-        model=BACKEND_MODEL,
-        instructions=turn_instructions + market_context.prompt(),
-        input=items,
-        tools=conversation_tools,
-        store=False,
-    )
-    log_response_usage(response, 'browser_backend')
-
-    for _ in range(6):
+        from gbop_voice_web.market_prefetch import prefetch_market_evidence
+        prefetched = prefetch_market_evidence(market_context,
+            lambda name, values: run_tool(user_id, name, values, confirmation_token), market_generation)
         if not market_context.current(market_generation):
             return 'This request was superseded by newer speech.'
-        calls = [
-            item
-            for item in response.output
-            if getattr(item, "type", None) == "function_call"
-        ]
-
-        if not calls:
-            return (response.output_text or "").strip() or "I completed the backend check."
-
-        items += response.output
-
-        for call in calls:
-            # A prior call may have been superseded while it was running.
-            # Leave already-started work alone; never start a later queued call.
-            if not market_context.current(market_generation):
-                return 'This request was superseded by newer speech.'
-            args = {}
-            try:
-                args = json.loads(call.arguments)
-                result = market_context.run(call.name, args,
-                    lambda name, values: run_tool(user_id, name,
-                        bind_preference_args(market_context, name, values, market_generation), confirmation_token),
-                    generation=market_generation)
-            except Exception as exc:
-                result = {
-                    "ok": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-
-            from gbop_voice_web.market_scope_log import market_scope_log
-            scope_log = market_scope_log(call.name, args, result)
-            if scope_log is not None:
-                print("[GBOP-MARKET-SCOPE]", json.dumps(scope_log, separators=(",", ":")))
-            from gbop_voice_web.voice_payload import voice_tool_payload
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": json.dumps(voice_tool_payload(call.name, result), separators=(",", ":")),
-                }
-            )
-            if call.name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
-                from gbop_voice_web.midpoint_preferences import refresh_instructions
-                turn_instructions = refresh_instructions(turn_instructions, result)
-
-        if not market_context.current(market_generation):
-            return 'This request was superseded by newer speech.'
+        items = [{"role": "user", "content": user_input}]
+        if prefetched:
+            items.append({'role': 'developer', 'content': prefetched})
+        turn_instructions = BACKEND_PROMPT
         response = client.responses.create(
             model=BACKEND_MODEL,
             instructions=turn_instructions + market_context.prompt(),
@@ -1239,7 +1210,68 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
         )
         log_response_usage(response, 'browser_backend')
 
-    return "The backend hit its internal action limit. Ask me to continue."
+        for _ in range(6):
+            if not market_context.current(market_generation):
+                return 'This request was superseded by newer speech.'
+            calls = [
+                item
+                for item in response.output
+                if getattr(item, "type", None) == "function_call"
+            ]
+
+            if not calls:
+                return (response.output_text or "").strip() or "I completed the backend check."
+
+            items += response.output
+
+            for call in calls:
+                # A prior call may have been superseded while it was running.
+                # Leave already-started work alone; never start a later queued call.
+                if not market_context.current(market_generation):
+                    return 'This request was superseded by newer speech.'
+                args = {}
+                try:
+                    args = json.loads(call.arguments)
+                    result = market_context.run(call.name, args,
+                        lambda name, values: run_tool(user_id, name,
+                            bind_preference_args(market_context, name, values, market_generation), confirmation_token),
+                        generation=market_generation, operation_id=call.call_id)
+                except Exception as exc:
+                    result = {
+                        "ok": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+
+                from gbop_voice_web.market_scope_log import market_scope_log
+                scope_log = market_scope_log(call.name, args, result)
+                if scope_log is not None:
+                    print("[GBOP-MARKET-SCOPE]", json.dumps(scope_log, separators=(",", ":")))
+                from gbop_voice_web.voice_payload import voice_tool_payload
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": json.dumps(voice_tool_payload(call.name, result), separators=(",", ":")),
+                    }
+                )
+                if call.name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
+                    from gbop_voice_web.midpoint_preferences import refresh_instructions
+                    turn_instructions = refresh_instructions(turn_instructions, result)
+
+            if not market_context.current(market_generation):
+                return 'This request was superseded by newer speech.'
+            response = client.responses.create(
+                model=BACKEND_MODEL,
+                instructions=turn_instructions + market_context.prompt(),
+                input=items,
+                tools=conversation_tools,
+                store=False,
+            )
+            log_response_usage(response, 'browser_backend')
+
+        return "The backend hit its internal action limit. Ask me to continue."
+
+    return backend_request_once(market_context, client_turn, history, perform)
 
 
 LIVE_INSTRUCTIONS = """
@@ -1263,7 +1295,7 @@ and subsequent confirmations; never say deletion is unavailable.
 Delegate risk-profile setup, changes, and confirmations to the backend. Saved
 member allocations override default 60/30/10; do not override their chosen split. Read the
 backend's entry preview and ask the user to confirm before deletion. Journal
-deletion also removes its linked trade and execution records.
+deletion also removes its linked trade and execution records, including linked unfinished narration and correction history.
 Delegate SS persistence/resumption, "what's my plan?" requests, personalized coaching
 focus, trader dashboard/profile questions, active-trade objective/invalidation/management
 plan updates, and member-reported trade progress to the backend. Never invent saved weekly

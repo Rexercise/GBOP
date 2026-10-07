@@ -42,7 +42,8 @@ def _trade_timelines(conn, guild_id, user_id, owned_theses, journals):
             if table == 'thesis_executions':
                 item.update(kind='execution', **{k: row.get(k) for k in
                     ('entry_model', 'tier', 'risk_r', 'entry_invalidation', 'note')})
-            elif row.get('event') in ('journal_canonical_v1', 'journal_source_v1'):
+            elif (row.get('event') in ('journal_canonical_v1', 'journal_source_v1', 'execution_receipt_v1')
+                  or str(row.get('event') or '').startswith('journal_execution_v1:')):
                 continue
             elif row.get('event') == 'journal_audit_v1':
                 audit = _metadata(row.get('details'))
@@ -63,7 +64,7 @@ def _trade_timelines(conn, guild_id, user_id, owned_theses, journals):
                 fields = ('transcription', 'uncertainties', 'asset', 'direction', 'play',
                     'entry_model', 'tier', 'session', 'trade_date', 'entry_price', 'exit_price',
                     'stop_price', 'target_price', 'pnl', 'risk', 'exit_reason', 'emotion',
-                    'labels', 'kind', 'adherence', 'reported_entry_at', 'reported_exit_at', 'reported_outcome', 'self_grade', 'feeling_history')
+                    'labels', 'kind', 'adherence', 'reported_entry_at', 'reported_exit_at', 'reported_entry_time_text', 'reported_exit_time_text', 'time_zone', 'title', 'reported_outcome', 'self_grade', 'feeling_history')
                 for key in fields:
                     if old_meta.get(key) != new_meta.get(key):
                         changes['metadata.' + key] = {'before': old_meta.get(key), 'after': new_meta.get(key)}
@@ -243,21 +244,36 @@ def history(db, guild_id, user_id, args, *, include_photo_bytes=False):
         matching = [r for r in matching if not r.get('is_legacy')
                     and (r.get('trade_facts') or {}).get('status') in ('OPEN','CLOSED','JOURNALED')]
     if basis == 'trade':
-        dated = [(r, _date_interval(r.get('reported_trade_date'))) for r in matching]
+        dated = [(r, _date_interval(r.get('reported_trade_date'), (r.get('metadata') or {}).get('time_zone'))) for r in matching]
+        day_labels_only = bool(dated) and all(re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(r.get('reported_trade_date') or '')) for r, _ in dated)
         ambiguous = any(interval is None for _, interval in dated)
         if dated and not ambiguous:
             winner = max(range(len(dated)), key=lambda n: dated[n][1][0])
-            ambiguous = any(interval[1] >= dated[winner][1][0]
-                            for n, (_, interval) in enumerate(dated) if n != winner)
+            ambiguous = any((r['reported_trade_date'] == dated[winner][0]['reported_trade_date'] if day_labels_only
+                             else interval[1] >= dated[winner][1][0])
+                            for n, (r, interval) in enumerate(dated) if n != winner)
         if latest and ambiguous:
             return {'ok': False, 'status': 'trade_date_ambiguous', 'needs_clarification': True,
+                    'selection_basis': 'unknown_trade_chronology',
+                    'selection_note': 'Actual trade chronology is unknown or overlapping. The latest saved record is only a separately labeled fallback.',
+                    'latest_saved': ({
+                        'label': 'Latest saved trade record' if latest == 'trade' else 'Latest saved journal record',
+                        'trade_number': matching[0].get('trade_number'),
+                        'legacy_journal_number': matching[0].get('legacy_journal_number'),
+                        'saved_at': matching[0].get('saved_at'),
+                        'is_latest_trade': False,
+                        'detail_request': {'tool': 'get_journal_history', 'args': {
+                            ('legacy_journal_number' if matching[0].get('is_legacy') else 'trade_number'):
+                            matching[0].get('legacy_journal_number') if matching[0].get('is_legacy') else matching[0].get('trade_number')}}}
+                        if matching else None),
                     'error': 'The actual latest trade cannot be established from the saved trade dates. '
                              'Ask which Trade #, or whether the member means the latest saved record.',
                     'candidates': [{'trade_number': r.get('trade_number'),
                                     'legacy_journal_number': r.get('legacy_journal_number'),
                                     'saved_at': r.get('saved_at'),
                                     'reported_trade_date': r.get('reported_trade_date')} for r in matching]}
-        matching = sorted(matching, key=lambda r: _date_key(r.get('reported_trade_date')) or float('-inf'), reverse=True)
+        matching = sorted(matching, key=lambda r: _date_key(r.get('reported_trade_date'),
+            None if day_labels_only else (r.get('metadata') or {}).get('time_zone')) or float('-inf'), reverse=True)
     selected = matching[:1] if latest else matching[offset:offset+limit]
     photos, photos_available = [], True
     try:
@@ -280,8 +296,9 @@ def history(db, guild_id, user_id, args, *, include_photo_bytes=False):
     result = dict(ok=True, journals=selected, metadata_available=metadata_available, timeline_available=timeline_available,
         photos_available=photos_available, photo_count=len(photos) if photos_available else None,
         selection_basis=basis, latest=latest,
-        selection_note=('Latest by reported trade date.' if basis == 'trade' else
-                        'Ordered by saved/updated time; this does not establish when the trade occurred.'),
+        selection_note=(('Latest by reported trade chronology.' if latest else 'Ordered by reported trade chronology; undated records have unknown chronology.') if basis == 'trade' else
+                        ('Latest saved record; this does not establish the latest actual trade.' if latest else
+                         'Ordered by saved/updated time; this does not establish when the trade occurred.')),
         journal_count=total, canonical_journal_count=len(trades),
         legacy_journal_count=sum(r['is_legacy'] for r in journals),
         preserved_legacy_history_count=preserved_count, stored_journal_entry_count=len(rows),
@@ -339,21 +356,27 @@ def history(db, guild_id, user_id, args, *, include_photo_bytes=False):
     return result
 
 
-def _date_key(value):
-    interval = _date_interval(value)
+def _date_key(value, timezone_name=None):
+    interval = _date_interval(value, timezone_name)
     return interval[0] if interval else None
 
 
-def _date_interval(value):
+def _date_interval(value, timezone_name=None):
     try:
         parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
         if len(str(value)) == 10:
-            parsed = parsed.replace(tzinfo=ZoneInfo('America/New_York'))
-            return parsed.timestamp(), (parsed + timedelta(days=1)).timestamp()
+            if timezone_name:
+                parsed = parsed.replace(tzinfo=ZoneInfo(timezone_name))
+                return parsed.timestamp(), (parsed + timedelta(days=1)).timestamp()
+            # A calendar label is not proof of a New York execution. For
+            # mixed timestamp/day precision retain the full possible worldwide
+            # interval; pure day labels can still be ordered as reported days.
+            parsed = parsed.replace(tzinfo=timezone.utc)
+            return (parsed - timedelta(hours=14)).timestamp(), (parsed + timedelta(days=1, hours=12)).timestamp()
         if parsed.tzinfo is None:
             return None
         return parsed.timestamp(), parsed.timestamp()
-    except (ValueError, TypeError, OverflowError):
+    except (ValueError, TypeError, OverflowError, KeyError):
         return None
 
 
@@ -361,13 +384,23 @@ def _reported_trade_date(row):
     records = [row] if row.get('canonical_record_exists') else [row] + (row.get('legacy_history') or [])
     values = set()
     for record in records:
-        meta = record.get('metadata') or {}
+        meta = dict(record.get('metadata') or {})
+        story = _metadata(meta.get('journal_story'))
+        for key in ('trade_date', 'reported_entry_at', 'time_zone'):
+            if not meta.get(key) and story.get(key):
+                meta[key] = story[key]
+        if not meta.get('reported_entry_at'):
+            first = next((entry for entry in (story.get('entries') or []) if isinstance(entry, dict)
+                          and entry.get('entry_index') == 1), {})
+            if first.get('reported_entry_at'):
+                meta['reported_entry_at'] = first['reported_entry_at']
         provenance = meta.get('provenance') or {}
         defaults = provenance.get('context_defaults') or []
         reported = provenance.get('member_reported') or []
         for key in ('reported_entry_at', 'trade_date'):
             value = meta.get(key)
-            if isinstance(value, str) and value and (key not in defaults or key in reported):
+            if (isinstance(value, str) and value and _date_interval(value, meta.get('time_zone')) is not None
+                    and (key not in defaults or key in reported)):
                 values.add(value)
                 break
     return next(iter(values)) if len(values) == 1 else None
@@ -381,7 +414,9 @@ def _record_text(row, title):
     meta = row.get('metadata') or {}
     value += '\nSaved/logged at: ' + str(row.get('saved_at') or row.get('created_at') or 'Unknown')
     for key,label in (('trade_date','Reported trade date'),('reported_entry_at','Reported entry'),
-                      ('reported_exit_at','Reported exit'),('reported_outcome','Reported outcome'),
+                      ('reported_exit_at','Reported exit'),('reported_entry_time_text','Reported entry wording'),
+                      ('reported_exit_time_text','Reported exit wording'),('time_zone','Reported timezone'),
+                      ('title','Journal title'),('objective','Reported context objective'),('reported_outcome','Reported outcome'),
                       ('asset','Reported instrument'),('direction','Reported direction'),('play','Reported play'),
                       ('entry_model','Reported entry model'),('tier','Reported tier'),('session','Reported session'),
                       ('entry_price','Reported entry price'),('exit_price','Reported exit price'),
@@ -392,6 +427,13 @@ def _record_text(row, title):
             provenance = meta.get('provenance') or {}
             if key == 'trade_date' and key in (provenance.get('context_defaults') or []) and key not in (provenance.get('member_reported') or []):
                 label = 'Reviewed market date (not a reported execution date)'
+            story_provenance = meta.get('story_provenance')
+            field_provenance = (story_provenance.get(key) or {}) if isinstance(story_provenance, dict) else {}
+            if not isinstance(field_provenance, dict):field_provenance = {}
+            if field_provenance.get('kind') == 'inferred':
+                label = 'Inferred ' + label.removeprefix('Reported ').lower()
+            elif field_provenance.get('source') == 'model_extracted_narration':
+                label = 'Narration-derived ' + label.removeprefix('Reported ').lower()
             value += '\n' + label + ': ' + _display_value(meta[key])
     if meta.get('emotion'):
         value += '\nLegacy feeling note (stage/time unspecified): ' + str(meta['emotion'])
@@ -767,6 +809,8 @@ List IDs: get_journal_history view=index, no selectors; paginate next_offset
 while has_more. No IDs needed. Standalone Legacy journals stay separate.
 Answers: view=detail; follow context_text/next_detail_offset; no DM.
 Latest trade: latest=trade,date_basis=trade; unknown dates need clarification.
+An ambiguity response may identify latest_saved separately. Call it latest saved;
+never call that fallback the latest actual trade or send it without selection.
 Latest saved trade: date_basis=saved. Latest journal: latest=journal.
 Saved time isn't trade time. Clarify ambiguous Legacy aliases.
 Send: send_journal_history; all scoped photos, include_photos=false only for

@@ -247,6 +247,65 @@ class JournalWriteRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outputs[-1]['status'], 'journal_write_reconciliation_required')
         self.assertEqual(outputs[-1]['prior_write']['status'], 'saved')
 
+    async def test_intentional_same_turn_queued_entries_wait_for_predecessor_then_both_save(self):
+        async def save_entry():
+            self.runner_calls += 1
+            ordinal = self.runner_calls
+            await asyncio.to_thread(self.commit, with_hook=False)
+            receipt = {'ok': True, 'trade_id': 12, 'execution_id': ordinal,
+                       'persisted_entry_count': ordinal, 'entry_count_verified': True}
+            journal_write_committed(7, 101, receipt)
+            if ordinal == 1:
+                self.started.set()
+                await self.gate.wait()
+            return receipt
+        self.provider = save_entry
+        await self.start(name='add_entry', call_id='intentional-first')
+        self.work.start({'name': 'add_entry', 'call_id': 'intentional-second'})
+        self.tasks.extend(self.work.tasks)
+        await settle()
+        self.assertEqual(self.runner_calls, 1)
+        self.assertNotIn('intentional-second', self.work.write_barriers)
+        waiting = list(self.work.tasks)
+        self.gate.set()
+        await asyncio.gather(*waiting)
+        await settle()
+        self.assertEqual(self.runner_calls, 2)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM saved').fetchone()[0], 2)
+        outputs = [json.loads(c.args[0]['item']['output'])
+                   for c in self.session.send_event.await_args_list
+                   if c.args[0].get('item', {}).get('type') == 'function_call_output']
+        self.assertEqual([result['persisted_entry_count'] for result in outputs], [1, 2])
+        self.assertTrue(all(result['ok'] for result in outputs))
+        self.assertTrue(self.session._journal_write_recovery['reconciled'])
+
+    async def test_same_turn_queued_entry_remains_blocked_when_prior_output_was_not_delivered(self):
+        self.session.send_event.side_effect = [False, True]
+        await self.start(name='add_entry', call_id='first-undelivered')
+        self.work.start({'name': 'add_entry', 'call_id': 'second-awaiting-receipt'})
+        self.tasks.extend(self.work.tasks)
+        waiting = list(self.work.tasks)
+        self.gate.set()
+        await asyncio.gather(*waiting)
+        await settle()
+        self.assertEqual(self.runner_calls, 1)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM saved').fetchone()[0], 1)
+        outputs = [json.loads(c.args[0]['item']['output'])
+                   for c in self.session.send_event.await_args_list
+                   if c.args[0].get('item', {}).get('type') == 'function_call_output']
+        self.assertEqual(outputs[-1]['status'], 'journal_write_reconciliation_required')
+        self.assertFalse(self.session._journal_write_recovery['reconciled'])
+
+    async def test_barge_in_cancels_unstarted_same_turn_second_entry(self):
+        await self.start(name='add_entry', call_id='first-before-interrupt')
+        self.work.start({'name': 'add_entry', 'call_id': 'second-before-interrupt'})
+        self.tasks.extend(self.work.tasks)
+        await self.interrupt()
+        await self.finish()
+        self.assertEqual(self.runner_calls, 1)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM saved').fetchone()[0], 1)
+        self.assertEqual([o['status'] for o in self.outcomes()], ['saved'])
+
     async def test_normal_result_is_not_recovered_again_and_next_entry_is_allowed(self):
         await self.start(); await self.finish()
         self.assertTrue(self.session._journal_write_recovery['reconciled'])
@@ -477,11 +536,12 @@ class JournalWriteRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(receiving, return_exceptions=True)
             self.session.rate_limit_recovery.cancel()
 
-    async def test_story_draft_tools_do_not_claim_database_save(self):
-        draft = AsyncMock(return_value={'ok': True, 'staged': True})
+    async def test_optout_story_preview_is_tracked_without_claiming_database_save(self):
+        draft = AsyncMock(return_value={'ok': True, 'staged': True, 'saved': False, 'persisted': False})
         result = await guarded_voice_tool(self.session, 'stage_journal_story', {}, 'stage', draft)
         self.assertTrue(result['staged'])
-        self.assertFalse(hasattr(self.session, '_journal_write_recovery'))
+        self.assertEqual(self.session._journal_write_recovery['outcome']['status'], 'not_saved')
+        self.assertFalse(self.session._journal_write_recovery['outcome']['saved'])
         self.session.recovery_tools = [{'name': 'get_journal_story'}, {'name': 'save_journal_story'}]
         self.assertEqual(recovery_options(self.session)['tools'], [{'name': 'get_journal_story'}])
 
