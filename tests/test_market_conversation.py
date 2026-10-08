@@ -399,7 +399,7 @@ class ContextTests(unittest.TestCase):
 @contextmanager
 def auth_db():
     yield NS(execute=lambda *a: NS(fetchone=lambda: {
-        'activated': 1, 'revoked': 0, 'leadership_ack': 1, 'updated_at': 'auth-v1'}))
+        'activated': 1, 'revoked': 0, 'leadership_ack': 1, 'updated_at': 'auth-v1'}, fetchall=lambda: []))
 
 
 def function(name, namespace):
@@ -463,7 +463,7 @@ class AuthenticatedHooksTests(unittest.IsolatedAsyncioTestCase):
             require_authenticated_user=AsyncMock(return_value=state),
             secrets=NS(token_urlsafe=Mock(side_effect=['old-token', 'new-token'])),
             AUTH_SESSIONS={'sid': state}, SESSION_COOKIE='cookie', HTTPException=HTTPException,
-            asyncio=asyncio, get_profile=lambda *args: {'configured': True}, db=object(), GTOP_GUILD_ID=1,
+            asyncio=asyncio, get_profile=lambda *args: {'configured': True}, db=auth_db, GTOP_GUILD_ID=1,
             LIVE_INSTRUCTIONS='', market_clock=lambda: '', profile_context=lambda _: '',
             LIVE_MODEL='offline-model', LIVE_VOICE='offline-voice', OPENAI_API_KEY='offline-placeholder',
             safety_id=lambda _: 'offline-id', httpx=NS(AsyncClient=lambda **kwargs: Http()), JSONResponse=JSONResponse))

@@ -188,6 +188,8 @@ def delete_trade_records(conn, guild_id, user_id, trade_id):
         ).fetchone()[0]
         conn.execute(f'DELETE FROM {table} WHERE thesis_id=? AND guild_id=? AND user_id=?', params)
     conn.execute('DELETE FROM theses WHERE id=? AND guild_id=? AND user_id=?', params)
+    from gbop_voice_web.member_continuity import clear_record_context
+    clear_record_context(conn, guild_id, user_id)
     return counts
 
 
@@ -207,4 +209,6 @@ def delete_journal_records(conn, guild_id, user_id, journal_id):
         conn.execute('DELETE FROM journal_story_drafts WHERE journal_id=? AND guild_id=? AND user_id=?',(journal_id,guild_id,user_id))
     conn.execute('DELETE FROM journals WHERE id=? AND guild_id=? AND user_id=?',
                  (journal_id, guild_id, user_id))
+    from gbop_voice_web.member_continuity import clear_record_context
+    clear_record_context(conn, guild_id, user_id)
     return {'journals': 1, 'coaching_observations': len(observations)}

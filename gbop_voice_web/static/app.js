@@ -33,6 +33,55 @@ let completedOutputId = null;
 let turnReplyToResponseId = null;
 let completedOutputReceipt = null;
 let turnReplyReceipt = null;
+let continuityTurnReady = null;
+let memberInputCheckpoint = null;
+let lastInputCheckpoint = null;
+let lastCheckpointInput = "";
+
+function blockMemberContinuity(scope, message = "Context could not be saved safely. Reconnect before continuing.") {
+  if (sessionId === scope.session && voiceTurn === scope.turn
+      && connectionGeneration === scope.connection) {
+    // Rejected speech must not be replayed to the backend after reconnect.
+    // Already rendered local transcript lines stay readable, but are not reused.
+    timeline = [];
+    currentInput = currentOutput = "";
+    cleanup(message);
+    setState(message, "error");
+  }
+  return false;
+}
+
+function checkpointMemberInput() {
+  // The existing provider transcript is already present locally. Retain just
+  // one bounded current utterance for privacy intent detection, with only a
+  // 600-character server excerpt persisted. Never send the whole timeline.
+  const text = currentInput.trim();
+  if (!text || !sessionId) return memberInputCheckpoint;
+  const scope = { session: sessionId, turn: voiceTurn, connection: connectionGeneration };
+  if (text.length > 12000) {
+    blockMemberContinuity(scope, "That turn was too long to save safely. Reconnect and use a shorter turn.");
+    return Promise.resolve(false);
+  }
+  lastCheckpointInput = text;
+  const key = JSON.stringify([scope.session, scope.turn, text]);
+  if (lastInputCheckpoint === key) return memberInputCheckpoint;
+  lastInputCheckpoint = key;
+  const previous = memberInputCheckpoint;
+  const turnReady = continuityTurnReady;
+  memberInputCheckpoint = Promise.all([previous, turnReady]).then(async ([prior, ready]) => {
+    if (sessionId !== scope.session || voiceTurn !== scope.turn
+        || connectionGeneration !== scope.connection) return false;
+    if (prior === false || ready === false) return blockMemberContinuity(scope);
+    const response = await authFetch("/api/live/context/input", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: scope.session, turn_id: scope.turn, text }),
+    });
+    const accepted = response.ok && (await response.json()).ok === true;
+    return accepted || blockMemberContinuity(scope);
+  }).catch(() => blockMemberContinuity(scope));
+  return memberInputCheckpoint;
+}
 
 function acknowledgeMarketResponse(text) {
   const scope = outputScope;
@@ -43,13 +92,16 @@ function acknowledgeMarketResponse(text) {
       || els.remoteAudio.ended || els.remoteAudio.volume === 0
       || !(els.remoteAudio.currentTime > scope.audioStartedAt)) return;
   completedOutputId = scope.response;
-  const delivery = authFetch("/api/live/context/delivered", {
+  const sendReceipt = () => authFetch("/api/live/context/delivered", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: scope.session, turn_id: scope.turn,
       response_id: scope.response, text }),
   }).then(async (response) => response.ok && (await response.json()).ok === true)
     .catch(() => false);
+  // Apply an actual spoken opt-out before storing any delivered-answer excerpt.
+  const checkpoint = checkpointMemberInput();
+  const delivery = checkpoint ? checkpoint.then(ok => ok ? sendReceipt() : false) : sendReceipt();
   // Playback may finish just before the member says Yes. Do not let either
   // continuation request overtake its exact delivery receipt at the server.
   let timeout;
@@ -167,7 +219,7 @@ async function waitForIceGathering(pc) {
   });
 }
 
-function invalidateMarketContext(closed = false, continuation = false) {
+function invalidateMarketContext(closed = false, continuation = false, previousInput = null) {
   voiceTurn += 1;
   turnReplyToResponseId = continuation && !closed ? completedOutputId : null;
   turnReplyReceipt = turnReplyToResponseId ? completedOutputReceipt : null;
@@ -181,8 +233,10 @@ function invalidateMarketContext(closed = false, continuation = false) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: requestSession, turn_id: requestTurn, closed,
+      previous_input: closed ? null : previousInput,
       continuation: Boolean(delivered && reply), reply_to_response_id: delivered ? reply : null }),
-  }).catch(console.warn);
+  }).then(async response => response.ok && (await response.json()).ok !== false)
+    .catch(() => false);
   if (!turnReplyReceipt) return sendFence(false); // Interruptions/close fence immediately.
   return turnReplyReceipt.then((delivered) => {
     if (sessionId !== requestSession || voiceTurn !== requestTurn
@@ -269,6 +323,10 @@ async function startVoice() {
 
       if (event.type === "session.input_transcript.delta") {
         currentInput += event.delta || "";
+        if (currentInput.length > 12000) {
+          checkpointMemberInput();
+          return;
+        }
         setState("Listening", "listening");
         return;
       }
@@ -282,6 +340,8 @@ async function startVoice() {
       if (event.type === "session.delegation.created") {
         const delegation = event.delegation || {};
         if (delegation.target === "client") {
+          checkpointMemberInput();
+          if (!sessionId) return;
           if (currentInput.trim()) {
             addLine("user", currentInput);
             currentInput = "";
@@ -292,6 +352,8 @@ async function startVoice() {
       }
 
       if (event.type === "session.output_audio.started") {
+        checkpointMemberInput();
+        if (!sessionId) return;
         completedOutputId = completedOutputReceipt = null;
         outputScope = { session: sessionId, turn: voiceTurn,
           connection: connectionGeneration, response: `browser_${++outputSequence}`,
@@ -303,6 +365,11 @@ async function startVoice() {
       if (event.type === "session.output_audio.stopped") {
         if (currentOutput.trim()) {
           acknowledgeMarketResponse(currentOutput);
+          if (!sessionId) return;
+          if (currentInput.trim()) {
+            addLine("user", currentInput);
+            currentInput = "";
+          }
           addLine("assistant", currentOutput);
           currentOutput = "";
         }
@@ -312,6 +379,12 @@ async function startVoice() {
       }
 
       if (event.type === "session.input_audio.speech_started") {
+        const previousInput = currentInput.trim() || lastCheckpointInput;
+        if (previousInput.length > 12000) {
+          blockMemberContinuity({ session: sessionId, turn: voiceTurn, connection: connectionGeneration },
+            "That turn was too long to save safely. Reconnect and use a shorter turn.");
+          return;
+        }
         // Only an ordinary reply after finished playback may answer a prior
         // clarification. Interruptions must invalidate it with the queued work.
         const continuation = completedOutputId !== null && outputScope === null && !currentOutput.trim();
@@ -319,12 +392,18 @@ async function startVoice() {
         outputScope = null;
         if (currentOutput.trim()) addLine("assistant", currentOutput);
         currentOutput = "";
-        invalidateMarketContext(false, continuation);
+        if (currentInput.trim()) addLine("user", currentInput);
+        currentInput = "";
+        memberInputCheckpoint = lastInputCheckpoint = null;
+        lastCheckpointInput = "";
+        continuityTurnReady = invalidateMarketContext(false, continuation, previousInput || null);
         setState("Listening", "listening");
         return;
       }
 
       if (event.type === "session.input_audio.speech_stopped") {
+        checkpointMemberInput();
+        if (!sessionId) return;
         setState("Thinking", "thinking");
         return;
       }
@@ -378,13 +457,21 @@ async function startVoice() {
 async function handleDelegation(delegationId) {
   const requestSession = sessionId;
   const requestTurn = voiceTurn;
+  const requestConnection = connectionGeneration;
   const reply = turnReplyToResponseId;
   const receipt = turnReplyReceipt;
+  const checkpoint = memberInputCheckpoint;
+  const turnReady = continuityTurnReady;
   setState("Checking GTOP…", "thinking");
 
   try {
     const delivered = receipt ? await receipt : false;
+    const readiness = await Promise.all([checkpoint, turnReady]);
     if (sessionId !== requestSession || voiceTurn !== requestTurn) return;
+    if (readiness.some(result => result === false)) {
+      blockMemberContinuity({ session: requestSession, turn: requestTurn, connection: requestConnection });
+      return;
+    }
     const response = await authFetch("/api/delegate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -439,6 +526,8 @@ function cleanup(message = "Tap to start") {
   outputScope = null;
   completedOutputId = turnReplyToResponseId = null;
   completedOutputReceipt = turnReplyReceipt = null;
+  continuityTurnReady = memberInputCheckpoint = lastInputCheckpoint = null;
+  lastCheckpointInput = "";
   remotePlaybackReady = false;
   connectionGeneration += 1;
   invalidateMarketContext(true);
