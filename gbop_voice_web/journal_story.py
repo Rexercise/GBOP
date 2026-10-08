@@ -1,5 +1,6 @@
 """Progressively saved member journals; finalization never invents executions."""
 from copy import deepcopy
+from contextlib import ExitStack
 from datetime import date, datetime, timezone
 from dataclasses import dataclass
 import json
@@ -107,6 +108,10 @@ def _load_owned(conn,context,args,guild,user):
     # another device's correction merely because this process has old state.
     if current and current.get('storage_revision')!=value['storage_revision'] and not args.get('_refresh'):
         raise ValueError('This unfinished journal changed in another conversation. Read the same draft before correcting it.')
+    if current and current.get('id') == value['id'] and current.get('owner') == (guild, user, context.session_id):
+        # A just-delivered question is admitted locally before its DB worker.
+        # Preserve those delivery facts while loading newer durable narration.
+        value['asked'] = list(dict.fromkeys([*(value.get('asked') or []), *(current.get('asked') or [])]))
     value['owner']=(guild,user,context.session_id)
     return value
 
@@ -123,7 +128,8 @@ def begin_story_turn(context,text,*,generation=None):
             if draft and draft.get('owner')==(*context.owner[:2],context.session_id):
                 context._journal_story['save_authorized']=False
                 context._journal_story['recording_paused']=True
-        elif _journaling_request(text):context._journal_recording_paused=False
+        elif _journaling_request(text) and not getattr(context, '_member_recording_paused', False):
+            context._journal_recording_paused=False
     if optout and draft and draft.get('persisted') and getattr(context,'auth_provider',None):
         db,guild,user=context.auth_provider
         try:
@@ -329,11 +335,14 @@ def stage_story(db,guild,user,args):
             draft['save_authorized']=False
             draft['recording_paused']=True
             context._journal_recording_paused=True
-        elif _journaling_request(intent_source) or (intent_source is not None and _finalize_request(intent_source)):
+        elif ((_journaling_request(intent_source) or (intent_source is not None and _finalize_request(intent_source)))
+                and not getattr(context, '_member_recording_paused', False)):
             context._journal_recording_paused=False
             draft['recording_paused']=False
             if _finalize_request(intent_source):draft['save_authorized']=True
-        draft['recording_paused']=bool(draft.get('recording_paused') or getattr(context,'_journal_recording_paused',False))
+        from gbop_voice_web.member_continuity import storage_paused
+        draft['recording_paused']=bool(draft.get('recording_paused') or getattr(context,'_journal_recording_paused',False)
+                                      or storage_paused(conn, guild, user))
         if intent_source and re.search(r'\b(?:hypothetical|example|imagine|suppose|pretend)\b',intent_source,re.I):draft['example_only']=True
         if args.get('new_trade') is True and not draft['new_trade']:
             if intent_source is not None and not _new_trade_request(intent_source):
@@ -460,28 +469,91 @@ def get_story(db,guild,user,args):
         return _public(draft,context,args.get('raw_offset') or 0)
 
 
-def delivered_story_question(context,text,generation):
+@dataclass(frozen=True)
+class DeliveredStoryQuestion:
+    """An admitted delivery fact; never a member/model-supplied draft mutation."""
+    context: object
+    provider: tuple
+    owner: tuple
+    session_id: str
+    auth_revision: object
+    draft_id: str
+    question_key: str
+
+
+def admit_story_question(context, text, generation):
+    """Mark the local question immediately, before a following member turn."""
     with context._lock:
-        draft=getattr(context,'_journal_story',None)
-        question=(draft or {}).get('question')
-        if not (context.current(generation) and draft and draft['owner']==(*context.owner[:2],context.session_id) and question
-                and question['generation']==generation and question['text'] in text and question['key'] not in draft['asked']):return
+        draft = getattr(context, '_journal_story', None)
+        question = (draft or {}).get('question')
+        if not (context.current(generation) and draft and draft['owner'] == (*context.owner[:2], context.session_id)
+                and question and question['generation'] == generation and question['text'] in text
+                and question['key'] not in draft['asked']):
+            return None
         draft['asked'].append(question['key'])
-        draft_id=draft['id'];key=question['key'];persisted=draft.get('persisted')
-    if persisted and getattr(context,'auth_provider',None):
-        db,guild,user=context.auth_provider
-        try:
-            with journal_transaction(db,{'_journal_binding':JournalBinding(context,generation)},guild,user,serialize=True) as conn:
-                rows=journal_drafts.read(conn,guild,user,draft_id)
-                if not rows:return
-                latest=rows[0]
-                if key not in latest['asked']:latest['asked'].append(key)
-                stored=journal_drafts.write(conn,guild,user,latest,expected_revision=latest['storage_revision'],finalized=latest.get('draft_status')=='finalized')
+        provider = getattr(context, 'auth_provider', None)
+        if not draft.get('persisted') or not provider:
+            return None
+        return DeliveredStoryQuestion(context, tuple(provider), tuple(context.owner[:2]),
+            context.session_id, getattr(context, '_auth_revision', None), draft['id'], question['key'])
+
+
+def persist_story_question(receipt):
+    """Merge only this admitted key into fresh owned state, never old draft facts.
+
+    Delivery happened before a subsequent turn, so the key can safely merge
+    across its generation change. Authentication/session/consent still must be
+    current; deleted drafts are never recreated and no narration is replayed.
+    """
+    if not isinstance(receipt, DeliveredStoryQuestion):
+        return False
+    context = receipt.context
+    db, guild, user = receipt.provider
+    try:
+        from gbop_voice_web.journal_context import member_revision
+        from gbop_voice_web.member_continuity import storage_paused, available as continuity_available
+        with ExitStack() as transaction:
+            conn = transaction.enter_context(db())
+            conn.execute('SELECT pg_advisory_xact_lock(?)', (user,))
             with context._lock:
-                if context.current(generation) and (getattr(context,'_journal_story',None) or {}).get('id')==draft_id:
-                    _bind_loaded(context,stored,generation=generation)
-        except Exception:
-            pass  # Keep the local receipt; never invalidate an answer already delivered.
+                if (context.closed or context.session_id != receipt.session_id
+                        or tuple(context.owner[:2]) != receipt.owner
+                        or tuple(getattr(context, 'auth_provider', ()) or ()) != receipt.provider):
+                    return False
+                revision = member_revision(conn, guild, user)
+                if (receipt.auth_revision not in (None, revision)
+                        or getattr(context, '_auth_revision', None) not in (None, revision)
+                        or getattr(context, '_journal_recording_paused', False)
+                        or storage_paused(conn, guild, user)
+                        or getattr(context, '_continuity_enabled', False) and not continuity_available(conn)):
+                    return False
+                rows = journal_drafts.read(conn, guild, user, receipt.draft_id)
+                if not rows or rows[0].get('recording_paused'):
+                    return False
+                latest = rows[0]
+                if receipt.question_key in latest['asked']:
+                    return True
+                previous_revision = latest['storage_revision']
+                latest['asked'].append(receipt.question_key)
+                with transaction.pop_all():
+                    stored = journal_drafts.write(conn, guild, user, latest,
+                        expected_revision=previous_revision,
+                        finalized=latest.get('draft_status') == 'finalized')
+                local = getattr(context, '_journal_story', None)
+                if (local and local.get('id') == receipt.draft_id
+                        and local.get('storage_revision') == previous_revision):
+                    # Keep all newer local facts and its current question intact.
+                    if receipt.question_key not in local['asked']:
+                        local['asked'].append(receipt.question_key)
+                    local['storage_revision'] = stored['storage_revision']
+                return True
+    except Exception:
+        return False  # A durable receipt failure cannot undo already delivered audio.
+
+
+def delivered_story_question(context, text, generation):
+    """Legacy synchronous delivery hook."""
+    return persist_story_question(admit_story_question(context, text, generation))
 
 
 def _saved_story_row(conn,guild,user,draft_id):

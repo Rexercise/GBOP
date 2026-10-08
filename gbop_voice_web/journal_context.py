@@ -80,6 +80,7 @@ class JournalBinding:
     context: object
     generation: int
     review: object = None
+    continuity_write: bool = False
 
     @contextmanager
     def guard(self, guild, user):
@@ -107,6 +108,11 @@ def write_guard(args, guild, user, conn=None):
     with value.guard(guild, user) if value else nullcontext():
         if conn is not None:
             revision = member_revision(conn, guild, user)
+            if value:
+                from gbop_voice_web.member_continuity import validate_lease, storage_paused
+                validate_lease(conn, value.context)
+                if value.continuity_write and storage_paused(conn, guild, user):
+                    raise ValueError('Recording is paused. Explicitly resume recording before saving changes.')
             if value and value.context._auth_revision not in (None, revision):
                 raise ValueError('Member authorization changed. Start a fresh review before saving its context.')
         yield

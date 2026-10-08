@@ -420,7 +420,7 @@ class CheckinMessageDispatchTests(unittest.IsolatedAsyncioTestCase):
             db=Mock(), GTOP_OWNER_USER_ID=999, member_access_error=Mock(return_value=None),
         )
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), ns)
-        context = NS(generation=4, complete_response=Mock())
+        context = NS(generation=4, complete_response=Mock(), admit_response=Mock(return_value=object()), persist_response=Mock())
         market_module = ModuleType('gbop_voice_web.market_conversation')
         market_module.TEXT_MARKET_CONTEXTS = NS(get=Mock(return_value=context))
         return message, ns, market_module
@@ -449,7 +449,7 @@ class CheckinMessageDispatchTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(sys.modules, {'gbop_voice_web.market_conversation': market_module}):
             await ns['on_message'](message)
         ns['_consume_checkin_reply'].assert_awaited_once_with(message)
-        ns['ai_run_turn'].assert_called_once_with(20, BTC_REQUEST, [], 77)
+        ns['ai_run_turn'].assert_called_once_with(20, BTC_REQUEST, [], 77, True)
         ns['ai_save_message'].assert_any_call(20, 'user', BTC_REQUEST)
         message.reply.assert_awaited_once_with('Watch request reached normal dispatch.')
 

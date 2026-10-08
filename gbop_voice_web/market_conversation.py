@@ -7,6 +7,7 @@ selection, retained-candle resolution, evidence IDs and stale-result fencing are
 server-side. Nothing here authorizes a trade, watch, or other mutation.
 """
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import hashlib
 import json
@@ -114,6 +115,9 @@ def contextual_tools(tools):
         'An explicit range detail selection stays selected. Never switch asset/date/shift or refresh its cutoff.')
     from gbop_voice_web.multi_market_context import tools as multi_tools
     result.extend(tool for tool in multi_tools() if not any(t.get('name') == tool['name'] for t in result))
+    from gbop_voice_web.member_continuity import tools as continuity_tools
+    existing = {tool.get('name') for tool in result}
+    result.extend(tool for tool in continuity_tools() if tool['name'] not in existing)
     return result
 
 
@@ -436,6 +440,19 @@ def _detail_index(result):
     return found
 
 
+@dataclass(frozen=True)
+class DeliveredResponseReceipt:
+    """Server-created proof of local delivery admission, never tool arguments."""
+    context: object
+    session_id: str
+    owner: tuple
+    generation: int
+    response_id: str
+    text: str
+    discussed_count: int
+    story_question: object = None
+
+
 class MarketConversation:
     def __init__(self, owner=None, auth_provider=None):
         self.auth_provider = auth_provider
@@ -512,7 +529,7 @@ class MarketConversation:
                 self._multi_focus_required = False
             self._auth_revision = revision
 
-    def begin_turn(self, text=None, *, now=None, client_turn=None):
+    def begin_turn(self, text=None, *, now=None, client_turn=None, defer_continuity=False):
         from gbop_voice_web.journal_context import journal_correction_intent
         with self._lock:
             if self.closed:
@@ -643,6 +660,9 @@ class MarketConversation:
             generation = self.generation
         # Draft persistence acquires DB/member locks before the conversation
         # guard, exactly like all other journal writes. Never invert that order.
+        from gbop_voice_web.member_continuity import start_turn
+        if not defer_continuity:
+            start_turn(self, text, generation=generation)
         from gbop_voice_web.journal_story import begin_story_turn
         begin_story_turn(self, text, generation=generation)
         return generation
@@ -828,6 +848,7 @@ class MarketConversation:
             self.invalidate()
             self.context_bank.clear()
             self._last_context_ids = []
+            self._completed_responses.clear()
 
     def current(self, generation):
         with self._lock:
@@ -872,30 +893,27 @@ class MarketConversation:
                         'To continue the active story use followup_mode=continue_active_range, even if that anchor was discussed. '
                         'Switching asset/date/shift retains separate history; explicit reset starts that scope over.'}
 
-    def complete_response(self, text, *, generation=None, response_id=None, completed=True):
-        """Transport-only receipt after successful text delivery or voice playback.
+    def admit_response(self, text, *, generation=None, response_id=None, completed=True):
+        """Admit exact local delivery before the next utterance, without DB work.
 
-        No tool can invoke this hook. Partial/cancelled responses, stale turns,
-        generated defaults and retrieval alone cannot advance discussion.
+        This phase must run synchronously on the transport event loop. It marks
+        feeling/discussion/question state immediately; persistence may follow
+        on a worker without losing a member's immediate reply.
         """
         with self._lock:
             ticket = self.generation if generation is None else generation
             if not completed or not text or not self.current(ticket):
                 if not completed and self.current(ticket):
                     self._feeling_clarification = None
-                return 0
-            receipt = (ticket, str(response_id) if response_id is not None else _digest(text))
-            if receipt in self._completed_responses:
-                return 0
-            self._completed_responses[receipt] = True
-            while len(self._completed_responses) > 128:
-                self._completed_responses.popitem(last=False)
+                return None
+            identity = (ticket, str(response_id) if response_id is not None else _digest(text))
+            if identity in self._completed_responses:
+                return None
             from gbop_voice_web.trade_feelings import delivered_feeling_clarification
-            delivered_feeling_clarification(self, text, ticket, receipt[1])
+            delivered_feeling_clarification(self, text, ticket, identity[1])
             scope = _discussion_scope(self.selected)
             count = 0
             if scope and scope == _discussion_scope(self.requested):
-                # Only ranges actually spoken in the delivered response count.
                 anchors = {anchor for (row_scope, anchor), row in self._retrieved_discussion.items()
                            if row_scope == scope and _spoken_range(text, row)}
                 seen = self._discussed.pop(scope, set())
@@ -903,16 +921,47 @@ class MarketConversation:
                 self._discussed[scope] = seen | anchors
                 while len(self._discussed) > 24:
                     self._discussed.popitem(last=False)
-        # This hook can persist the delivered-question receipt. Acquire its DB
-        # lock before its generation guard, never while holding self._lock.
-        from gbop_voice_web.journal_story import delivered_story_question
-        delivered_story_question(self, text, ticket)
-        return count
+            from gbop_voice_web.journal_story import admit_story_question
+            question = admit_story_question(self, text, ticket)
+            receipt = DeliveredResponseReceipt(self, self.session_id, tuple(self.owner or ()),
+                ticket, identity[1], text, count, question)
+            self._completed_responses[identity] = receipt
+            while len(self._completed_responses) > 128:
+                self._completed_responses.popitem(last=False)
+            return receipt
+
+    def persist_response(self, receipt):
+        """Worker-only durability for a previously admitted transport receipt."""
+        if not isinstance(receipt, DeliveredResponseReceipt) or receipt.context is not self:
+            return 0
+        with self._lock:
+            if (self.closed or self.session_id != receipt.session_id
+                    or tuple(self.owner or ()) != receipt.owner
+                    or self._completed_responses.get((receipt.generation, receipt.response_id)) is not receipt):
+                return 0
+            # Keep only the exact-once marker once a worker has claimed it;
+            # completed response text is not a retained transcript cache.
+            self._completed_responses[(receipt.generation, receipt.response_id)] = True
+        # A narrow delivered-question fact can merge into the newest existing
+        # owned draft. It cannot replay narration or any journal/execution write.
+        from gbop_voice_web.journal_story import persist_story_question
+        persist_story_question(receipt.story_question)
+        from gbop_voice_web.member_continuity import record_delivered
+        record_delivered(self, receipt.text, generation=receipt.generation,
+                         response_id=receipt.response_id)
+        return receipt.discussed_count
+
+    def complete_response(self, text, *, generation=None, response_id=None, completed=True):
+        """Legacy synchronous transport receipt; async transports split its phases."""
+        receipt = self.admit_response(text, generation=generation,
+            response_id=response_id, completed=completed)
+        return self.persist_response(receipt) if receipt is not None else 0
 
     def prompt(self):
         from gbop_voice_web.journal_story import story_prompt_context
         with self._lock:
-            story_context = story_prompt_context(self)
+            from gbop_voice_web.member_continuity import continuity_prompt
+            story_context = continuity_prompt(self) + story_prompt_context(self)
             if not self.selected and not self.requested and not self.context_bank.entries and not self._multi_request:
                 return story_context
             snapshot = {'requested_context': self.requested, 'selection': self.selected,
@@ -1098,6 +1147,10 @@ class MarketConversation:
             return {'ok':False,'error':'Story drafts preserve member-reported narrative, not a market-review binding. Use the existing contextual journal flow for verified candle provenance.'}
         if reference not in (None, 'none', 'selected_review', 'selected_candle'):
             return {'ok': False, 'error': 'Use market_reference selected_review, selected_candle, none, or null.'}
+        if name == 'stage_journal_story' and getattr(self, '_client_text', None) is None:
+            from gbop_voice_web.member_continuity import privacy_intent, start_turn
+            if privacy_intent(args.get('raw_story')) is not None:
+                start_turn(self, args['raw_story'], generation=ticket)
         with self._journal_write_lock:
             with self._lock:
                 if not self.current(ticket):
@@ -1145,7 +1198,8 @@ class MarketConversation:
                                'operation_id': execution_op.operation_id if execution_op else None})
                 if cache_result and key in self._journal_results:
                     return deepcopy(self._journal_results[key])
-                args['_journal_binding'] = JournalBinding(self, ticket, review)
+                args['_journal_binding'] = JournalBinding(self, ticket, review,
+                    continuity_write=name not in {'get_journal_story', 'stage_journal_story'})
                 if execution_op:
                     args['_execution_operation'] = execution_op
                     self._execution_results[execution_op.operation_id] = {
@@ -1274,8 +1328,28 @@ class MarketConversation:
                     return self._stale()
                 scope_lock = self._scoped_read_lock
             with scope_lock:
-                return self._run(name, arguments, runner, generation=ticket, operation_id=operation_id)
-        return self._run(name, arguments, runner, generation=generation, operation_id=operation_id)
+                result = self._run(name, arguments, runner, generation=ticket, operation_id=operation_id)
+        else:
+            ticket = self.generation if generation is None else generation
+            result = self._run(name, arguments, runner, generation=ticket, operation_id=operation_id)
+        # Preserve an actual owned record reference, not a model's claim about
+        # an arbitrary ID. An index of many records does not choose one.
+        if isinstance(result, dict) and result.get('ok'):
+            reference = result
+            if name == 'get_journal_history':
+                rows = result.get('journals') or []
+                reference = rows[0] if len(rows) == 1 else {}
+            number = reference.get('trade_number')
+            if number is None and name in {'open_trade', 'add_entry', 'close_trade', 'record_trade_event'}:
+                number = reference.get('trade_id')  # These handlers return the displayed number.
+            journal_id = reference.get('journal_id')
+            if number is not None or journal_id is not None:
+                from gbop_voice_web.member_continuity import record_reference
+                saved_reference = record_reference(self, trade_number=number,
+                    journal_id=journal_id, generation=ticket)
+                if saved_reference.get('ok') and saved_reference.get('available'):
+                    result = {**result, 'member_context_revision': saved_reference['revision']}
+        return result
 
     def _run(self, name, arguments, runner, *, generation=None, operation_id=None):
         """Runner is the existing authenticated dispatcher, including catalogue reads.
@@ -1294,6 +1368,17 @@ class MarketConversation:
                 return self._stale()
             active = deepcopy(self.pending or self.requested or self.selected)
             intent = deepcopy(self.intent)
+        if name in {'get_member_continuity', 'remember_member_context'}:
+            if not self.auth_provider:
+                return {'ok': False, 'error': 'An authenticated member conversation is required.'}
+            from gbop_voice_web.member_continuity import continuity_tool
+            args = {key: value for key, value in dict(arguments).items() if not key.startswith('_')}
+            args['_journal_binding'] = JournalBinding(self, ticket)
+            args['_continuity_operation_id'] = operation_id
+            try:
+                return continuity_tool(*self.auth_provider, name, args)
+            except ValueError as exc:
+                return {'ok': False, 'status': 'continuity_conflict', 'error': str(exc)}
         if name == 'review_post_shift_followthrough':
             from gbop_voice_web.post_shift_followthrough import run_context_followthrough
             return run_context_followthrough(self, arguments, runner, ticket)

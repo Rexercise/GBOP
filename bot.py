@@ -4805,6 +4805,8 @@ async def _consume_checkin_reply(message):
 
 def _init_coach_db():
     init_coach(db)
+    from gbop_voice_web.member_continuity import init_continuity
+    init_continuity(db)
 
 
 def _init_market_db():
@@ -5033,6 +5035,11 @@ def ai_save_message(user_id: int, role: str, content: str):
         return
 
     with db() as conn:
+        from gbop_voice_web.member_continuity import storage_paused
+        from gbop_voice_web.journal_context import member_revision
+        member_revision(conn, GTOP_GUILD_ID, user_id)
+        if storage_paused(conn, GTOP_GUILD_ID, user_id):
+            return
         conn.execute("""
             INSERT INTO ai_messages (
                 guild_id, user_id, role, content, created_at
@@ -6111,18 +6118,24 @@ def ai_execute_tool(user_id: int, name: str, args: dict):
     return {"ok": False, "error": f"Unknown tool: {name}"}
 
 
-def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None):
+def ai_run_turn(user_id: int, user_text: str, photos=None, conversation_id=None, private_context=True):
     from gbop_voice_web.api_usage import log_response_usage
     from gbop_voice_web.midpoint_preferences import bind_preference_args
     from gbop_voice_web.market_conversation import TEXT_MARKET_CONTEXTS, contextual_tools
     market_context = TEXT_MARKET_CONTEXTS.get((GTOP_GUILD_ID, user_id, 'text', conversation_id))
     market_context.auth_provider = (db, GTOP_GUILD_ID, user_id)
+    market_context.continuity_private = bool(private_context)
+    # A verified reactivation may rotate the member authorization revision.
+    # Rotate the cached session before its new continuity transaction starts.
+    market_context.bind_auth(db, GTOP_GUILD_ID, user_id)
     market_generation = market_context.begin_turn(user_text)
     conversation_tools = contextual_tools(GBOP_AI_TOOLS)
     init_ai_db()
 
-    history = ai_recent_messages(user_id, limit=10)
-    member_state = ai_member_context(user_id)
+    history = (ai_recent_messages(user_id, limit=10)
+               if private_context and not getattr(market_context, '_member_recording_paused', False) else [])
+    member_state = (ai_member_context(user_id) if private_context else
+                    market_clock() + '\nShared channel: do not recall or disclose private member conversation or journal details.')
 
     input_items = [
         {"role": item["role"], "content": item["content"]}
@@ -6326,16 +6339,16 @@ async def on_message(message: discord.Message):
             return
         try:
             async with message.channel.typing():
-                answer = await asyncio.to_thread(ai_run_turn, member.id, content, photos, message.channel.id)
+                answer = await asyncio.to_thread(ai_run_turn, member.id, content, photos, message.channel.id, is_dm)
         except Exception as exc:
             saved = " Your pictures are saved, but analysis is still pending." if photos else ""
             await message.reply("I hit an AI connection error." + saved +
                 " Please check your trade history before retrying a trade action.")
             return
         # Save after the turn: the current user message must not appear twice.
-        ai_save_message(member.id, "user", content + (
-            "\nSaved photo IDs: " + ", ".join(p["photo_id"] for p in photos) if photos else ""))
-        ai_save_message(member.id, "assistant", answer)
+        if is_dm:
+            await asyncio.to_thread(ai_save_message, member.id, "user", content + (
+                "\nSaved photo IDs: " + ", ".join(p["photo_id"] for p in photos) if photos else ""))
 
         # A generated answer is not yet a delivered answer. Keep this exact
         # conversation/generation ticket until Discord accepts every chunk.
@@ -6353,8 +6366,12 @@ async def on_message(message: discord.Message):
                 message.channel,
                 answer[1900:].lstrip(),
             )
-        delivered_context.complete_response(answer, generation=delivered_generation,
+        receipt = delivered_context.admit_response(answer, generation=delivered_generation,
             response_id=str(message.id), completed=True)
+        if receipt is not None:
+            await asyncio.to_thread(delivered_context.persist_response, receipt)
+        if is_dm:
+            await asyncio.to_thread(ai_save_message, member.id, "assistant", answer)
 
 
 
@@ -6691,6 +6708,21 @@ def gbop_output_manager(channel_id: int):
     return manager
 
 
+def gbop_continuity_private(member, channel, *, authoritative_channel=None):
+    # The primary gateway owns our membership/audience events. A helper bot's
+    # separate channel cache can lag behind it, so never authorize from that cache.
+    guild = client.get_guild(member.guild.id)
+    current = guild.get_member(member.id) if guild else None
+    current_channel = (authoritative_channel if authoritative_channel is not None else
+                       guild.get_channel(channel.id) if guild and channel else None)
+    if current is None or current_channel is None:
+        return False
+    # A single current listener in a public channel is not a private audience.
+    return (private_room_autojoin_allowed(current, current_channel)
+            and not any(not person.bot and person.id != current.id
+                        for person in getattr(current_channel, 'members', [])))
+
+
 class GBOPRealtimeSession:
     def __init__(self, member: discord.Member, voice_client, loop):
         self.member = member
@@ -6718,14 +6750,141 @@ class GBOPRealtimeSession:
         self.tool_work = VoiceToolWork(self)
         from gbop_voice_web.market_conversation import MarketConversation, contextual_tools
         self.market_context = MarketConversation((GTOP_GUILD_ID, member.id, 'discord_voice'), auth_provider=(db, GTOP_GUILD_ID, member.id))
+        self.market_context.continuity_private = gbop_continuity_private(member, voice_client.channel)
+        self._continuity_turn_task = None
+        self._continuity_audio_queue = asyncio.Queue(maxsize=128)
+        self._continuity_audio_task = None
+        self._continuity_delivery_tasks = set()
         from gbop_voice_web.response_delivery import MarketResponseDelivery
         self.market_delivery = MarketResponseDelivery(self.market_context,
-            self._market_response_delivered)
+            self._market_response_delivered, submit_completed=self._submit_completed_response)
         self.conversation_tools = contextual_tools(GBOP_AI_TOOLS)
         self.recovery_tools = self.conversation_tools
-        self.authorize_tool = lambda: asyncio.to_thread(
-            member_access_error, db, GTOP_GUILD_ID, self.member.id, GTOP_OWNER_USER_ID)
+        self.authorize_tool = self.authorize_member_tool
         self._recovery_active = False
+
+    async def authorize_member_tool(self):
+        guild = client.get_guild(GTOP_GUILD_ID)
+        current = guild.get_member(self.member.id) if guild else None
+        if current is None or (not is_owner(current) and not has_member_role(current)):
+            return 'Your current GTOP member access could not be verified.'
+        if (self.market_context.continuity_private
+                and not gbop_continuity_private(current, self.voice_client.channel)):
+            return 'This voice room is no longer private. Continue private details in your private room or DM.'
+        return await asyncio.to_thread(member_access_error, db, GTOP_GUILD_ID,
+                                       self.member.id, GTOP_OWNER_USER_ID)
+
+    async def prepare_continuity_turn(self, generation):
+        from gbop_voice_web.member_continuity import start_turn
+        context = self.market_context
+        try:
+            denial = await self.authorize_member_tool()
+            if denial:
+                self.last_error = denial
+                self.stop()
+                return
+            await asyncio.to_thread(start_turn, context, None, generation=generation)
+            if context.current(generation) and not self.closed:
+                await self.refresh_context(generation=generation)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if context.current(generation) and not self.closed:
+                self.last_error = 'Private member context could not be verified. Voice output stopped safely.'
+                self.stop()
+
+    def _submit_completed_response(self, text, generation, response_id):
+        # The output manager runs on the asyncio loop. Never block barge-in or
+        # other members behind a database/member lock after playback.
+        receipt = self.market_context.admit_response(text, generation=generation,
+            response_id=response_id, completed=True)
+        if receipt is None:
+            return
+        async def record():
+            try:
+                marked = await asyncio.to_thread(self.market_context.persist_response, receipt)
+                if marked and not self.closed:
+                    self._market_response_delivered(generation)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Playback succeeded; failed bookkeeping cannot replay speech.
+                pass
+        task = asyncio.create_task(record())
+        self._continuity_delivery_tasks.add(task)
+        task.add_done_callback(self._continuity_delivery_tasks.discard)
+
+    def reset_authorized_output(self):
+        # Barge-in never waits for an obsolete DB refresh. Fence the old work,
+        # drop queued audio and let the new turn use its own admission task.
+        for task in (self._continuity_audio_task, self._continuity_turn_task):
+            if task is not None:
+                task.cancel()
+        self._continuity_audio_task = self._continuity_turn_task = None
+        while not self._continuity_audio_queue.empty():
+            self._continuity_audio_queue.get_nowait()
+
+    def enqueue_authorized_output(self, event):
+        if self.closed:
+            return
+        try:
+            self._continuity_audio_queue.put_nowait((event, self.market_context.generation,
+                self.websocket, self._continuity_turn_task))
+        except asyncio.QueueFull:
+            self.last_error = 'Voice output paused because member-context verification fell behind.'
+            self.stop()
+            return
+        if self._continuity_audio_task is None or self._continuity_audio_task.done():
+            self._continuity_audio_task = asyncio.create_task(self.authorized_output_loop())
+
+    async def authorized_output_loop(self):
+        # Keep audio ordered while auth/context refresh is in flight, without
+        # holding up the receiver's interruption and connection-fence events.
+        try:
+            while not self.closed:
+                event, generation, socket, preparation = await self._continuity_audio_queue.get()
+                if (self.closed or self.websocket is not socket
+                        or not self.market_context.current(generation)):
+                    continue
+                if preparation is not None:
+                    await asyncio.shield(preparation)
+                if (self.closed or self.websocket is not socket
+                        or not self.market_context.current(generation)):
+                    continue
+                item_id = event.get('item_id')
+                if event.get('type') == 'response.output_audio.done':
+                    print('[GBOP-RT-EVENT] output_audio.done:')
+                    self._logged_audio_items.discard(item_id)
+                    if self.output_source is not None and self.output_item_id == item_id:
+                        self.output_source.finish()
+                        self.output_source = None
+                        self.output_item_id = None
+                    continue
+                delta = event.get('delta')
+                if not delta:
+                    continue
+                try:
+                    pcm24 = base64.b64decode(delta)
+                except Exception:
+                    continue
+                self.market_delivery.started(item_id, event.get('response_id'))
+                manager = gbop_output_manager(self.voice_client.channel.id)
+                if item_id not in self._logged_audio_items:
+                    self._logged_audio_items.add(item_id)
+                    print('[GBOP-RT-EVENT] output_audio.start:')
+                if self.output_source is None or self.output_item_id != item_id:
+                    self.output_source = await manager.begin(self, self.voice_client, item_id)
+                    self.output_item_id = item_id
+                if self.closed or not self.market_context.current(generation) or self.websocket is not socket:
+                    if self.output_source is not None:
+                        self.output_source.abort()
+                    continue
+                self.output_source.feed(pcm24)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.last_error = 'Voice output stopped because its member context was unavailable.'
+            self.stop()
 
     def _market_response_delivered(self, generation):
         # Update retained evidence instructions without starting another reply.
@@ -6740,12 +6899,19 @@ class GBOPRealtimeSession:
         asyncio.create_task(update())
 
     def instructions(self):
-        # Do not pin journal prose/history in every voice response. All current
-        # records remain available through the unchanged member-scoped tools.
-        profile = get_profile(db, GTOP_GUILD_ID, self.member.id)
+        # Hydrate only a bounded authenticated continuity snapshot. Full journal
+        # history stays behind the existing member-scoped retrieval tools.
+        context = getattr(self, 'market_context', None)
+        if context is not None:
+            from gbop_voice_web.member_continuity import hydrate
+            hydrate(context)
         from gbop_voice_web.midpoint_preferences import MIDPOINT_PROMPT, preference_context
-        member_state = (market_clock() + "\n" + profile_context(profile)
-                        + "\n" + preference_context(db, GTOP_GUILD_ID, self.member.id))
+        if context is not None and not getattr(context, 'continuity_private', True):
+            member_state = market_clock() + '\nShared voice: private profile and conversation context are withheld. Use a private room or DM for private details.'
+        else:
+            profile = get_profile(db, GTOP_GUILD_ID, self.member.id)
+            member_state = (market_clock() + "\n" + profile_context(profile)
+                            + "\n" + preference_context(db, GTOP_GUILD_ID, self.member.id))
         self._market_base_instructions = (build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, member_state)
                                           + "\n\n" + MIDPOINT_PROMPT)
         context = getattr(self, 'market_context', None)
@@ -6893,8 +7059,12 @@ class GBOPRealtimeSession:
                     return_exceptions=True,
                 )
 
-    async def refresh_context(self):
+    async def refresh_context(self, generation=None):
+        socket = self.websocket
         instructions = await asyncio.to_thread(self.instructions)
+        if (self.closed or self.websocket is not socket
+                or generation is not None and not self.market_context.current(generation)):
+            return
         await self.send_event(
             {
                 "type": "session.update",
@@ -6929,6 +7099,9 @@ class GBOPRealtimeSession:
             async def run_current_tool():
                 if work is not None and not work.current(scope):
                     return {'ok': False, 'error': 'This voice request is no longer current.'}
+                pending = getattr(self, '_continuity_turn_task', None)
+                if pending is not None:
+                    await pending
                 context = getattr(self, 'market_context', None)
                 if context is not None:
                     generation = context.generation
@@ -6986,7 +7159,7 @@ class GBOPRealtimeSession:
         delivery_result_reported(self, result)
         journal_write_result_reported(self, name, call_id, result)
 
-        if name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
+        if name in ('get_midpoint_preference', 'save_midpoint_preference', 'get_member_continuity', 'remember_member_context') and result.get('ok'):
             # Update the existing voice session so the next answer uses the new
             # label, without reconnecting or changing any speech/model settings.
             await self.refresh_context()
@@ -7109,9 +7282,17 @@ class GBOPRealtimeSession:
                 self._tool_response_options = {}
                 self._last_response_options = {}
                 self._voice_turn_count += 1
+                reset_output = getattr(self, 'reset_authorized_output', None)
+                if reset_output is not None:
+                    reset_output()
                 context = getattr(self, 'market_context', None)
                 if context is not None:
-                    context.begin_turn()
+                    prepare = getattr(self, 'prepare_continuity_turn', None)
+                    if prepare is not None:
+                        generation = context.begin_turn(defer_continuity=True)
+                        self._continuity_turn_task = asyncio.create_task(prepare(generation))
+                    else:
+                        context.begin_turn()
                 if work is not None:
                     work.recover_reads()
                     work.recover_delivery()
@@ -7157,6 +7338,12 @@ class GBOPRealtimeSession:
                     work.response_created(response)
                 print('[GBOP-RT-EVENT] response.created:')
                 continue
+
+            if event_type in ("response.output_audio.delta", "response.output_audio.done"):
+                queue_output = getattr(self, 'enqueue_authorized_output', None)
+                if queue_output is not None:
+                    queue_output(event)
+                    continue
 
             if event_type == "response.output_audio.delta":
                 delta = event.get("delta")
@@ -7205,8 +7392,8 @@ class GBOPRealtimeSession:
                 delivery = getattr(self, 'market_delivery', None)
                 if delivery is not None:
                     delivery.transcript(event.get('item_id'), transcript, event.get('response_id'))
-                if transcript:
-                    await asyncio.to_thread(ai_save_message, self.member.id, "assistant", transcript)
+                # Generated speech is not proof of delivery. The existing
+                # completed-response + audio-drain hook records continuity.
                 continue
 
             if event_type == "response.output_item.done":
@@ -7332,7 +7519,14 @@ class GBOPRealtimeSession:
                 self.market_delivery.cancel()
                 self.rate_limit_recovery.cancel(reset=True)
                 self.tool_work.cancel()
-                children = [task for task in (receiver, sender) if task is not None]
+                continuity_children = [task for task in (getattr(self, '_continuity_turn_task', None),
+                    getattr(self, '_continuity_audio_task', None)) if task is not None]
+                for task in continuity_children:
+                    task.cancel()
+                audio_queue = getattr(self, '_continuity_audio_queue', None)
+                while audio_queue is not None and not audio_queue.empty():
+                    audio_queue.get_nowait()
+                children = [task for task in (receiver, sender) if task is not None] + continuity_children
                 for task in children:
                     task.cancel()
                 if children:
@@ -7350,6 +7544,14 @@ class GBOPRealtimeSession:
     def stop(self):
         """Stop model work and audio synchronously, before any network cleanup."""
         self.closed = True
+        pending = getattr(self, '_continuity_turn_task', None)
+        if pending is not None:
+            pending.cancel()
+        audio_task = getattr(self, '_continuity_audio_task', None)
+        if audio_task is not None:
+            audio_task.cancel()
+        for delivery_task in getattr(self, '_continuity_delivery_tasks', ()):
+            delivery_task.cancel()
         context = getattr(self, 'market_context', None)
         if context is not None:
             context.close()
@@ -8236,6 +8438,21 @@ async def gbop_control(
 
 @client.event
 async def on_voice_state_update(member, before, after):
+    # Drop a private Realtime conversation before an expanded audience can
+    # receive more of its retained private context. Next speech opens a fresh,
+    # appropriately scoped session; no handoff command is required.
+    for session in list(GBOP_REALTIME_MANAGER.sessions.values()):
+        context = getattr(session, 'market_context', None)
+        if context is None or not getattr(context, 'continuity_private', False):
+            continue
+        joined_other_listener = (not member.bot and member.id != session.member.id
+            and after.channel is not None and after.channel.id == session.voice_client.channel.id)
+        if (context is not None and getattr(context, 'continuity_private', False)
+                and session.member.guild.id == member.guild.id
+                and (joined_other_listener
+                     or not gbop_continuity_private(session.member, session.voice_client.channel))):
+            session.stop()
+            await GBOP_REALTIME_MANAGER.close_member(session.member)
     if before.channel == after.channel:
         return
     if member.bot:
@@ -8277,6 +8494,19 @@ async def on_voice_state_update(member, before, after):
     current = getattr(getattr(member, 'voice', None), 'channel', None)
     if after.channel is not None and current is not None and current.id == after.channel.id:
         await gbop_autojoin_private_room(member, after.channel)
+
+
+@client.event
+async def on_guild_channel_update(before, after):
+    if after.guild.id != GTOP_GUILD_ID:
+        return
+    for session in list(GBOP_REALTIME_MANAGER.sessions.values()):
+        context = getattr(session, 'market_context', None)
+        if (session.voice_client.channel.id == after.id and context is not None
+                and getattr(context, 'continuity_private', False)
+                and not gbop_continuity_private(session.member, after, authoritative_channel=after)):
+            session.stop()
+            await GBOP_REALTIME_MANAGER.close_member(session.member)
 
 
 @tree.command(

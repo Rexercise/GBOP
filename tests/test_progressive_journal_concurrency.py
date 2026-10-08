@@ -45,6 +45,9 @@ class ProgressiveJournalLockTests(unittest.TestCase):
                         self.held = True
                 return self
 
+            def fetchall(self):
+                return []  # This fixture exercises journal locks without continuity schema.
+
             def fetchone(self):
                 return {'activated': 1, 'revoked': 0, 'leadership_ack': 1,
                         'updated_at': 'synthetic-auth-v1'}
@@ -117,7 +120,8 @@ class ProgressiveJournalLockTests(unittest.TestCase):
                 admitted.append('question-receipt')
                 return {**deepcopy(value), 'storage_revision': 2}
 
-            with patch.object(journal_drafts, 'read', side_effect=lambda *a: [deepcopy(draft)]), \
+            durable_draft = deepcopy(draft)  # DB state is distinct from immediately admitted local state.
+            with patch.object(journal_drafts, 'read', side_effect=lambda *a: [deepcopy(durable_draft)]), \
                     patch.object(journal_drafts, 'write', side_effect=write):
                 context.complete_response(question, generation=1, response_id='delivered-1')
 

@@ -9,9 +9,10 @@ from collections import OrderedDict
 
 
 class MarketResponseDelivery:
-    def __init__(self, context, on_delivered=None, limit=64):
+    def __init__(self, context, on_delivered=None, limit=64, submit_completed=None):
         self.context = context
         self.on_delivered = on_delivered
+        self.submit_completed = submit_completed
         self.limit = limit
         self.items = OrderedDict()
         self.responses = OrderedDict()
@@ -68,6 +69,11 @@ class MarketResponseDelivery:
                 or not self.context.current(row['generation'])):
             return
         row['recorded'] = True
+        if self.submit_completed is not None:
+            # The transport can offload DB-backed receipt/continuity work while
+            # retaining this event-loop-owned exact-once delivery admission.
+            self.submit_completed(row['text'], row['generation'], item_id)
+            return
         marked = self.context.complete_response(row['text'], generation=row['generation'],
             response_id=item_id, completed=True)
         if marked and self.on_delivered is not None:

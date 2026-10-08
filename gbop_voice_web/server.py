@@ -109,6 +109,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 async def initialize_persistent_journal_features():
     # Initialize durable photo + handwritten-journal tables before serving requests.
     await asyncio.to_thread(init_coach, db)
+    from gbop_voice_web.member_continuity import init_continuity
+    await asyncio.to_thread(init_continuity, db)
     await asyncio.to_thread(init_intelligence, db)
     await asyncio.to_thread(init_market, db)
     await asyncio.to_thread(init_watches, db)
@@ -1161,6 +1163,9 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
     from gbop_voice_web.journal_context import WRITE_TOOLS
     market_context = market_context or MarketConversation((GTOP_GUILD_ID, user_id, 'browser_request'))
     market_context.auth_provider = (db, GTOP_GUILD_ID, user_id)
+    if market_context.closed:
+        return 'This request was superseded by newer speech.'
+    market_context.bind_auth(db, GTOP_GUILD_ID, user_id)
     from gbop_voice_web.execution_identity import backend_request_once
     def perform():
         user_text = next((item.get('text', '') for item in reversed(history) if item.get('role') == 'user'), '')
@@ -1282,7 +1287,7 @@ and calm. Usually answer in 1-3 short sentences. Do not read markdown, headings,
 tables, or long lists aloud. Preserve GTOP terminology such as 9ate8, Model 1,
 CSD, CRT, Turtle Soup, Super Soup, Blessed Thief, GCT, CBDR, SMT, and 88.7.
 
-For photo searches or requests to send trade pictures by DM, delegate to the backend.\nYou may answer ordinary conversation and general GTOP concepts directly.
+For photo searches or requests to send trade pictures by DM, delegate to the backend.\nYou may answer ordinary conversation and general GTOP concepts directly.\nFor useful personal conversation details, corrections, or recording preferences, delegate to the backend to preserve the same private member context across GBOP and Voice 2. Resume known context naturally; no handoff command or repeated story is needed.
 Questions about whether a journal or photo request finished, including after an
 interruption or reconnect, also require backend delivery receipts. Never say it
 is still running from memory, and never automatically repeat the send.
@@ -1348,6 +1353,13 @@ class LiveContextRequest(BaseModel):
     closed: bool = False
     continuation: bool = False
     reply_to_response_id: str | None = None
+    previous_input: str | None = None
+
+
+class LiveInputRequest(BaseModel):
+    session_id: str
+    turn_id: int
+    text: str
 
 
 class LiveDeliveryRequest(BaseModel):
@@ -1571,6 +1583,11 @@ async def live_session(request: Request):
     if not offer_sdp.strip():
         raise HTTPException(status_code=400, detail="Missing WebRTC SDP offer.")
 
+    from gbop_voice_web.market_conversation import MarketConversation
+    from gbop_voice_web.member_continuity import hydrate, continuity_prompt
+    member_context_state = MarketConversation((GTOP_GUILD_ID, user_id, 'browser_voice'),
+                                              auth_provider=(db, GTOP_GUILD_ID, user_id))
+    await asyncio.to_thread(hydrate, member_context_state)
     risk_profile = await asyncio.to_thread(get_profile, db, GTOP_GUILD_ID, user_id)
     member_instructions = (LIVE_INSTRUCTIONS + "\n\n" + market_clock() + "\n\n" + profile_context(risk_profile)
         + "\nDiscord and browser use this member's same saved records. Delegate requests for current trade, "
@@ -1582,6 +1599,7 @@ async def live_session(request: Request):
             "Then ask about their tier split, one question at a time. They may skip. "
             "Delegate their answers to the backend; summarize and confirm before saving.")
 
+    member_instructions += continuity_prompt(member_context_state)
     body = {
         "session": {
             "model": LIVE_MODEL,
@@ -1628,7 +1646,7 @@ async def live_session(request: Request):
     if previous is not None:
         previous.close()
     session['live_session_id'] = data['session']['id']
-    session['market_context'] = MarketConversation((GTOP_GUILD_ID, user_id, 'browser_voice'))
+    session['market_context'] = member_context_state
 
     return JSONResponse(
         {
@@ -1640,17 +1658,38 @@ async def live_session(request: Request):
 
 @app.post("/api/live/context/cancel")
 async def cancel_live_context(request: Request, body: LiveContextRequest):
+    import asyncio
+    from gbop_voice_web.member_continuity import start_turn, privacy_intent
     session = await require_authenticated_user(request)
     # A session ID is a generation fence, never an authentication credential.
     if body.session_id == session.get('live_session_id'):
         context = session.get('market_context')
         if context is not None:
-            context.advance_client_turn(body.turn_id, continuation=getattr(body, 'continuation', False) and not body.closed,
-                                        response_id=getattr(body, 'reply_to_response_id', None))
+            previous_input = getattr(body, 'previous_input', None)
+            with context._lock:
+                previous_turn = context.client_turn
+                context.advance_client_turn(body.turn_id, continuation=getattr(body, 'continuation', False) and not body.closed,
+                                            response_id=getattr(body, 'reply_to_response_id', None))
+                generation = context.generation
             if body.closed:
                 context.close()
                 session.pop('market_context', None)
                 session.pop('live_session_id', None)
+            elif body.turn_id > previous_turn:
+                if previous_input is not None and len(previous_input) > 12000:
+                    context.close()
+                    session.pop('market_context', None)
+                    session.pop('live_session_id', None)
+                    raise HTTPException(status_code=400, detail='Previous member input is too large; reconnect and use a shorter turn.')
+                # DB work never stalls the asyncio cancellation/audio loop. A
+                # late same-turn cancel cannot reclaim another transport's lease.
+                # Carry only a prior explicit opt-out into this new claim. This
+                # never captures old narration or authorizes a journal/action.
+                prior_pause = previous_input if privacy_intent(previous_input) == 'pause' else None
+                try:
+                    await asyncio.to_thread(start_turn, context, prior_pause, generation=generation)
+                except ValueError:
+                    return {'ok': False, 'status': 'superseded_member_turn'}
     return {'ok': True}
 
 
@@ -1688,6 +1727,30 @@ async def delegate(request: Request, body: DelegateRequest):
     }
 
 
+@app.post("/api/live/context/input")
+async def checkpoint_live_input(request: Request, body: LiveInputRequest):
+    """Parse one bounded actual utterance; persist only the 600-character excerpt."""
+    import asyncio
+    from gbop_voice_web.member_continuity import start_turn
+    session = await require_authenticated_user(request)
+    context = session.get('market_context')
+    if (body.session_id != session.get('live_session_id') or context is None
+            or context.closed or body.turn_id != context.client_turn):
+        return {'ok': False, 'recorded': False}
+    if len(body.text) > 12000:
+        context.close()
+        session.pop('market_context', None)
+        session.pop('live_session_id', None)
+        raise HTTPException(status_code=400, detail='Member context input is too large; reconnect and use a shorter turn.')
+    generation = context.generation
+    try:
+        result = await asyncio.to_thread(start_turn, context, body.text, generation=generation)
+    except ValueError:
+        return {'ok': False, 'recorded': False, 'status': 'superseded_member_turn'}
+    return {'ok': bool(result.get('ok')), 'recorded': bool(result.get('ok')
+            and not result.get('recording_paused')), 'recording_paused': bool(result.get('recording_paused'))}
+
+
 @app.post("/api/live/context/delivered")
 async def delivered_live_context(request: Request, body: LiveDeliveryRequest):
     session = await require_authenticated_user(request)
@@ -1700,8 +1763,13 @@ async def delivered_live_context(request: Request, body: LiveDeliveryRequest):
     # Completion records delivered navigation or a note's stage question. It
     # never authorizes a write by itself: feelings still require the member's
     # original save request plus their next affirmative authenticated turn.
-    recorded = context.complete_response(body.text, generation=context.generation,
-        response_id=body.response_id, completed=True)
+    import asyncio
+    try:
+        recorded = await asyncio.to_thread(context.complete_response, body.text, generation=context.generation,
+            response_id=body.response_id, completed=True)
+    except ValueError:
+        # A newer same-member transport may legitimately supersede playback.
+        return {'ok': False, 'recorded': 0, 'status': 'superseded_member_turn'}
     return {'ok': True, 'recorded': recorded}
 
 

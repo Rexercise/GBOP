@@ -1,19 +1,21 @@
 // Public-safe browser regression harness. No real DOM, media, network, or provider calls.
 const fs=require('fs'),vm=require('vm'),path=require('path'),assert=require('node:assert/strict');
 const source=fs.readFileSync(process.argv[2] || path.join(__dirname,'../gbop_voice_web/static/app.js'),'utf8');
-function environment({failSession=false,deferDelivered=false,manualReceiptTimeout=false}={}) {
- const requests=[],channels=[],connections=[],receiptResolvers=[];let seq=0,receiptTimeout;
+function environment({failSession=false,deferDelivered=false,manualReceiptTimeout=false,deferInput=false,deferCancel=false}={}) {
+ const requests=[],channels=[],connections=[],receiptResolvers=[],inputResolvers=[],cancelResolvers=[];let seq=0,receiptTimeout;
  const el=()=>({textContent:'',disabled:false,dataset:{},classList:{add(){},remove(){}},addEventListener(){},querySelector(){return null},appendChild(){},append(){},play(){return Promise.resolve()}});
  const els=new Map();
  const context={console:{...console,error(){}},setTimeout:(callback,ms)=>manualReceiptTimeout&&ms===5000?(receiptTimeout=callback,undefined):setTimeout(callback,ms),clearTimeout,Date,location:{hostname:'localhost'},window:{isSecureContext:true},document:{getElementById(id){if(!els.has(id))els.set(id,el());return els.get(id)},createElement:el},navigator:{mediaDevices:{getUserMedia:async()=>({getAudioTracks:()=>[],getTracks:()=>[]})}},fetch:async(url,opts)=>{
   requests.push({url,body:opts?.body?JSON.parse(url==='/api/live/session'?'{}':opts.body):null});
   if(url==='/api/me')return{json:async()=>({authenticated:false})};
+  if(url==='/api/live/context/input')return deferInput?new Promise(resolve=>inputResolvers.push(resolve)):{ok:true,json:async()=>({ok:true})};
+  if(url==='/api/live/context/cancel')return deferCancel?new Promise(resolve=>cancelResolvers.push(resolve)):{ok:true,json:async()=>({ok:true})};
   if(url==='/api/live/context/delivered')return deferDelivered?new Promise(resolve=>receiptResolvers.push(resolve)):{ok:true,json:async()=>({ok:true})};
   if(url==='/api/live/session')return failSession?{ok:false,text:async()=> 'mock session failure'}:{ok:true,json:async()=>({session_id:'s'+(++seq),sdp:'answer'})};
   return {ok:true,json:async()=>({result:'stub'})};
  },RTCPeerConnection:class{constructor(){this.iceGatheringState='complete';this.localDescription={sdp:'sdp'};this.closed=false;connections.push(this)}addTrack(){}createDataChannel(){let c={readyState:'open',events:{},sent:[],addEventListener(n,f){this.events[n]=f},send(v){this.sent.push(JSON.parse(v))}};channels.push(c);return c}async createOffer(){return{}}async setLocalDescription(){}async setRemoteDescription(){}close(){this.closed=true}}};
  vm.createContext(context);vm.runInContext(source,context);
- return{context,requests,channels,connections,els,expireReceipt:()=>receiptTimeout(),finishReceipt:(ok=true)=>receiptResolvers.shift()({ok,json:async()=>({ok})}),run:code=>vm.runInContext(code,context),event:async(i,data)=>await channels[i].events.message({data:JSON.stringify(data)})};
+ return{context,requests,channels,connections,els,finishInput:(ok=true)=>inputResolvers.shift()({ok,json:async()=>({ok})}),finishCancel:(ok=true)=>cancelResolvers.shift()({ok,json:async()=>({ok})}),expireReceipt:()=>receiptTimeout(),finishReceipt:(ok=true)=>receiptResolvers.shift()({ok,json:async()=>({ok})}),run:code=>vm.runInContext(code,context),event:async(i,data)=>await channels[i].events.message({data:JSON.stringify(data)})};
 }
 (async()=>{
  const e=environment();await e.run('startVoice()');await e.event(0,{type:'session.started',session:{id:'s1'}});e.run('cleanup()');await e.run('startVoice()');await e.event(1,{type:'session.started',session:{id:'s2'}});e.requests.length=0;
@@ -107,6 +109,86 @@ function environment({failSession=false,deferDelivered=false,manualReceiptTimeou
   }
  }
  console.log('PASS: immediate replies wait for receipts; failure, interruption and reconnect fail closed');
+ const direct=environment({deferInput:true});await direct.run('startVoice()');
+ await direct.event(0,{type:'session.started',session:{id:'s1'}});
+ direct.connections[0].ontrack({streams:['stream']});await Promise.resolve();
+ direct.els.get('remoteAudio').currentTime=1;
+ await direct.event(0,{type:'session.input_audio.speech_started'});
+ await direct.event(0,{type:'session.input_transcript.delta',delta:'Do not record this conversation. '+ 'invented detail '.repeat(70)});
+ await direct.event(0,{type:'session.output_audio.started'});
+ await new Promise(resolve=>setImmediate(resolve));
+ const checkpoints=direct.requests.filter(x=>x.url==='/api/live/context/input');
+ assert.equal(checkpoints.length,1,'Ordinary direct speech is checkpointed without delegation');
+ assert.ok(checkpoints[0].body.text.length<=12000,'One bounded utterance, never full history');
+ assert.ok(checkpoints[0].body.text.startsWith('Do not record'),'Early privacy intent survives long utterance');
+ assert.equal(checkpoints[0].body.turn_id,1);
+ await direct.event(0,{type:'session.output_transcript.delta',delta:'I will pause recording.'});
+ direct.els.get('remoteAudio').currentTime=2;
+ await direct.event(0,{type:'session.output_audio.stopped'});
+ assert.equal(direct.requests.filter(x=>x.url==='/api/live/context/delivered').length,0,'Actual opt-out checkpoint precedes assistant excerpt storage');
+ direct.finishInput();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(direct.requests.filter(x=>x.url==='/api/live/context/delivered').length,1);
+ assert.equal(direct.requests.filter(x=>x.url==='/api/delegate').length,0);
+ assert.equal(direct.run('currentInput'),'','Direct user words do not bleed into the next member turn');
+ console.log('PASS: bounded direct input and privacy checkpoint precede delivery');
+ const queued=environment({deferCancel:true});await queued.run('startVoice()');
+ await queued.event(0,{type:'session.started',session:{id:'s1'}});
+ await queued.event(0,{type:'session.input_audio.speech_started'});
+ await queued.event(0,{type:'session.input_transcript.delta',delta:'Old connection words.'});
+ await queued.event(0,{type:'session.output_audio.started'});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(queued.requests.filter(x=>x.url==='/api/live/context/input').length,0,'Checkpoint waits for authenticated speech-start claim');
+ queued.run('cleanup()');await queued.run('startVoice()');
+ await queued.event(1,{type:'session.started',session:{id:'s2'}});
+ queued.finishCancel();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(queued.requests.filter(x=>x.url==='/api/live/context/input').length,0,'Queued old input cannot cross a reconnect');
+ console.log('PASS: pending speech claims do not leak old input into reconnected session');
+ const quick=environment({deferInput:true});await quick.run('startVoice()');
+ await quick.event(0,{type:'session.started',session:{id:'s1'}});
+ await quick.event(0,{type:'session.input_audio.speech_started'});
+ await quick.event(0,{type:'session.input_transcript.delta',delta:'Do not record this conversation. Private invented details.'});
+ await quick.event(0,{type:'session.input_audio.speech_stopped'});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(quick.requests.filter(x=>x.url==='/api/live/context/input').length,1,'Speech stopped checkpoints without requiring an answer or delegation');
+ await quick.event(0,{type:'session.input_audio.speech_started'});
+ const carried=quick.requests.filter(x=>x.url==='/api/live/context/cancel');
+ assert.equal(carried.length,2,'New interruption fence does not wait for old input checkpoint');
+ assert.equal(carried[1].body.previous_input,'Do not record this conversation. Private invented details.','Prior optout travels atomically with the new turn claim');
+ assert.equal(carried[1].body.turn_id,2);
+ quick.finishInput(false);await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(quick.run('connected'),true,'Rejected old checkpoint cannot close newer speech after prior input was carried');
+ assert.equal(quick.run('currentInput'),'');
+ await quick.event(0,{type:'session.input_transcript.delta',delta:'Another prior passage without a stop event.'});
+ await quick.event(0,{type:'session.input_audio.speech_started'});
+ assert.equal(quick.requests.filter(x=>x.url==='/api/live/context/cancel').at(-1).body.previous_input,'Another prior passage without a stop event.','Speech start carries uncheckpointed previous input before clearing it');
+ console.log('PASS: quick speech carries prior privacy intent without delaying interruption');
+ for(const failing of ['input','claim']) {
+  const blocked=environment({deferInput:failing==='input',deferCancel:failing==='claim'});await blocked.run('startVoice()');
+  await blocked.event(0,{type:'session.started',session:{id:'s1'}});
+  await blocked.event(0,{type:'session.input_audio.speech_started'});
+  if(failing==='input')await blocked.event(0,{type:'session.input_transcript.delta',delta:'A member request that must not proceed after a failed checkpoint.'});
+  const pending=blocked.event(0,{type:'session.delegation.created',delegation:{id:'blocked',target:'client'}});
+  await new Promise(resolve=>setImmediate(resolve));
+  if(failing==='input')blocked.finishInput(false);else blocked.finishCancel(false);
+  await pending;
+  assert.equal(blocked.requests.filter(x=>x.url==='/api/delegate').length,0,'Failed '+failing+' stops dependent backend delegation');
+  assert.equal(blocked.run('connected'),false,'Failed continuity admission closes the unsafe session');
+  assert.ok(blocked.els.get('voiceState').textContent.includes('Reconnect'),'Failure is visible');
+  assert.equal(blocked.run('timeline.length'),0,'Rejected speech cannot replay through history after reconnect');
+ }
+ console.log('PASS: failed checkpoint or claim blocks delegation and shows a visible error');
+ const oversized=environment();await oversized.run('startVoice()');
+ await oversized.event(0,{type:'session.started',session:{id:'s1'}});
+ await oversized.event(0,{type:'session.input_audio.speech_started'});
+ await oversized.event(0,{type:'session.input_transcript.delta',delta:'Do not record this conversation. '+ 'x'.repeat(12000)});
+ await oversized.event(0,{type:'session.input_audio.speech_stopped'});
+ assert.equal(oversized.requests.filter(x=>x.url==='/api/live/context/input').length,0,'Oversized input is never silently sliced and checkpointed');
+ assert.equal(oversized.run('connected'),false,'Oversized input fences and closes the session');
+ assert.ok(oversized.els.get('voiceState').textContent.includes('too long'),'Oversized rejection is visible');
+ assert.equal(oversized.run('timeline.length'),0,'Rejected long speech is not forwarded after reconnect');
+ await oversized.event(0,{type:'session.delegation.created',delegation:{id:'too-long',target:'client'}});
+ assert.equal(oversized.requests.filter(x=>x.url==='/api/delegate').length,0);
+ console.log('PASS: oversized speech fails closed without truncating privacy intent');
  const failed=environment({failSession:true});await failed.run('startVoice()');
  assert.equal(failed.els.get('orb').disabled,false,'Failed connection must re-enable retry button');
  console.log('PASS: session failure leaves retry button usable');
