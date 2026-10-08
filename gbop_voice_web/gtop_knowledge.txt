@@ -53,7 +53,8 @@ V2 — Pattern Trader’s Kryptonite: two candles; Candle 2 manipulates and dist
 V3: distribution takes more than three candles.
 V4: one inside bar before manipulation.
 V5: two or more inside bars before manipulation.
-V6: a Soup level later gets souped again before distribution; remains valid if closure returns inside the range.
+V6: one or more re-soups of the Soup extreme before full opposing delivery, with own-timeframe close inside the same valid range. Midpoint does not end this window; invalidation/full completion does.
+Freeze midpoint variant manner at its first touch; later re-soups may change the final full-objective variant, never that partial snapshot. Midpoint alone is not overall completion.
 
 ENTRY / EXECUTION MODELS
 Model 1, Super Soup, Turtle Soup, Breaker/OTE, KOD and Blessed Thief are execution models, not standalone plays. Plays include 9ate8, Young Lefty, Monday's Range, GCT and CBDR.

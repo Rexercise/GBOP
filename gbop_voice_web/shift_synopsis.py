@@ -12,7 +12,7 @@ from gbop_voice_web.candle_naming import candle_label, source_timeframe
 from gbop_voice_web.shift_narrative import directional_outcome
 from gbop_voice_web.smt_reference import closing_candle
 from gbop_voice_web.active_range_story import selected_range_story, shift_end_state, _double_context, _double_sentence
-from gbop_voice_web.variant_explanation import variant_clause
+from gbop_voice_web.variant_explanation import NAMES, variant_clause
 from gbop_voice_web.target_approach import owner_inducement_example, inducement_clause
 from gbop_voice_web.chronological_context import (build_context_graph, compact_context_graph, context_sentence,
     pending_range_facts, pending_sentence, pending_reversal_facts, pending_reversal_sentence,
@@ -21,6 +21,9 @@ from gbop_voice_web.chronological_context import (build_context_graph, compact_c
 
 SYNOPSIS_CONTRACT = (
     'Opening plays in evidenced event-time order, including 9ate8 verdict and Young Lefty status, then selected chronology to shift_end. '
+    'Seven is prelude to the official nine-to-twelve AM/PM shift. Shared candle evidence is not another member trade; parent targets remain separate. '
+    'Lead with full delivery and final variant; midpoint delivery_manner is its frozen partial milestone, not the final variant. Milestone known-at is its source_interval close. '
+    'Keep failed secondary ranges brief; exact range detail retains their mechanics. '
     'Continue after delivery with each evidenced later range and its own outcome; independent context is not a new selection. '
     'Only recorded completion/invalidation handoffs change the range under review; selection does not establish a CRT. Explain supplied variants/candidates and missing conditions. '
     'Preserve earlier delivery and BUT induced 50% gap/path. Body is not thesis; no glossary/profit. '
@@ -225,6 +228,118 @@ def _objective(value, level=None):
     return out
 
 
+def _delivery_manner(fact, variant):
+    """Reuse objective intervals; never promote partial delivery to completion."""
+    labels = [v['code'] for v in fact['variant']['labels']]
+    for name, milestone in variant.get('delivery_milestones', {}).items():
+        if name not in ('midpoint', 'opposing_liquidity') or milestone.get('status') != 'observed':
+            continue
+        target = fact[name]
+        # Paired objectives are reconciled separately and must not inherit a
+        # different local direction's delivery manner.
+        source = target.get('source_interval', {})
+        evidence = milestone.get('source_interval', {})
+        if not source or any(source.get(k) != evidence.get(k) for k in ('bar_open_ny', 'bar_close_ny')):
+            continue
+        code = milestone.get('manner', {}).get('primary_code')
+        if not code:
+            continue
+        if name == 'opposing_liquidity' and code in labels:
+            if len(labels) > 1:
+                fact['variant']['primary_code'] = code
+            if variant.get('status') != 'distribution_observed':
+                target['delivery_manner'] = {'primary_code': code}
+        elif name == 'opposing_liquidity' or labels != [code] or fact['outcome'] != 'opposing_liquidity_delivered':
+            target['delivery_manner'] = {'primary_code': code}
+
+
+def _shared_opening_evidence(opening, young, lead, young_fact, cutoff):
+    """Join exact original body identities, never merely aligned directions."""
+    if not young_fact or young_fact.get('young_lefty_context') or not lead.get('direction'):
+        return None
+    bodies, retirements = [], []
+    identity_keys = ('bar_open_ny', 'bar_close_ny', 'timeframe', 'direction',
+                     'open', 'high', 'low', 'close', 'identified_at_ny', 'source_resolution_seconds')
+    for row, fact in ((young, young_fact), (opening, lead)):
+        if fact.get('direction') != lead['direction'] or fact.get('paired_setup'):
+            return None
+        models = sorted((c for c in row.get('model1', {}).get('candles', [])
+                         if c.get('direction') == fact['direction']), key=lambda c: c['bar_open_ny'])
+        if not models:
+            return None
+        model = models[0]
+        if (not model.get('complete') or any(model.get(k) is None for k in identity_keys)
+                or model.get('purged_range_start_ny') != fact['anchor_start_ny']):
+            return None
+        known = parse_time(model['identified_at_ny'])
+        if not parse_time(row['anchor']['end_ny']) <= parse_time(model['bar_open_ny']) < known <= parse_time(cutoff):
+            return None
+        prefix = row.get('context_qualification', {}).get('evidence_through_ny')
+        if not prefix or parse_time(prefix) < known:
+            return None
+        retired = [fact.get('invalidated_at_ny')]
+        if fact['outcome'] == 'opposing_liquidity_delivered':
+            retired.append(fact['opposing_liquidity'].get('source_interval', {}).get('bar_close_ny'))
+        if any(t and parse_time(t) <= known for t in retired):
+            return None
+        retirements.extend(t for t in retired if t)
+        body = next((c for c in row.get('candle_lifecycle', {}).get('purge_candles', [])
+                     if c.get('purge_type') == 'body_soup'
+                     and c.get('range_start_ny') == fact['anchor_start_ny']
+                     and _pick(c, identity_keys) == _pick(model, identity_keys)), None)
+        if not body:
+            return None
+        bodies.append(body)
+    if _pick(bodies[0], identity_keys) != _pick(bodies[1], identity_keys):
+        return None
+    result = {'parent_anchors_ny': [young_fact['anchor_start_ny'], lead['anchor_start_ny']],
+              'direction': lead['direction'], 'model1': _pick(bodies[0],
+                  ('bar_open_ny', 'bar_close_ny', 'timeframe', 'identified_at_ny')),
+              'member_execution_inferred': False}
+    soups = [body.get('super_soup', {}) for body in bodies]
+    structures = [body.get('super_soup_structure', {}) for body in bodies]
+    if (soups[0] == soups[1] and soups[0].get('status') in
+            ('observed_before_csd', 'observed_same_assigned_close_as_csd')
+            and soups[0].get('evidence') and all(s.get('structure_status') == 'observed' for s in structures)):
+        evidence = soups[0]['evidence']
+        returned = evidence.get('return_candle') or {}
+        known = returned.get('bar_close_ny')
+        if (known and parse_time(known) <= parse_time(cutoff)
+                and not any(parse_time(t) <= parse_time(known) for t in retirements) and all(
+                not b.get('sequence_gap_at_ny') or parse_time(known) <= parse_time(b['sequence_gap_at_ny']) for b in bodies)):
+            result['super_soup'] = {'status': soups[0]['status'],
+                **_pick(evidence.get('purge', {}), ('bar_open_ny', 'bar_close_ny')),
+                'known_at_ny': known}
+            previous = [next((c for c in b.get('following_candle_relations', [])
+                if c.get('bar_close_ny') == result['super_soup'].get('bar_open_ny')
+                and c.get('complete') and c.get('relationship') == 'inside_bar'), None) for b in bodies]
+            if previous[0] and previous[0] == previous[1]:
+                result['super_soup']['preceding_inside_bar_ny'] = previous[0]['bar_open_ny']
+    csds = [b.get('csd', {}) for b in bodies]
+    evidence = csds[0].get('evidence') or {}
+    if (csds[0] == csds[1] and csds[0].get('status') == 'confirmed'
+            and evidence.get('confirmed_at_ny') and parse_time(evidence['confirmed_at_ny']) <= parse_time(cutoff)
+            and not any(parse_time(t) <= parse_time(evidence['confirmed_at_ny']) for t in retirements)
+            and all(not b.get('sequence_gap_at_ny') or parse_time(evidence['confirmed_at_ny']) <=
+                    parse_time(b['sequence_gap_at_ny']) for b in bodies)):
+        result['strict_CISD'] = _pick(evidence, ('bar_open_ny', 'timeframe', 'confirmed_at_ny'))
+    return result
+
+
+def _shared_sentence(value):
+    model = value['model1']
+    text = 'Young Lefty and 9ate8 shared the ' + _clock(model['bar_open_ny']) + ' ' + model['timeframe'] + ' Model 1'
+    soup = value.get('super_soup')
+    if soup:
+        text += '; Super Soup in ' + candle_label(soup['bar_open_ny'], model['timeframe'])
+        if soup.get('preceding_inside_bar_ny'):
+            text += ' after the ' + _clock(soup['preceding_inside_bar_ny']) + ' inside bar'
+    csd = value.get('strict_CISD')
+    if csd:
+        text += '; strict CISD on the closure of ' + candle_label(csd['bar_open_ny'], csd['timeframe'])
+    return text + '; each parent keeps its own targets and delivery.'
+
+
 def compact_double_purge(row):
     """Carry confirmation facts; first purge stays on the enclosing range fact."""
     evidence = row.get('double_purge', {})
@@ -271,7 +386,8 @@ def _local_fact(row, play=None):
     fact = {'anchor_start_ny': row['anchor']['start_ny'], 'anchor_timeframe': 'H1', 'play': play,
             'role': row.get('role', 'independent_range_context'),
             'direction': outcome['direction'], 'verdict': verdict, 'outcome': status,
-            'variant': {'status': 'established' if labels else 'not_established' if invalid else
+            'variant': {'status': 'structure_observed' if variant.get('status') == 'structure_observed_distribution_unresolved' else
+                            'established' if labels else 'not_established' if invalid else
                             variant.get('explanation', {}).get('status', 'pending'),
                         'labels': labels, **({'explanation': {k: deepcopy(v) for k, v in variant['explanation'].items()
                             if v is not None and v != []}}
@@ -282,6 +398,7 @@ def _local_fact(row, play=None):
             'invalidated_at_ny': invalid,
             'first_purge_interval': _pick(first, ('bar_open_ny', 'bar_close_ny', 'precision_seconds')),
             'coverage_complete': row.get('observation_coverage', {}).get('complete', False)}
+    _delivery_manner(fact, variant)
     double = compact_double_purge(row) if play == '9ate8' and row.get('role') == 'selected_range' else None
     if double:
         fact['double_purge'] = double
@@ -385,9 +502,36 @@ def _sentence(fact, *, young=False, compact=False):
             and delivery.startswith('failed ') else f'{name}: {intro}, {delivery}')
     if fact['verdict'] == 'boneless_potential':
         text += '; setup qualification pending'
-    if (fact['variant']['labels'] or fact['variant'].get('explanation', {}).get('candidates')
+    full = fact['opposing_liquidity']
+    code = full.get('delivery_manner', {}).get('primary_code')
+    known_manner = (code in NAMES and fact['outcome'] == 'opposing_liquidity_delivered'
+                   and full.get('status') in ('observed_after_purge', 'objective_complete_while_range_valid'))
+    if known_manner:
+        text += '; completed in ' + variant_clause({'labels': [{'code': code, 'name': NAMES[code]}]}) + ' manner'
+        detail = fact['variant'].get('explanation', {})
+        if detail.get('status') != 'completed':
+            # A later own-timeframe closure can still be needed for structural
+            # confirmation. It cannot make an ordered source delivery pending.
+            needs = [c['requires'].rstrip('.') for c in detail.get('candidates', [])
+                     if c.get('code') == code and c.get('requires')]
+            text += '; own-timeframe structural confirmation pending'
+            if needs:
+                text += ': ' + '; '.join(needs)
+    elif (fact['variant']['labels'] or fact['variant'].get('explanation', {}).get('candidates')
             or not young and fact['verdict'] != 'not_initiated'):
-        text += '; ' + variant_clause(fact['variant'])
+        variant = fact['variant']
+        if variant.get('primary_code'):
+            variant = {**variant, 'labels': sorted(variant['labels'],
+                       key=lambda v: v['code'] != variant['primary_code'])}
+        timing = [v for v in variant['labels'] if v['code'] == 'V3'
+                  and variant.get('primary_code') not in (None, 'V3')]
+        if timing:
+            variant = {**variant, 'labels': [v for v in variant['labels'] if v not in timing]}
+            name = variant_clause({'labels': variant['labels']})
+            clause = variant_clause(variant)
+            text += '; ' + name + ' (' + variant_clause({'labels': timing}) + ' timing)' + clause[len(name):]
+        else:
+            text += '; ' + variant_clause(variant)
     if fact.get('invalidated_at_ny'):
         later = 'later ' if fact['outcome'] == 'opposing_liquidity_delivered' else ''
         text += '; ' + later + 'invalidated on ' + closing_candle(fact['invalidated_at_ny'])['spoken_label']
@@ -478,6 +622,34 @@ def _independent_later_sentence(fact):
     return text + '.'
 
 
+def _failed_secondary_sentence(fact, continuity=None, *, transitions_only=False):
+    """Keep the verdict and handoffs audible; mechanics remain in exact detail."""
+    parts = []
+    if transitions_only:
+        for transition in ((continuity or {}).get('review_handoff'),
+                           (continuity or {}).get('next_selected_range')):
+            if transition:
+                cause = ('full delivery' if transition['reason'] == 'opposing_objective_completed' else 'invalidation')
+                parts.append(f"After {_clock(transition['from_anchor_ny'])} H1 {cause}, "
+                    f"{_clock(transition['to_anchor_ny'])} H1 came under review at {_clock(transition['confirmed_at_ny'])}.")
+                if transition.get('at_review_cutoff'):
+                    parts.append('No later evidence before the end of the GTOP shift.')
+        return ' '.join(parts)
+    if continuity and continuity.get('review_handoff'):
+        parts.append(transition_sentence(continuity['review_handoff']))
+    text = ('The ' if continuity else 'Independent ') + f"{_clock(fact['anchor_start_ny'])} H1 range: {fact['direction']}"
+    text += ', 50% only' if fact['outcome'] == 'midpoint_only' else ', failed before its objectives'
+    text += '; invalidated on ' + closing_candle(fact['invalidated_at_ny'])['spoken_label']
+    if fact.get('variant', {}).get('labels'):
+        text += '; ' + variant_clause(fact['variant'])
+    parts.append(text + '.')
+    if continuity and continuity.get('next_selected_range'):
+        parts.append(transition_sentence(continuity['next_selected_range']))
+        if continuity['next_selected_range'].get('at_review_cutoff'):
+            parts.append('No later evidence before the end of the GTOP shift.')
+    return ' '.join(parts)
+
+
 def build_shift_synopsis(review, asset=None):
     """Produce bounded facts without changing the authoritative full review."""
     story = review['shift_story']
@@ -547,7 +719,17 @@ def build_shift_synopsis(review, asset=None):
     else:
         # Absent, incomplete or tied evidence does not establish earlier order.
         sentences.append(young_sentence)
+    shared = _shared_opening_evidence(opening, young, lead, young_fact, story['end_ny'])
+    completed_shared = bool(shared and all(f['outcome'] == 'opposing_liquidity_delivered' for f in (lead, young_fact)))
+    if shared:
+        # Opening conclusions stay first; shared support precedes later ranges.
+        sentences.insert(sentences.index(young_sentence) + 1 if young_time is None or lead_time is None
+                         or young_time >= lead_time else 2, _shared_sentence(shared))
+    if (completed_shared and opening_double and opening_double.get('invalidated_at_ny')
+            and opening_double.get('reversal_outcome') != 'original_side_delivered'):
+        sentences.remove(_double_sentence(opening_double, short=True))
     cutoff_transitions_spoken = set()
+    brief_failures = []
     for row in ranges:
         if row is opening:
             continue
@@ -567,7 +749,14 @@ def build_shift_synopsis(review, asset=None):
                 sentences.append(transition_sentence(transition) + ' At the end of the GTOP shift, later setup/delivery is unknown.')
         else:
             continuity = selected_range_story(story, row, item, asset)
-            sentences.append(_short_selected_summary(continuity) if continuity else _independent_later_sentence(item))
+            failed_secondary = item['verdict'] in ('failed', 'boneless_failed') and item['coverage_complete']
+            if completed_shared and failed_secondary:
+                brief_failures.append(f"{_clock(item['anchor_start_ny'])} {item['direction']}")
+            summary = (_failed_secondary_sentence(item, continuity, transitions_only=completed_shared)
+                if failed_secondary and (completed_shared or continuity) else
+                _short_selected_summary(continuity) if continuity else _independent_later_sentence(item))
+            if summary:
+                sentences.append(summary)
             if continuity and item.get('paired_setup'):
                 known = item['paired_setup'].get('qualified_at_ny') or item['paired_setup'].get('end_ny')
                 sentences.append(f"Its {item['direction']} boneless from paired setup by {_clock(known)}: "
@@ -579,6 +768,8 @@ def build_shift_synopsis(review, asset=None):
                                  include_confirmation=not bool(continuity and continuity.get('double_purge'))))
             if continuity and (continuity.get('next_selected_range') or {}).get('at_review_cutoff'):
                 cutoff_transitions_spoken.add(continuity['next_selected_range']['to_anchor_ny'])
+    if brief_failures:
+        sentences.append('Secondary ' + ' and '.join(brief_failures) + ' H1 attempts failed before full delivery; details remain available by range.')
     if not story.get('coverage', {}).get('complete') or not story.get('progression_complete'):
         sentences.append('Missing or unfinished candles limit the affected ranges.')
     # Every named range, including an uninitiated seven, remains recoverable on
@@ -593,15 +784,30 @@ def build_shift_synopsis(review, asset=None):
              for start, label, role in sorted(anchors)]
     ending = shift_end_state(story)
     graph = build_context_graph(story, young)
-    if context_sentence(graph):
-        sentences.append(context_sentence(graph))
+    # Failed secondary countertrend mechanics remain structured/retrievable.
+    # Pending contexts and coverage-limited relationships still need narration.
+    spoken_graph = deepcopy(graph)
+    if story.get('coverage', {}).get('complete') and story.get('progression_complete'):
+        failed = {c['context_id'] for c in graph['contexts'] if c['status'] == 'invalidated'
+                  and c['retirement_reason'] == 'range_invalidated'}
+        spoken_graph['relationships'] = [r for r in graph['relationships']
+                                        if r['later_context_id'] not in failed]
+    if context_sentence(spoken_graph):
+        sentences.append(context_sentence(spoken_graph))
+    compact_graph = compact_context_graph(spoken_graph if completed_shared else graph)
+    omitted = len(graph['relationships']) - len(spoken_graph['relationships'])
+    if completed_shared and omitted:
+        # The full graph remains on shift_story; exact range navigation covers
+        # these retired secondary contexts without using default recap space.
+        compact_graph['failed_secondary_relationships_omitted_count'] = omitted
     sentences.append(ending['spoken_summary'])
     guard = negative_claim_guard(young_status, story)
     return {'spoken_summary': ' '.join(sentences), 'ranges': facts, 'range_index': index,
+            **({'shared_setup_evidence': shared} if shared else {}),
             **({'negative_claim_guard': guard} if guard else {}),
             **({'young_lefty_coverage': young_coverage} if young_coverage else {}),
             'active_range_context': _compact_active_context(_active_context(story, records, asset=asset)),
-            'chronological_context': compact_context_graph(graph),
+            'chronological_context': compact_graph,
             'shift_end': {k: v for k, v in ending.items() if k != 'spoken_summary'},
             'young_lefty_evaluated': True, 'young_lefty_relevant': young_relevant,
             'young_lefty_status': young_status,

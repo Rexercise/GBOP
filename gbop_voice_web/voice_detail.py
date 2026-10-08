@@ -6,9 +6,65 @@ from gbop_voice_web.candle_evidence import parse_time
 from gbop_voice_web.voice_runtime import compact_voice_tool_result
 from gbop_voice_web.voice_payload import _bounded_error, _factor_review, _paired, _pick, _voice_market_context
 from gbop_voice_web.directional_evidence import directional_candidate_evidence
+from gbop_voice_web.variant_explanation import variant_clause
 
 DETAIL_CHARACTER_BUDGET = 32000
 DETAIL_COMPACTION_TARGET_CHARS = 31000
+
+
+def _outcome_first(review):
+    """Project the existing directional verdict before the terminal range state.
+
+    This does not reclassify a range or infer delivery from a later target touch.
+    The full authoritative outcome stays in the projection, including uncertainty.
+    """
+    outcome = deepcopy(review.get('directional_outcome'))
+    if not outcome:
+        return review
+    variant = review.get('variant_evidence', {})
+    structural_labels = variant.get('labels') or []
+    final = variant.get('delivery_milestones', {}).get('opposing_liquidity', {})
+    manner = final.get('manner') or {}
+    milestone_labels = manner.get('labels') if final.get('status') == 'observed' and manner.get('status') == 'observed' else []
+    labels = milestone_labels or structural_labels
+    if (outcome.get('status') == 'opposing_liquidity_delivered'
+            and outcome.get('spoken_summary') and labels):
+        first, separator, rest = outcome['spoken_summary'].partition('. ')
+        primary = manner.get('primary_code')
+        if primary:
+            primary_labels = [label for label in labels if label.get('code') == primary]
+            timing = [label for label in labels if label.get('code') == 'V3' and primary != 'V3']
+            if primary_labels:
+                labels = primary_labels
+        else:
+            timing = []
+        spoken_variant = variant_clause({'labels': labels})
+        if milestone_labels and not structural_labels:
+            spoken_variant += ' manner'
+        if timing:
+            spoken_variant += ' (' + variant_clause({'labels': timing}) + ' timing)'
+        first = first.rstrip('.') + '; ' + spoken_variant + '.'
+        outcome['spoken_summary'] = first + (' ' + rest if separator else '')
+    return {'directional_outcome': outcome, **{k: v for k, v in review.items() if k != 'directional_outcome'}}
+
+
+def _range_outcome_summary(review):
+    """Keep a verified parent answer when its detailed lifecycle cannot fit."""
+    projected = _outcome_first(review)
+    outcome = projected.get('directional_outcome', {})
+    if not outcome:
+        return None
+    result = _pick(outcome, ('range_start_ny', 'range_timeframe', 'range_label', 'play_context',
+        'direction', 'direction_scope', 'status', 'range_invalidated_at_ny', 'delivery_before_later_invalidation', 'spoken_summary'))
+    result['variant'] = _pick(review.get('variant_evidence', {}), ('status', 'labels', 'scope', 'delivery_milestones'))
+    for name in ('midpoint', 'opposing_liquidity'):
+        source = outcome.get(name, {})
+        target = result[name] = _pick(source, ('status', 'level', 'liquidity_side'))
+        if source.get('evidence'):
+            target['source_interval'] = _pick(source['evidence'], ('bar_open_ny', 'bar_close_ny',
+                'precision_seconds', 'order_after_purge_known', 'coverage_through_touch_complete'))
+    result['detail_scope'] = 'Parent range outcome only; requested candle lifecycle is omitted, not absent.'
+    return result
 
 
 def _measurement(value):
@@ -141,15 +197,17 @@ def _double_purge_summary(value, request):
     if 'objectives' in thesis:
         targets = out['reversal_thesis']['objectives'] = {}
         for name, target in thesis['objectives'].items():
-            fact = _pick(target, ('level', 'spoken_label', 'status', 'distance_price_points',
-                'observed_distance_price_points', 'closest_observed_price',
+            fact = _pick(target, ('level', 'status', 'distance_price_points', 'observed_distance_price_points',
                 'closest_source_interval', 'coverage_through_touch', 'gtop_context'))
             if fact.get('closest_source_interval'):
                 fact['closest_source_interval'] = _pick(fact['closest_source_interval'],
                     ('bar_open_ny', 'bar_close_ny', 'precision_seconds'))
             if fact.get('distance_price_points') == fact.get('observed_distance_price_points'):
                 fact.pop('observed_distance_price_points', None)
-            if target.get('approach'):
+            if fact.get('coverage_through_touch'):
+                fact['coverage_through_touch'] = _pick(fact['coverage_through_touch'],
+                    ('start_ny', 'end_ny', 'complete', 'missing_bar_count'))
+            if target.get('approach') and target.get('gtop_context'):
                 measured = target['approach']
                 fact['approach'] = {
                     'full_range_reference': _pick(measured.get('full_range_reference', {}),
@@ -173,10 +231,54 @@ def _double_purge_summary(value, request):
             name: _pick(target, ('status', 'level', 'evidence', 'distance_price_points',
                 'closest_source_interval', 'gtop_context'))
             for name, target in development.get('objectives', {}).items()}
-    out['detail_omissions'] = ('Identity sequence/boundary rows omitted, not absent or ordered; use double_purge_detail_request.')
+    for target in out.get('reversal_development', {}).get('objectives', {}).values():
+        if target.get('evidence'):
+            target['evidence'] = _pick(target['evidence'],
+                ('bar_open_ny', 'bar_close_ny', 'precision_seconds'))
+        if target.get('closest_source_interval'):
+            target['closest_source_interval'] = _pick(target['closest_source_interval'],
+                ('bar_open_ny', 'bar_close_ny', 'precision_seconds'))
+    out['detail_omissions'] = ('Secondary reversal audit prices, ratios and boundary rows omitted, not absent or ordered; use double_purge_detail_request.')
     out['double_purge_detail_request'] = deepcopy(request)
     out['double_purge_detail_request']['args'] = {k: v for k, v in request['args'].items()
         if v is not None or k == 'detail_from_ny'}
+    return out
+
+
+def _secondary_reversal_outcome(value):
+    """Last bounded projection for an unselected, separately retrievable reversal.
+
+    Keep both phases' outcomes and official confirmation; defer the secondary
+    price-path audit to the existing exact opposite-identity request.
+    """
+    out = _pick(value, ('status', 'observed', 'developing', 'confirmation_status',
+        'confirmed_at_ny', 'original_completion_preserved', 'original_outcome',
+        'original_first_purged_side', 'original_coverage_through_touch',
+        'opposite_identity_count', 'double_purge_detail_request'))
+    sequence = value.get('sequence', {})
+    out['sequence'] = {}
+    for key in ('source_return_inside', 'assigned_return_inside', 'selected_timeframe_return_inside'):
+        if sequence.get(key):
+            out['sequence'][key] = _pick(sequence[key], ('bar_open_ny', 'known_at_ny', 'timeframe',
+                'confirmation_basis', 'source_coverage_complete', 'native_ohlc_provenance'))
+    for key in ('coverage', 'coverage_through_return', 'coverage_through_confirmation'):
+        if key in sequence:
+            out['sequence'][key] = deepcopy(sequence[key])
+    for phase in ('reversal_thesis', 'reversal_development'):
+        source = value.get(phase)
+        if not source:
+            continue
+        result = out[phase] = _pick(source, ('status', 'direction', 'window_start_ny',
+            'window_end_ny', 'validity_cutoff_ny', 'coverage', 'earlier_delivery_preserved_after_invalidation'))
+        result['objectives'] = {}
+        for name, target in source.get('objectives', {}).items():
+            fact = result['objectives'][name] = _pick(target, ('level', 'status', 'distance_price_points',
+                'observed_distance_price_points', 'coverage_through_touch', 'gtop_context', 'boundary_order_verified'))
+            key = 'evidence' if target.get('evidence') else 'closest_source_interval'
+            if target.get(key):
+                fact[key] = _pick(target[key], ('bar_open_ny', 'bar_close_ny', 'precision_seconds'))
+    out['detail_omissions'] = ('Secondary reversal outcome/confirmation only. Price-path audit and additional '
+        'identity detail require double_purge_detail_request; omission is not absence.')
     return out
 
 
@@ -287,7 +389,7 @@ def crt_voice_detail(result):
         out['market_context'] = _voice_market_context(out['market_context'], evidence_ref='#/review')
     out['review'] = {key: deepcopy(value) for key, value in review.items() if key not in (
         'model1', 'assigned_candles', 'candle_lifecycle', 'paired_smt', 'recap', 'blessed_thief')}
-    view = out['review']
+    view = out['review'] = _outcome_first(out['review'])
     view['selected_directional_identities'] = [deepcopy(fact) for fact in candidates['identity_index']
                                               if fact['bar_open_ny'] == selected]
     if view.get('objective_approach'):
@@ -446,12 +548,45 @@ def crt_voice_detail(result):
             'Query identities by detail_candle_start_ny or next_request. backend_remaining_from_ny '
             'marks unavailable deeper records, not a cursor. Raw/BT cursors differ. '
             'Omission is not absence; OHLC cannot prove tick order or fills.')
+        before_factoring = deepcopy(out)
         _factor_review(out)
         _factor_intervals(out)
+        if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
+            secondary = before_factoring['review'].get('double_purge', {})
+            if secondary.get('double_purge_detail_request'):
+                # Rebuild before references were introduced, so none can point
+                # into an audit field removed from this secondary projection.
+                candidate = before_factoring
+                candidate['review']['double_purge'] = _secondary_reversal_outcome(secondary)
+                candidate['voice_detail_page']['secondary_reversal_detail_omitted'] = True
+                approach = candidate['review'].get('objective_approach', {})
+                targets = approach.get('objectives', {})
+                if (candidate['review'].get('directional_outcome', {}).get('status') == 'opposing_liquidity_delivered'
+                        and all(targets.get(name, {}).get('status') == 'target_reached_in_verified_post_purge_bar'
+                                and targets[name].get('distance_price_points') == 0
+                                for name in ('midpoint', 'opposing_liquidity'))):
+                    # Both completed targets retain their exact evidence above.
+                    # Later boundary audit rows cannot change the zero gap.
+                    for target in targets.values():
+                        target.pop('boundary_observations', None)
+                        target.pop('closest_observed_price', None)
+                        if target.get('closest_source_interval'):
+                            target['closest_source_interval'] = _pick(target['closest_source_interval'],
+                                ('bar_open_ny', 'bar_close_ny', 'precision_seconds'))
+                    approach['detail_omissions'] = 'Completed-target boundary price audit omitted; verified target status, zero gap and source interval retained.'
+                _factor_review(candidate)
+                _factor_intervals(candidate)
+                if len(json.dumps(candidate, separators=(',', ':'))) < len(json.dumps(out, separators=(',', ':'))):
+                    out = candidate
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
         failed = error('voice_detail_budget_exceeded',
             'This identity has more evidence than fits one voice page; its details were not sent. '
             'Request the named raw candle interval or a narrower review cutoff; do not infer missing lifecycle outcomes.')
         failed['raw_candle_request'] = out['voice_detail_page']['raw_candle_request']
+        summary = _range_outcome_summary(review)
+        if summary:
+            failed['range_outcome_summary'] = summary
+            failed['message'] = ('The verified parent-range outcome is supplied separately; the requested '
+                'candle lifecycle exceeds this page budget and was not sent. Do not infer omitted lifecycle outcomes.')
         return _bounded_error(failed, DETAIL_CHARACTER_BUDGET)
     return out

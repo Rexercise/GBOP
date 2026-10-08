@@ -23,6 +23,10 @@ def identities(overview, row):
 
 
 def expanded(overview, value):
+    if (isinstance(value, dict) and set(value) == {'interval_row'}
+            and overview.get('voice_view', {}).get('interval_tables')):
+        index, *values = value['interval_row']
+        return dict(zip(overview['review']['interval_columns'][index], values))
     if isinstance(value, dict) and set(value) == {'same_evidence_as'}:
         path = value['same_evidence_as']
         if not path.startswith('#/'):

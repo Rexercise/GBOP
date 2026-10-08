@@ -84,17 +84,105 @@ def _factor_review(out):
     out['review'] = factor(out['review'], '#/review')
 
 
+def _compact_interval_tables(out):
+    """Lossless column encoding for repeated, scalar-only interval schemas.
+
+    Every source interval remains at its original evidence path. Only repeated
+    field names move to the explicit column map; values, precision, uncertainty
+    and parent/phase ownership are never merged or inferred.
+    """
+    from collections import Counter
+    review = out['review']
+    if 'interval_columns' in review:
+        return
+    allowed = {'bar_open_ny','bar_close_ny','precision_seconds','exact_tick_time_known',
+               'timeframe','known_at_ny','confirmed_at_ny'}
+    shapes = Counter()
+    referenced_paths, marker_collision = set(), False
+
+    def inspect(value):
+        nonlocal marker_collision
+        if isinstance(value, dict):
+            marker_collision = marker_collision or 'interval_row' in value
+            target = value.get('same_evidence_as')
+            if isinstance(target, str):
+                referenced_paths.add(target if target.startswith('#/') else '#/' + target.replace('.', '/'))
+            for child in value.values():
+                inspect(child)
+        elif isinstance(value, list):
+            for child in value:
+                inspect(child)
+
+    inspect(out)
+    if marker_collision:
+        return  # Unknown source content must never be mistaken for our codec.
+
+    def eligible(value):
+        return (isinstance(value, dict) and {'bar_open_ny','bar_close_ny'} <= set(value) <= allowed
+                and all(not isinstance(item, (dict, list)) for item in value.values()))
+
+    def eligible_path(value, path):
+        return eligible(value) and not any(target.startswith(path + '/') for target in referenced_paths)
+
+    def scan(value, path='#/review'):
+        if eligible_path(value, path):
+            shapes[tuple(sorted(value))] += 1
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                scan(child, path + '/' + key.replace('~', '~0').replace('/', '~1'))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                scan(child, path + '/' + str(index))
+
+    scan(review)
+    columns, indexes = [], {}
+    for keys, count in shapes.items():
+        repeated_key_cost = sum(len(json.dumps(key)) + 1 for key in keys)
+        if (repeated_key_cost - 20) * count > len(json.dumps(keys)) + 40:
+            indexes[keys] = len(columns)
+            columns.append(list(keys))
+    if not columns:
+        return
+
+    def encode(value, path='#/review'):
+        if eligible_path(value, path) and tuple(sorted(value)) in indexes:
+            keys = tuple(sorted(value))
+            return {'interval_row': [indexes[keys], *[value[key] for key in keys]]}
+        if isinstance(value, dict):
+            return {key: encode(child, path + '/' + key.replace('~', '~0').replace('/', '~1'))
+                    for key, child in value.items()}
+        if isinstance(value, list):
+            return [encode(child, path + '/' + str(index)) for index, child in enumerate(value)]
+        return value
+
+    candidate = encode(review)
+    candidate['interval_columns'] = columns
+    instruction = 'interval_row[0] selects review.interval_columns; remaining values map exactly in order.'
+    if _encoded_size(candidate) + len(instruction) + 24 < _encoded_size(review):
+        out['review'] = candidate
+        out['voice_view']['interval_tables'] = instruction
+
+
 def _bounded_error(error, budget=SHIFT_OVERVIEW_TARGET_CHARS):
     """An oversized index/context must not make the budget error oversized too."""
+    summary_note = ('Use verified_spoken_summary for the supplied outcomes. Detailed evidence is omitted; '
+                    'scope/provenance alone adds no facts.')
+    if error.get('verified_spoken_summary'):
+        error = deepcopy(error)
+        error.update(verified_summary_supplied=True, detail_evidence_omitted=True)
+        if isinstance(error.get('market_context'), dict):
+            error['market_context']['snapshot_note'] = summary_note
     if _encoded_size(error) <= budget:
         return error
     out = _pick(error, ('ok', 'status', 'asset', 'anchor_start_ny', 'through_ny',
                         'message', 'detail_request', 'raw_candle_request', 'backend_remaining_from_ny',
-                        'negative_claim_guard'))
+                        'negative_claim_guard', 'verified_spoken_summary',
+                        'verified_summary_supplied', 'detail_evidence_omitted'))
     context = error.get('market_context')
     if isinstance(context, dict):
         out['market_context'] = _pick(context, ('selection', 'scope_id', 'evidence_id', 'source_tool', 'limits'))
-        out['market_context']['snapshot_note'] = 'Evidence and oversized indexes omitted; no outcome is established by this error.'
+        out['market_context']['snapshot_note'] = (summary_note if out.get('verified_spoken_summary') else
+            'Evidence and oversized indexes omitted; no outcome is established by this error.')
     out['evidence_omitted'] = True
     for name in ('range_index', 'identity_index'):
         if name in error:
@@ -176,6 +264,42 @@ def _paired(pair, asset, *, overview=False):
         'invalidating_closes_ny', 'same_bar_both_swept_sides', 'recap_eligible'))
     out['events'] = [_paired_event(event, asset, overview=overview) for event in pair.get('events', [])]
     return out
+
+
+def _compact_shift_envelope(out):
+    """Trim historical transport repetition without touching analytical evidence.
+
+    The raw response and conversation snapshot retain the complete source data.
+    Closed-hour/window lists duplicate a complete shift's coverage, but partial
+    or unknown coverage must retain its exact gaps and observed windows.
+    """
+    availability = out.get('availability')
+    if isinstance(availability, dict):
+        review = out.get('review') or {}
+        selection = (out.get('market_context') or {}).get('selection') or {}
+        through = ((review.get('shift_synopsis') or {}).get('through_ny')
+                   or (review.get('shift_story') or {}).get('end_ny'))
+        for key, duplicate in (('asset', out.get('asset')), ('date_ny', review.get('date_ny')),
+                               ('shift', review.get('shift')), ('anchor_start_ny', selection.get('anchor_start_ny')),
+                               ('end_ny', through), ('source_resolution_seconds', out.get('available_precision_seconds'))):
+            if key in availability and availability[key] == duplicate:
+                availability.pop(key)
+        if (availability.get('status') == 'available_full' and availability.get('shift_complete') is True
+                and availability.get('anchor_complete') is True):
+            for key in ('message', 'complete_hours_ny', 'observed_windows_ny'):
+                availability.pop(key, None)
+            availability['coverage_detail_omitted'] = True
+    health = out.get('feed_health')
+    if (isinstance(health, dict) and health.get('status') == 'recent_snapshot_stale_quote'
+            and health.get('message') == 'A recent broker snapshot was received, but its last quote is old. This does not prove market closure or identify a feed failure.'):
+        # The canonical warning is repeated in transport on every historical
+        # page; keep its uncertainty explicitly, plus every freshness fact.
+        health['message'] = 'Recent snapshot; quote still stale. Market closure and failure cause unverified.'
+    context = out.get('market_context')
+    if (isinstance(context, dict) and isinstance(context.get('discussion_context'), dict)
+            and context['discussion_context'].get('response_contract') == 'Only completed playback marks discussion. Follow scope, mode and discussed anchors.'):
+        context['discussion_context'].pop('response_contract', None)
+    out['voice_view']['transport_detail_omitted'] = True
 
 
 def shift_voice_overview(result):
@@ -346,13 +470,20 @@ def _budget_overview(out):
         _factor_review(out)
     if size() > SHIFT_OVERVIEW_TARGET_CHARS and 'post_shift_followthrough' in out:
         out.pop('post_shift_followthrough')  # Registered tool's null-scope lookup retains exact access.
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
+        _compact_shift_envelope(out)
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
+        _compact_interval_tables(out)
     if size() > SHIFT_OVERVIEW_TARGET_CHARS:
         # Fail explicitly rather than serialize an unbounded request or pretend
         # to include a complete overview. Scope and provenance stay pinned.
+        summary = out['review']['shift_recap'].get('spoken_summary')
+        retained_summary = (summary if isinstance(summary, str) and 0 < _encoded_size(summary) <= 6000 else None)
         return _bounded_error({'ok': False, 'status': 'voice_overview_budget_exceeded',
             'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),
             'message': 'This shift has more identified detail than fits one voice reply. '
                 'Use a named range detail_request; the full shift was not supplied. Do not infer absent events.',
+            **({'verified_spoken_summary': retained_summary} if retained_summary else {}),
             'range_index': [_pick(row, ('anchor_start_ny', 'label', 'role', 'status', 'direction_observed',
                 'invalidated_at_ny', 'objectives', 'detail_request')) for row in ranges],
             'detail_request': next((row['detail_request'] for row in ranges if row.get('role') == 'selected_range'), None)})
@@ -387,7 +518,7 @@ def _compact_synopsis_navigation(out):
     for row in index:
         del row['detail_request']
     out['voice_view']['note'] = (
-        'For exact detail, add the chosen range_index.anchor_start_ny to range_detail_request.args.')
+        'Detail: add range_index.anchor_start_ny to range_detail_request.args.')
     # Consolidate the two synopsis instruction copies. Every structured fact,
     # spoken_summary, coverage caveat and negative-claim guard stays unchanged.
     synopsis['response_contract'] = (
@@ -443,9 +574,9 @@ def _compact_synopsis_facts(out):
         synopsis['source_interval_columns'] = list(columns)
     if objective_count:
         synopsis['objective_columns'] = list(objective_columns)
-    out['voice_view']['fact_tables'] = ('ranges inherit range_defaults; explicit values win. Interval/target arrays use source_interval_columns/objective_columns; absent trailing cells remain absent.')
-    synopsis['response_contract'] = ('Under review is not CRT confirmation. Keep primary/own/parent identities separate. '
-        'Name acting candle AND affected range; anchor closure alone is not CRT confirmation. Opening plays follow event-time order. Contexts are not probability votes. Omission is not absence; use exact detail requests.')
+    out['voice_view']['fact_tables'] = ('range_defaults fill missing range keys; arrays follow named columns; absent trailing cells stay absent.')
+    synopsis['response_contract'] = ('Under review is not CRT confirmation. Keep acting candle, own/parent, original/reversal separate. '
+        'Event-time order; no probability votes. Omission is not absence; use exact details.')
 
 
 def shift_voice_synopsis(result):
@@ -485,10 +616,17 @@ def shift_voice_synopsis(result):
         # drop original shift evidence or fail a previously fitting synopsis
         # merely to carry future-context hashes in every spoken recap.
         out.pop('post_shift_followthrough')
+    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS - 600:
+        _compact_shift_envelope(out)
     if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+        summary = synopsis.get('spoken_summary')
+        retained_summary = (summary if isinstance(summary, str) and 0 < _encoded_size(summary) <= 6000 else None)
         return _bounded_error({'ok': False, 'status': 'voice_synopsis_budget_exceeded',
             'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),
-            'message': 'This synopsis exceeds the response budget. Request an exact named range; no synopsis was supplied.',
+            'message': ('The complete evidence view exceeds the response budget. Use the verified spoken summary below; '
+                        'retrieve exact named-range details only for omitted facts.' if retained_summary else
+                        'This synopsis exceeds the response budget. Request an exact named range; no synopsis was supplied.'),
+            **({'verified_spoken_summary': retained_summary} if retained_summary else {}),
             'range_index': range_index,
             **({'negative_claim_guard': deepcopy(synopsis['negative_claim_guard'])}
                if synopsis.get('negative_claim_guard') else {}),

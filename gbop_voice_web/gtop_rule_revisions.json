@@ -1,0 +1,52 @@
+[
+  {
+    "rule_id": "crt.v6.resoup_completion_window",
+    "revision": 1,
+    "type": "clarification",
+    "status": "active",
+    "scope": "Canonical CRT V6, including the same canonical rule on Model 1's own CRT",
+    "field": "Re-soup eligibility before full opposing-liquidity completion",
+    "previous_canonical": "A Soup level later gets souped again before distribution; remains valid if closure returns inside the range.",
+    "superseded_implementation": "Midpoint delivery ended the re-soup window.",
+    "accepted": "One or more re-soups of the Soup extreme can establish V6 before full opposing-liquidity delivery. Midpoint is partial delivery and does not disqualify a later re-soup. Preserve the same range, own-timeframe completed inside close, invalidation and source-order requirements; full completion ends the window.",
+    "authority": {
+      "origin": "Explicit user clarification in the October 8, 2026 voice conversation",
+      "excerpt": "if there's multiple soups of the soup or if it's just one soup of the soup, then it's a V-six",
+      "message_id": null,
+      "timestamp": null,
+      "provenance_limit": "The supplied transcript did not include an original message ID or exact timestamp."
+    },
+    "historical_effective_date": "Not specified; no prospective date is invented.",
+    "unchanged": "Tiers, risk, entry confirmation, selected-range identity, timeframe mapping and invalidation rules.",
+    "canonical_destination": "gtop_knowledge.txt: CRT VARIANTS / V6; gtop_super_soup.txt: canonical own-CRT V6 reference",
+    "supersedes": {
+      "record_id": null,
+      "reason": "No prior versioned rule record was present. This corrects the midpoint cutoff in shift_narrative.classify_structure and variant_explanation; the prior source remains in repository history."
+    }
+  },
+  {
+    "rule_id": "crt.objective_delivery_milestones",
+    "revision": 1,
+    "type": "clarification",
+    "status": "active",
+    "scope": "Separate midpoint partial delivery and full opposing-liquidity completion on the same CRT range",
+    "field": "Cutoff-frozen variant manner at each objective milestone",
+    "previous_implementation": "Only the aggregate structural variant and later own-timeframe classification close were exposed.",
+    "accepted": "Record the variant manner at the first ordered midpoint touch using only evidence then known. Determine the final full-objective manner independently; later re-soups must not rewrite the earlier midpoint manner. Midpoint alone leaves overall completion pending. Objective completion is the full opposing-liquidity touch, represented by its source interval and known-at close, not a generic candle close. Keep parent and nested CRT identities separate.",
+    "authority": {
+      "origin": "Later explicit clarification in the same October 8, 2026 voice conversation",
+      "excerpt": "partial delivery ... certain variant manner and ... completion overall has its own variant",
+      "message_id": null,
+      "timestamp": null,
+      "provenance_limit": "The supplied excerpt contained ellipses and no original message ID or exact timestamp."
+    },
+    "implementation_interpretation": "An objective-delivery manner is separate from a completed own-timeframe structural classification. V6 is the primary final manner when a valid re-soup precedes completion; elapsed-candle timing may remain supporting context.",
+    "historical_effective_date": "Not specified; no prospective date is invented.",
+    "unchanged": "No inferred trade executions, fills, profit, exact tick times, or retrospective use of later evidence.",
+    "canonical_destination": "gtop_knowledge.txt: CRT VARIANTS / objective-delivery milestones",
+    "supersedes": {
+      "record_id": null,
+      "reason": "No prior separate milestone rule record was present. Existing structural labels remain separate from objective-delivery manners."
+    }
+  }
+]

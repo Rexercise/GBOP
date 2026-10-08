@@ -25,13 +25,13 @@ class JournalChronologyTests(unittest.TestCase):
     def test_approximate_legacy_time_does_not_shadow_valid_trade_date(self):
         self.dated_pair({'trade_date':'2026-10-07', 'reported_entry_at':'around 9 AM'},
                         {'trade_date':'2026-10-06', 'reported_entry_time_text':'about 10 AM'})
-        result = recall.history(self.db,10,20,{'latest':'trade'})
+        result = recall.history(self.db,10,20,{'latest':'trade','date_basis':'trade'})
         self.assertTrue(result['ok'], result)
         self.assertEqual(result['journals'][0]['trade_number'],1)
         self.assertIn('around 9 AM', result['context_text'])
 
     def test_unknown_chronology_labels_separate_saved_suggestion(self):
-        result = recall.history(self.db,10,20,{'latest':'trade'})
+        result = recall.history(self.db,10,20,{'latest':'trade','date_basis':'trade'})
         self.assertFalse(result['ok'])
         self.assertEqual(result['status'], 'trade_date_ambiguous')
         fallback = result['latest_saved']
@@ -49,24 +49,24 @@ class JournalChronologyTests(unittest.TestCase):
 
     def test_day_only_comparison_preserves_calendar_chronology_without_zone(self):
         self.dated_pair({'trade_date':'2026-10-07'}, {'trade_date':'2026-10-06'})
-        result = recall.history(self.db,10,20,{'latest':'trade'})
+        result = recall.history(self.db,10,20,{'latest':'trade','date_basis':'trade'})
         self.assertEqual(result['journals'][0]['trade_number'],1)
 
     def test_mixed_unknown_zone_and_exact_day_never_assumes_new_york(self):
         self.dated_pair({'trade_date':'2026-10-07'},
                         {'reported_entry_at':'2026-10-08T01:00:00+00:00'})
-        result = recall.history(self.db,10,20,{'latest':'trade'})
+        result = recall.history(self.db,10,20,{'latest':'trade','date_basis':'trade'})
         self.assertEqual(result['status'],'trade_date_ambiguous')
         # With the member's actual zone known, the dates no longer overlap.
         self.conn.execute('UPDATE journal_details SET metadata=? WHERE journal_id=100',
             (json.dumps({'trade_date':'2026-10-07','time_zone':'Asia/Tokyo'}),))
-        result = recall.history(self.db,10,20,{'latest':'trade'})
+        result = recall.history(self.db,10,20,{'latest':'trade','date_basis':'trade'})
         self.assertEqual(result['journals'][0]['trade_number'],2)
 
     def test_known_member_zone_controls_final_mixed_precision_sort(self):
         self.dated_pair({'trade_date':'2026-10-07', 'time_zone':'Etc/GMT+12'},
                         {'reported_entry_at':'2026-10-07T11:00:00+00:00'})
-        result = recall.history(self.db,10,20,{'latest':'trade'})
+        result = recall.history(self.db,10,20,{'latest':'trade','date_basis':'trade'})
         self.assertTrue(result['ok'], result)
         self.assertEqual(result['journals'][0]['trade_number'],1)
 
@@ -76,7 +76,7 @@ class JournalChronologyTests(unittest.TestCase):
                          'reported_entry_time_text':'about 11:50 PM',
                          'reported_exit_time_text':'around 12:20 AM the next day'},
                         {'reported_entry_at':'2026-10-06T23:40:00-04:00'})
-        result = recall.history(self.db,10,20,{'latest':'trade'})
+        result = recall.history(self.db,10,20,{'latest':'trade','date_basis':'trade'})
         self.assertEqual(result['journals'][0]['trade_number'],1)
         self.assertIn('around 12:20 AM the next day',result['context_text'])
 
