@@ -6709,6 +6709,10 @@ class GBOPRealtimeSession:
         self._last_response_options = {}
         self._voice_turn_count = 0
         self._logged_audio_items = set()
+        self.quota_blocked = False
+        self.connection_blocked = False
+        from gbop_voice_web.voice_diagnostics import RealtimeVoiceDiagnostics
+        self.diagnostics = RealtimeVoiceDiagnostics()
         self.rate_limit_recovery = VoiceRateLimitRecovery(self)
         from gbop_voice_web.voice_work import VoiceToolWork
         self.tool_work = VoiceToolWork(self)
@@ -6809,6 +6813,8 @@ class GBOPRealtimeSession:
     async def send_event(self, event, quiet=False):
         if self.websocket is None:
             return False
+        if getattr(self, 'quota_blocked', False) or getattr(self, 'connection_blocked', False):
+            return False
 
         try:
             await self.websocket.send(json.dumps(event))
@@ -6816,11 +6822,12 @@ class GBOPRealtimeSession:
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             if not quiet:
-                print("[GBOP-RT] send error:", self.last_error)
+                print('[GBOP-RT] send error:')
             return False
 
     def enqueue_audio(self, pcm24_mono: bytes):
-        if self.closed or not pcm24_mono:
+        if (self.closed or getattr(self, 'quota_blocked', False)
+                or getattr(self, 'connection_blocked', False) or not pcm24_mono):
             return
 
         try:
@@ -6917,7 +6924,8 @@ class GBOPRealtimeSession:
         print("[GBOP-RT] tool call:", name)
 
         try:
-            from gbop_voice_web.voice_runtime import guarded_voice_tool
+            from gbop_voice_web.voice_runtime import guarded_voice_tool, voice_tool_operation_id
+            operation_id = voice_tool_operation_id(self, call_id)
             async def run_current_tool():
                 if work is not None and not work.current(scope):
                     return {'ok': False, 'error': 'This voice request is no longer current.'}
@@ -6928,7 +6936,7 @@ class GBOPRealtimeSession:
                     return await asyncio.to_thread(context.run, name, args,
                         lambda tool, values: ai_execute_tool(self.member.id, tool,
                             bind_preference_args(context, tool, values, generation)),
-                        generation=generation, operation_id=call_id)
+                        generation=generation, operation_id=operation_id)
                 return await asyncio.to_thread(ai_execute_tool, self.member.id, name, args)
             async def read_delivery_receipt(receipt_id):
                 # Exact, member-scoped read only. Rebind current authorization in
@@ -7012,34 +7020,80 @@ class GBOPRealtimeSession:
         # profile/journal/coach snapshot here delayed the reply and busted caches.
 
     async def receiver_loop(self):
-        from gbop_voice_web.api_usage import RealtimeUsageRecorder
-        usage_recorder = RealtimeUsageRecorder()
+        from gbop_voice_web.voice_diagnostics import RealtimeVoiceDiagnostics
+        from gbop_voice_web.voice_quota import block_for_quota
+        diagnostics = getattr(self, 'diagnostics', None)
+        if diagnostics is None:
+            diagnostics = self.diagnostics = RealtimeVoiceDiagnostics()
         async for raw in self.websocket:
             try:
                 event = json.loads(raw)
             except Exception:
                 continue
+            if not isinstance(event, dict):
+                continue
 
             event_type = event.get("type", "")
-            if event_type == "response.done":
-                usage_recorder.record(event.get("response") or {})
+            # Provider metadata is observation data. Malformed shapes must not
+            # bypass accounting or crash the interruption/control loop.
+            response_value = event.get('response')
+            malformed = response_value is not None and not isinstance(response_value, dict)
+            if isinstance(response_value, dict):
+                identifier = response_value.get('id')
+                malformed |= identifier is not None and not isinstance(identifier, str)
+                for field in ('metadata', 'status_details'):
+                    value = response_value.get(field)
+                    malformed |= value is not None and not isinstance(value, dict)
+                details = response_value.get('status_details')
+                if isinstance(details, dict):
+                    error_value = details.get('error')
+                    malformed |= error_value is not None and not isinstance(error_value, dict)
+                metadata = response_value.get('metadata')
+                if isinstance(metadata, dict):
+                    token = metadata.get('gbop_request')
+                    malformed |= token is not None and not isinstance(token, str)
+            for field in ('response_id', 'item_id', 'transcript'):
+                value = event.get(field)
+                malformed |= value is not None and not isinstance(value, str)
+            item = event.get('item')
+            malformed |= item is not None and not isinstance(item, dict)
+            if isinstance(item, dict):
+                for field in ('call_id', 'name', 'arguments'):
+                    value = item.get(field)
+                    malformed |= value is not None and not isinstance(value, str)
+            error_value = event.get('error')
+            malformed |= error_value is not None and not isinstance(error_value, dict)
+            if malformed:
+                diagnostics.observe(event, stale=True)
+                continue
             work = getattr(self, 'tool_work', None)
-            if work is not None and not work.accepts(event):
+            accepted = work is None or work.accepts(event)
+            diagnostics.observe(event, stale=not accepted)
+            # Quota is an account condition, including when its failed response
+            # was superseded. Stop before waiting for another speech turn.
+            quota_error = event.get('error') if event_type == 'error' else None
+            if event_type == 'response.done':
+                details = (event.get('response') or {}).get('status_details') or {}
+                quota_error = details.get('error') if isinstance(details, dict) else None
+            if await block_for_quota(self, quota_error):
+                return
+            if not accepted:
                 response = event.get('response') or {}
                 if (event_type == 'response.created' and response.get('id')
                         and work.stale_request(response)):
+                    diagnostics.mark_stale(response['id'], 'stale_request')
                     await self.send_event({'type': 'response.cancel', 'response_id': response['id']}, quiet=True)
                 continue
 
             if event_type == "session.updated":
                 self.ready.set()
-                print("[GBOP-RT-EVENT] session.updated:", self.member)
+                print('[GBOP-RT-EVENT] session.updated:')
                 continue
 
             if event_type == "error":
-                error = event.get("error", {})
+                error = event.get("error") or {}
                 self.last_error = error.get("message") or str(error)
-                print("[GBOP-RT] API error:", self.last_error)
+                print('[GBOP-RT] API error:')
                 self.rate_limit_recovery.failed(error)
                 continue
 
@@ -7062,14 +7116,7 @@ class GBOPRealtimeSession:
                     work.recover_reads()
                     work.recover_delivery()
                     work.recover_writes()
-                print(
-                    "[GBOP-RT-EVENT] speech_started:",
-                    self.member,
-                    "turn=",
-                    self._voice_turn_count,
-                    "item_id=",
-                    event.get("item_id"),
-                )
+                print('[GBOP-RT-EVENT] speech_started:')
                 # OpenAI's Realtime server already cancels the active response
                 # when interrupt_response=True. Locally stop Discord playback
                 # immediately, but do NOT send a second response.cancel/truncate
@@ -7089,11 +7136,7 @@ class GBOPRealtimeSession:
                         else:
                             discord.VoiceClient.stop(vc)
                     except Exception as exc:
-                        print(
-                            "[GBOP-RT] local barge-in stop error:",
-                            type(exc).__name__,
-                            exc,
-                        )
+                        print('[GBOP-RT] local barge-in stop error:')
 
                 manager.source = None
                 manager.session = None
@@ -7104,14 +7147,7 @@ class GBOPRealtimeSession:
                 continue
 
             if event_type == "input_audio_buffer.speech_stopped":
-                print(
-                    "[GBOP-RT-EVENT] speech_stopped:",
-                    self.member,
-                    "turn=",
-                    self._voice_turn_count,
-                    "item_id=",
-                    event.get("item_id"),
-                )
+                print('[GBOP-RT-EVENT] speech_stopped:')
                 continue
 
             if event_type == "response.created":
@@ -7119,16 +7155,7 @@ class GBOPRealtimeSession:
                 response = event.get("response") or {}
                 if work is not None:
                     work.response_created(response)
-                print(
-                    "[GBOP-RT-EVENT] response.created:",
-                    self.member,
-                    "turn=",
-                    self._voice_turn_count,
-                    "response_id=",
-                    response.get("id"),
-                    "status=",
-                    response.get("status"),
-                )
+                print('[GBOP-RT-EVENT] response.created:')
                 continue
 
             if event_type == "response.output_audio.delta":
@@ -7149,14 +7176,7 @@ class GBOPRealtimeSession:
 
                 if item_id not in self._logged_audio_items:
                     self._logged_audio_items.add(item_id)
-                    print(
-                        "[GBOP-RT-EVENT] output_audio.start:",
-                        self.member,
-                        "turn=",
-                        self._voice_turn_count,
-                        "item_id=",
-                        item_id,
-                    )
+                    print('[GBOP-RT-EVENT] output_audio.start:')
 
                 if self.output_source is None or self.output_item_id != item_id:
                     self.output_source = await manager.begin(
@@ -7171,14 +7191,7 @@ class GBOPRealtimeSession:
 
             if event_type == "response.output_audio.done":
                 item_id = event.get("item_id")
-                print(
-                    "[GBOP-RT-EVENT] output_audio.done:",
-                    self.member,
-                    "turn=",
-                    self._voice_turn_count,
-                    "item_id=",
-                    item_id,
-                )
+                print('[GBOP-RT-EVENT] output_audio.done:')
                 if item_id in self._logged_audio_items:
                     self._logged_audio_items.discard(item_id)
                 if self.output_source is not None and self.output_item_id == item_id:
@@ -7229,18 +7242,7 @@ class GBOPRealtimeSession:
                 elif status == "cancelled":
                     self.tool_output_pending = False
                     self.rate_limit_recovery.cancel()
-                print(
-                    "[GBOP-RT-EVENT] response.done:",
-                    self.member,
-                    "turn=",
-                    self._voice_turn_count,
-                    "response_id=",
-                    response.get("id"),
-                    "status=",
-                    status,
-                    "status_details=",
-                    response.get("status_details"),
-                )
+                print('[GBOP-RT-EVENT] response.done:')
 
                 if (self.tool_output_pending and status not in ("cancelled", "failed")
                         and (work is None or not work.pending)):
@@ -7248,15 +7250,24 @@ class GBOPRealtimeSession:
                     await continue_tool_response(self)
 
     async def run(self):
+        from gbop_voice_web.voice_runtime import VoiceConnectionRejected
+        from gbop_voice_web.voice_quota import voice_blocked, block_for_connection
         backoff = 1.0
 
-        while not self.closed:
+        while not self.closed and not voice_blocked(self):
             self.ready.clear()
             receiver = sender = None
 
             try:
-                print("[GBOP-RT] connecting:", self.member, GBOP_REALTIME_MODEL)
+                diagnostics = getattr(self, 'diagnostics', None)
+                if diagnostics is not None:
+                    diagnostics.connection_attempt()
+                print('[GBOP-RT] connecting:')
                 self.websocket = await self.connect_ws()
+                from gbop_voice_web.voice_runtime import bind_voice_tool_connection
+                await bind_voice_tool_connection(self)
+                if diagnostics is not None:
+                    diagnostics.connected()
                 self.last_error = None
 
                 receiver = asyncio.create_task(self.receiver_loop())
@@ -7274,7 +7285,7 @@ class GBOPRealtimeSession:
 
                 sender = asyncio.create_task(self.sender_loop())
 
-                print("[GBOP-RT] READY:", self.member)
+                print('[GBOP-RT] READY:')
 
                 done, pending = await asyncio.wait(
                     {receiver, sender},
@@ -7294,9 +7305,19 @@ class GBOPRealtimeSession:
             except asyncio.CancelledError:
                 break
 
+            except VoiceConnectionRejected:
+                if diagnostics is not None:
+                    diagnostics.connection_failed()
+                block_for_connection(self)
+                break
+
             except Exception as exc:
+                if voice_blocked(self):
+                    break
+                if diagnostics is not None:
+                    diagnostics.connection_failed()
                 self.last_error = f"{type(exc).__name__}: {exc}"
-                print("[GBOP-RT] session error:", self.member, self.last_error)
+                print('[GBOP-RT] session error:')
 
                 if self.closed:
                     break
@@ -7305,6 +7326,9 @@ class GBOPRealtimeSession:
                 backoff = min(8.0, backoff * 2)
 
             finally:
+                if diagnostics is not None:
+                    diagnostics.disconnected('quota_exhausted' if getattr(self, 'quota_blocked', False)
+                                             else 'session_closed' if self.closed else 'connection_lost')
                 self.market_delivery.cancel()
                 self.rate_limit_recovery.cancel(reset=True)
                 self.tool_work.cancel()
@@ -7319,7 +7343,7 @@ class GBOPRealtimeSession:
 
                 if ws is not None:
                     try:
-                        await ws.close()
+                        await asyncio.wait_for(ws.close(), timeout=4)
                     except Exception:
                         pass
 
@@ -7590,6 +7614,8 @@ async def gbop_voice_health_text(interaction):
             f"Max response tokens: **{GBOP_REALTIME_MAX_OUTPUT_TOKENS}**",
             f"Your session exists: **{session is not None}**",
             f"Your WebSocket ready: **{bool(session and session.ready.is_set())}**",
+            f"Your voice paused for API credits: **{bool(session and getattr(session, 'quota_blocked', False))}**",
+            f"Your voice paused for access verification: **{bool(session and getattr(session, 'connection_blocked', False))}**",
             f"Detected voice turns: **{session._voice_turn_count if session else 0}**",
             f"Receive decoded frames: **{GBOP_RX_STATS.get('decoded', 0)}**",
             f"Receive DAVE errors: **{GBOP_RX_STATS.get('dave_errors', 0)}**",
@@ -7751,6 +7777,9 @@ async def voice(interaction: discord.Interaction):
 
     try:
         channel, session = await gbop_connect_member_voice(member, channel)
+        from gbop_voice_web.voice_quota import resume_after_quota, voice_blocked
+        if session is not None and voice_blocked(session):
+            await resume_after_quota(session)
 
         if session is None:
             await interaction.followup.send(
@@ -7761,6 +7790,12 @@ async def voice(interaction: discord.Interaction):
             try:
                 await asyncio.wait_for(session.ready.wait(), timeout=12)
             except asyncio.TimeoutError:
+                if voice_blocked(session):
+                    from gbop_voice_web.voice_quota import QUOTA_NOTICE, ACCESS_NOTICE
+                    await interaction.followup.send(
+                        QUOTA_NOTICE if getattr(session, 'quota_blocked', False) else ACCESS_NOTICE,
+                        ephemeral=True)
+                    return
                 await interaction.followup.send(
                     "I'm in your channel, but the AI connection isn't ready yet. "
                     "Use `/gbop action:status` to check or `/voicehealth` for diagnostics. "
@@ -8185,7 +8220,11 @@ async def gbop_control(
         vc = gbop_member_voice_client(interaction.user)
         session = GBOP_REALTIME_MANAGER.sessions.get((interaction.guild.id, interaction.user.id))
         paused = (interaction.guild.id, interaction.user.id) in GBOP_REALTIME_MANAGER.paused
-        status = "paused" if paused else "ready" if session and session.ready.is_set() else "not connected yet"
+        quota_blocked = bool(session and getattr(session, 'quota_blocked', False))
+        connection_blocked = bool(session and getattr(session, 'connection_blocked', False))
+        status = ("paused: API credits unavailable" if quota_blocked
+                  else "paused: access verification unavailable" if connection_blocked else "paused" if paused
+                  else "ready" if session and session.ready.is_set() else "not connected yet")
         where = vc.channel.mention if vc and vc.is_connected() else "not in a voice channel"
         await interaction.followup.send(
             f"GBOP: {where}. Your voice session: **{status}**.\n"
