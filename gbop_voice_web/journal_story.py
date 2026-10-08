@@ -13,8 +13,8 @@ from gbop_voice_web.journal_numbers import resolve_journal_selector
 from gbop_voice_web.trade_photos import schema, STR, NUM
 
 STORY_NAMES = {'stage_journal_story', 'get_journal_story', 'save_journal_story'}
-FIELDS = {'asset','direction','play','trade_date','session','context_notes','thesis_invalidation','invalidation_boundary','reported_outcome','objective','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone'}
-ENTRY_FIELDS = {'entry_index','entry_model','candle_label','risk_r','objective','status','pnl_text','notes','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text'}
+FIELDS = {'asset','direction','play','trade_date','session','context_notes','thesis_invalidation','invalidation_boundary','reported_outcome','objective','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone','result_r'}
+ENTRY_FIELDS = {'entry_index','entry_model','candle_label','risk_r','risk_text','objective','status','pnl_text','notes','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text'}
 STORY_PROMPT = """
 PROGRESSIVE PRIVATE JOURNALING
 As soon as a member starts journaling, FIRST call stage_journal_story to save the
@@ -43,6 +43,16 @@ Trade # and receipt. Read/reconcile existing matching trades before finalization
 never create another trade just because an answer was interrupted. open_trade,
 add_entry and close_trade remain for separately grounded actual executions with
 known required facts, never substitutes for narrative capture.
+R IS OPTIONAL: save single-entry and multi-entry journals immediately with or
+without risk or result R. Say "R unknown" when absent, never zero. Do not ask for
+R as a prerequisite to saving. Later reported risk amounts go in entry risk_text
+with units; profit/loss amounts go in pnl_text. Use result_r only for an explicitly
+reported overall R result; never calculate it from an assumed risk budget.
+To retract a reported R, use clear_fields: entries.1.risk_r for entry 1 risk,
+result_r for the overall result. These corrections also work on a saved journal
+and keep its Trade #. If "remove the R" is ambiguous, retain the narration and
+ask at most one brief clarification about risk versus result; saving still works.
+Use stage_journal_story for narration even if it describes only one execution.
 """
 
 
@@ -200,9 +210,12 @@ def _patch(value):
     value = json.loads(value) if isinstance(value,str) else value
     if not isinstance(value,dict) or set(value)-FIELDS-{'entries','clear_fields'} or len(json.dumps(value))>16000:
         raise ValueError('Use a bounded journal story object with documented fields.')
-    for key in FIELDS:
+    for key in FIELDS-{'result_r'}:
         if key in value:
             _text(value[key],key)
+    result=value.get('result_r')
+    if result is not None and (isinstance(result,bool) or not isinstance(result,(int,float)) or not math.isfinite(result)):
+        raise ValueError('Result R must be a reported finite number or null.')
     if value.get('trade_date'):
         date.fromisoformat(value['trade_date'])
     from gbop_voice_web.journal_context import validate_reported
@@ -245,15 +258,17 @@ def render_story(values):
     parts.append('Reported entry sequence (candle labels are not exact fill times):')
     for entry in values.get('entries',[]):
         text=f"Entry {entry['entry_index']}: "+(entry.get('entry_model') or 'entry model unknown')
-        for key,label in (('candle_label','reported candle'),('objective','objective'),('status','status'),('pnl_text','reported P/L'),('notes','notes'),('reported_entry_at','reported entry'),('reported_exit_at','reported exit'),('reported_entry_time_text','reported entry wording'),('reported_exit_time_text','reported exit wording')):
+        for key,label in (('candle_label','reported candle'),('objective','objective'),('status','status'),('risk_text','reported risk amount'),('pnl_text','reported P/L'),('notes','notes'),('reported_entry_at','reported entry'),('reported_exit_at','reported exit'),('reported_entry_time_text','reported entry wording'),('reported_exit_time_text','reported exit wording')):
             if entry.get(key):text+='; '+label+': '+entry[key]
         risk=entry.get('risk_r')
-        text+='; entry risk: '+(f'{risk:g}R' if risk is not None else 'unknown')
+        text+='; entry risk: '+(f'{risk:g}R' if risk is not None else 'unknown (R unknown)')
         parts.append(text+'.')
     if values.get('thesis_invalidation'):
         parts.append('Reported thesis invalidation: '+values['thesis_invalidation'])
         parts.append('Boundary: '+(values.get('invalidation_boundary') or 'not clarified; do not infer a price or candle boundary'))
     parts.append('Overall reported outcome: '+(values.get('reported_outcome') or 'unknown'))
+    result=values.get('result_r')
+    parts.append('Overall result: '+(f'{result:g}R' if result is not None else 'R unknown'))
     return '\n'.join(parts)
 
 
@@ -355,7 +370,9 @@ def stage_story(db,guild,user,args):
                 draft['revision']+=1
             draft['trade_number']=number
             draft['selected_key']=selected_key
-        if patch.get('clear_fields') and (draft.get('saved_journal_id') or draft.get('selected_key')):
+        clears=patch.get('clear_fields',[])
+        r_clears_only=all(k=='result_r' or re.fullmatch(r'entries\.(?:[1-9]|1[0-2])\.risk_r',k) for k in clears)
+        if clears and not r_clears_only and (draft.get('saved_journal_id') or draft.get('selected_key')):
             raise ValueError('clear_fields only retracts unsaved draft facts. Use an explicit replacement or journal correction for already selected/saved records.')
         before=deepcopy(draft['values'])
         suppressed=set(draft.get('suppressed_fields',[]))
@@ -587,6 +604,10 @@ def save_story(db,guild,user,args):
         description+='\nOriginal member narration:\n'+'\n'.join(passage['text'] for passage in draft['raw_story'])
     save_args={'description':description,'metadata_json':json.dumps(metadata,ensure_ascii=False),
                '_journal_binding':capability,'_journal_story_payload':payload}
+    if values.get('result_r') is not None:
+        save_args['result_r']=values['result_r']
+    elif 'result_r' in draft.get('suppressed_fields',[]):
+        save_args['clear_result']=True
     if target:save_args['_journal_target']=target
     elif thesis_target:save_args['_journal_thesis_target']=thesis_target
     elif number is not None:save_args['trade_number']=number
@@ -604,7 +625,7 @@ def save_story(db,guild,user,args):
 
 
 STORY_TOOLS=[
-    schema('stage_journal_story','FIRST capture/correct the whole narration as a durable unfinished editable journal before follow-up questions. Never require risk/P&L to capture it. story_json keys: '+', '.join(sorted(FIELDS))+'; entries is an array with '+', '.join(sorted(ENTRY_FIELDS))+'. Patch only new facts; null preserves known values. clear_fields explicitly retracts unfinished draft fields (e.g. play, entries.1.entry_model), never database records. new_trade=true only when the member explicitly describes a separate trade; new_draft starts a separate story. Select existing displayed trade_number after reading current state.',
+    schema('stage_journal_story','FIRST capture/correct single-entry or multi-entry narration as a durable editable journal before follow-up questions. R is optional: unknown stays null, never zero. story_json keys: '+', '.join(sorted(FIELDS))+'; entries is an array with '+', '.join(sorted(ENTRY_FIELDS))+'. result_r is numeric overall reported R; entry risk_text and pnl_text preserve cash amounts with units. Patch only new facts; null preserves known values. clear_fields retracts unfinished fields; result_r and entries.1.risk_r may also be cleared on saved/selected narratives without deleting records. new_trade=true only for an explicitly separate trade; new_draft starts a separate story. Select existing displayed trade_number after reading current state.',
            {'draft_id':STR,'raw_story':STR,'story_json':{'type':'string'},'trade_number':NUM,'new_draft':{'type':['boolean','null']},'new_trade':{'type':['boolean','null']}}),
     schema('get_journal_story','Resume the same member-owned unfinished journal after pauses/reconnects; read known facts and choose from titles when several remain. No write.',{'draft_id':STR,'raw_offset':NUM}),
     schema('save_journal_story','Explicitly FINALIZE a saved unfinished narrative only when the member asks to save/finalize/finish; for voice quote the actual current request in confirmation_text. Null for typed requests. Preserves reported multi-entry details without inventing execution/risk/P&L rows. Reconciles existing Trade # and same draft retries; does not delete records.',{'draft_id':{'type':'string'},'confirmation_text':STR}),

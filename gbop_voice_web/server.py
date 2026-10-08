@@ -922,7 +922,7 @@ TOOLS = [
     {
         "type": "function",
         "name": "open_trade",
-        "description": "Create a new GTOP trade idea and first execution after required details are known.",
+        "description": "Record an actual first execution with known risk. For any journal narration, including a single entry or unknown/removed R, use stage_journal_story and save_journal_story; never demand R to save a journal.",
         "parameters": {
             "type": "object",
             "properties": {

@@ -1202,6 +1202,11 @@ class MarketConversation:
                 if cache_result and result.get('ok') and ticket == self.generation:
                     self._journal_results[key] = deepcopy(result)
                     self._journal_results = dict(list(self._journal_results.items())[-32:])
+                elif cache_result and not result.get('ok') and result.get('status') != 'journal_outcome_uncertain':
+                    # A returned rejection is not an interrupted write. Keep the
+                    # exception barrier above, but allow correction/reconciliation
+                    # followed by a real retry instead of replaying the placeholder.
+                    self._journal_results.pop(key, None)
             return result
 
     def _run_current(self, arguments, runner, ticket):
