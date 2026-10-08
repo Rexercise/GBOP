@@ -15,11 +15,22 @@ MAX_READ_STATUS_CALLS = 64
 WRITE_STATUS_SECONDS = 900
 
 
-async def create_response(session, options):
+async def create_response(session, options, *, origin='tool_continuation'):
     work = getattr(session, 'tool_work', None)
     if work is not None:
         options = work.response_options(options)
-    return await session.send_event({'type': 'response.create', 'response': options})
+    diagnostics = getattr(session, 'diagnostics', None)
+    if diagnostics is not None:
+        diagnostics.request_created(options, origin)
+    try:
+        sent = await session.send_event({'type': 'response.create', 'response': options})
+    except BaseException:
+        if diagnostics is not None:
+            diagnostics.request_failed(options)
+        raise
+    if sent is False and diagnostics is not None:
+        diagnostics.request_failed(options)
+    return sent
 
 
 async def continue_tool_response(session):

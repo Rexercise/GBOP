@@ -1,6 +1,8 @@
 """Small, credential-free helpers for Discord Realtime context management."""
 from copy import deepcopy
 from contextvars import ContextVar
+from hashlib import sha256
+from uuid import uuid4
 import asyncio
 import re
 import json
@@ -197,6 +199,110 @@ def delivery_identity(session):
     context = getattr(session, 'market_context', None)
     return (getattr(getattr(session, 'member', None), 'id', None),
             tuple(getattr(context, 'owner', ()) or ()), getattr(context, 'session_id', None))
+
+
+class VoiceConnectionRejected(RuntimeError):
+    """Reconnect admission failed; retrying the same session cannot fix it."""
+
+
+async def bind_voice_tool_connection(session):
+    """Admit a replacement socket without replaying earlier side effects.
+
+    Called after connecting, before its receiver starts. The previous receiver
+    must already be stopped. Realtime call IDs belong to one socket, whereas
+    write/delivery barriers belong to the authenticated conversation and survive
+    both reconnects and a paused session's restart.
+    """
+    connection = getattr(session, 'websocket', None)
+    identity = delivery_identity(session)
+    member, owner, session_id = identity
+    context = getattr(session, 'market_context', None)
+    turn = getattr(session, '_voice_turn_count', 0)
+    authorize = getattr(session, 'authorize_tool', None)
+    if (connection is None or getattr(session, 'closed', False)
+            or getattr(context, 'closed', False) or not member or len(owner) < 2
+            or not owner[0] or owner[1] != member or not session_id or authorize is None):
+        raise VoiceConnectionRejected('An active authenticated voice connection is required.')
+    if getattr(session, '_tool_identity', identity) != identity:
+        raise VoiceConnectionRejected('Voice tool state belongs to an earlier authenticated session.')
+    # Check both before and after authorization: the awaited access lookup must
+    # never approve another member, socket, or turn that replaced its request.
+    denial = await authorize()
+    if denial:
+        raise VoiceConnectionRejected('Member access could not be authorized for this voice connection.')
+    if (getattr(session, 'websocket', None) is not connection
+            or getattr(session, 'market_context', None) is not context
+            or delivery_identity(session) != identity
+            or getattr(session, '_voice_turn_count', 0) != turn
+            or getattr(session, 'closed', False) or getattr(context, 'closed', False)
+            or getattr(session, '_tool_identity', identity) != identity):
+        raise VoiceConnectionRejected('The authenticated voice connection changed during authorization.')
+    retained = [entry for entry in (
+        getattr(session, '_journal_write_recovery', None),
+        getattr(session, '_delivery_recovery', None)) if entry is not None]
+    if any(entry['identity'] != identity for entry in retained):
+        raise VoiceConnectionRejected('Voice recovery state belongs to an earlier authenticated session.')
+    if getattr(session, '_tool_connection', None) is connection:
+        return  # Repeated setup on one socket must not discard its dedup cache.
+
+    work = getattr(session, 'tool_work', None)
+    if work is not None:
+        # Fence queued and late outputs. Shielded side effects may still finish;
+        # retain their original recovery objects so commit facts are not lost.
+        work.cancel()
+        work.seen_calls.clear()
+        work.request_scopes.clear()
+        work.stale_responses.clear()
+    session._tool_identity = identity
+    session._tool_connection = connection
+    session._tool_operation_namespace = uuid4().hex
+    session._tool_operation_connection = connection
+    # Replace rather than clear: an old worker can finish into its captured
+    # dictionary without overwriting a reused call ID on the new connection.
+    session._tool_call_results = {}
+    session.tool_output_pending = False
+    session._tool_response_options = {}
+    session._last_response_options = {}
+    session._recovery_active = False
+
+    write = getattr(session, '_journal_write_recovery', None)
+    if write is not None:
+        write.update(websocket=connection, turn=turn, published=None,
+                     reconciled=False, interrupted_at=time.monotonic())
+    delivery = getattr(session, '_delivery_recovery', None)
+    if delivery is not None:
+        delivery.update(websocket=connection, turn=turn, published=None,
+                        reported_terminal=False)
+    # No response or recovery publication here. The first fresh user turn may
+    # reconcile metadata through the existing separately authorized readers.
+    # Keep _delivery_results/_delivery_receipts: their uncertain/sent entries
+    # must never become a new send just because the socket changed.
+
+
+def voice_tool_operation_id(session, call_id):
+    """Scope a provider call ID to the socket observed before the first await.
+
+    Capture this before dispatching a worker. The member conversation's durable
+    execution namespace and receipts must survive reconnects, but provider IDs
+    may be reused by a replacement socket for a distinct authorized execution.
+    Deriving an ID does not authorize execution; guarded_voice_tool still must
+    perform its fresh access and request-scope checks before running any action.
+    """
+    if not isinstance(call_id, str) or not call_id or len(call_id) > 256:
+        raise ValueError('Execution transport identity is invalid.')
+    connection = getattr(session, 'websocket', None)
+    identity = delivery_identity(session)
+    if (getattr(session, '_tool_identity', identity) != identity
+            or getattr(session, '_tool_connection', connection) is not connection
+            or getattr(session, '_tool_operation_connection', connection) is not connection):
+        raise VoiceConnectionRejected('This voice operation does not belong to the admitted connection.')
+    namespace = getattr(session, '_tool_operation_namespace', None)
+    if namespace is None:
+        # Internal callers may omit run(). Pin their first observed socket but
+        # leave authorization and tool admission to the guard; never rotate here.
+        namespace = session._tool_operation_namespace = uuid4().hex
+        session._tool_operation_connection = connection
+    return sha256(json.dumps([namespace, call_id], separators=(',', ':')).encode()).hexdigest()
 
 
 def delivery_receipt_fingerprint(receipt):
@@ -490,7 +596,7 @@ class VoiceRateLimitRecovery:
             sent = await create_response(session, {
                 **getattr(session, '_last_response_options', {}),
                 **recovery_options(session),
-            })
+            }, origin='rate_limit_retry')
             if sent is False and self.current(scope):
                 session.last_error = 'Voice retry could not be sent. Please ask again after reconnecting.'
         except asyncio.CancelledError:

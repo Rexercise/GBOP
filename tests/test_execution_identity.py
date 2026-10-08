@@ -193,7 +193,9 @@ class ExecutionIdentityTests(unittest.TestCase):
                 self.assertNotIn('operation_id',schema['properties'])
                 self.assertNotIn('_execution_operation',schema['properties'])
             self.assertIn('operation_id=call.call_id',source)
-        self.assertIn('operation_id=call_id',(ROOT/'bot.py').read_text())
+        voice_source = (ROOT/'bot.py').read_text()
+        self.assertIn('operation_id = voice_tool_operation_id(self, call_id)', voice_source)
+        self.assertIn('generation=generation, operation_id=operation_id', voice_source)
 
     def test_browser_duplicate_request_does_not_regenerate_execution_call_ids(self):
         from types import SimpleNamespace as NS
