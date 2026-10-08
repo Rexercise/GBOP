@@ -224,7 +224,8 @@ def ingest(db, data, now=None):
                     days.setdefault(bar['time'] // 86400 * 86400, []).append(bar)
                 for day, incoming in days.items():
                     identity = (item['asset'], item['symbol'], step, day)
-                    old = conn.execute('SELECT payload FROM gbop_market_history WHERE asset=? AND symbol=? AND step=? AND day_utc=?', identity).fetchone()
+                    reader = getattr(conn, 'market_history_row', None)
+                    old = reader(identity) if reader else conn.execute('SELECT payload FROM gbop_market_history WHERE asset=? AND symbol=? AND step=? AND day_utc=?', identity).fetchone()
                     if step == 3600:
                         retained = _native_h1_bucket(old['payload'], day, captured) if old else []
                         merged = {b['time']: b for b in retained}
@@ -252,7 +253,8 @@ def read_feed(db, asset, now=None):
     now = int(time.time() if now is None else now)
     asset = asset_name(asset)
     with db() as conn:
-        row = conn.execute('SELECT * FROM gbop_market_feed WHERE asset=?', (asset,)).fetchone()
+        reader = getattr(conn, 'market_feed_row', None)
+        row = reader(asset) if reader else conn.execute('SELECT * FROM gbop_market_feed WHERE asset=?', (asset,)).fetchone()
     if row is None:
         return {'ok': False, 'asset': asset, 'status': 'not_connected',
                 'message': 'No broker data received for this asset.',

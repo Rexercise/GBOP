@@ -1,6 +1,7 @@
 import os
 import re
 import psycopg
+import hashlib
 
 
 SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -10,6 +11,8 @@ if not SUPABASE_DB_URL:
         "SUPABASE_DB_URL is missing. Add the Supabase Session pooler "
         "connection string to Render Environment."
     )
+
+_MARKET_CACHE_NAMESPACE = hashlib.sha256(SUPABASE_DB_URL.encode('utf-8')).hexdigest()
 
 
 class RowCompat(dict):
@@ -78,6 +81,14 @@ class ConnectionCompat:
 
     def __enter__(self):
         return self
+
+    def market_history_row(self, identity):
+        from gbop_voice_web.market_payload_cache import read_history
+        return read_history(self, _MARKET_CACHE_NAMESPACE, identity)
+
+    def market_feed_row(self, asset):
+        from gbop_voice_web.market_payload_cache import read_feed
+        return read_feed(self, _MARKET_CACHE_NAMESPACE, asset)
 
     def __exit__(self, exc_type, exc, tb):
         try:

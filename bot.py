@@ -4946,7 +4946,7 @@ For ordinary trade conversation:
 - If exactly one open trade clearly matches a natural follow-up such as
   "added another .25R", it may refer to that trade.
 - If multiple plausible open trades exist, ask which one.
-- Multi-entry journal report -> stage_journal_story, then save_journal_story. Missing risk does not block narrative capture.
+- Any journal report, including one entry -> stage_journal_story, then save_journal_story on an explicit save request. Missing/removed R never blocks saving; say R unknown. Add or clear reported R later on the same Trade #.
 - Explicit first execution with known risk -> open_trade; never use it merely to capture a story.
 - Additional entry -> add_entry.
 - Mid-trade development -> record_trade_event.
