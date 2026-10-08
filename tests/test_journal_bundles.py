@@ -249,7 +249,7 @@ class BundleTests(unittest.TestCase):
         self.detail(110, metadata={'trade_date': '2026-09-01'})
         self.event('journal_canonical_v1', {'journal_id': 110}, thesis=40)
         self.conn.execute("INSERT INTO journals VALUES(120,NULL,10,20,'Latest legacy journal','',NULL,'','2026-10-06')")
-        actual = recall.history(self.db, 10, 20, {'latest': 'trade'})
+        actual = recall.history(self.db, 10, 20, {'latest': 'trade', 'date_basis': 'trade'})
         self.assertEqual(actual['journals'][0]['trade_number'], 1)
         saved = recall.history(self.db, 10, 20, {'latest': 'trade', 'date_basis': 'saved'})
         self.assertEqual(saved['journals'][0]['trade_number'], 2)
@@ -258,19 +258,19 @@ class BundleTests(unittest.TestCase):
         self.assertIn('does not establish', saved['selection_note'])
 
     def test_missing_conflicting_or_tied_dates_require_clarification(self):
-        self.assertEqual(recall.history(self.db, 10, 20, {'latest': 'trade'})['status'], 'trade_date_ambiguous')
+        self.assertEqual(recall.history(self.db, 10, 20, {'latest': 'trade', 'date_basis': 'trade'})['status'], 'trade_date_ambiguous')
         self.conn.execute("INSERT INTO journals VALUES(110,40,10,20,'Other trade','',NULL,'','2026-10-02')")
         self.detail(110, metadata={'trade_date': '2026-10-02'})
         self.event('journal_canonical_v1', {'journal_id': 110}, thesis=40)
-        self.assertEqual(recall.history(self.db, 10, 20, {'latest': 'trade'})['status'], 'trade_date_ambiguous')
-        result, client = self.send({'latest': 'trade'})
+        self.assertEqual(recall.history(self.db, 10, 20, {'latest': 'trade', 'date_basis': 'trade'})['status'], 'trade_date_ambiguous')
+        result, client = self.send({'latest': 'trade', 'date_basis': 'trade'})
         self.assertFalse(result['ok']); client.post.assert_not_called()
 
     def test_market_review_date_is_not_a_reported_trade_date(self):
         self.conn.execute("UPDATE theses SET status='IDEA' WHERE id=40")
         meta = {'trade_date': '2026-10-05', 'provenance': {'context_defaults': ['trade_date'], 'member_reported': []}}
         self.conn.execute('UPDATE journal_details SET metadata=? WHERE journal_id=100', (json.dumps(meta),))
-        self.assertEqual(recall.history(self.db, 10, 20, {'latest': 'trade'})['status'], 'trade_date_ambiguous')
+        self.assertEqual(recall.history(self.db, 10, 20, {'latest': 'trade', 'date_basis': 'trade'})['status'], 'trade_date_ambiguous')
         text = recall.history(self.db, 10, 20, {'trade_number': 1})['context_text']
         self.assertIn('not a reported execution date', text)
         self.assertNotIn('Reported trade date:', text)
@@ -279,7 +279,7 @@ class BundleTests(unittest.TestCase):
         self.conn.execute("INSERT INTO journals VALUES(110,40,10,20,'Same day other trade','',NULL,'','2026-10-02')")
         self.detail(110, metadata={'reported_entry_at': '2026-10-02T10:00:00-04:00'})
         self.event('journal_canonical_v1', {'journal_id': 110}, thesis=40)
-        self.assertEqual(recall.history(self.db, 10, 20, {'latest': 'trade'})['status'], 'trade_date_ambiguous')
+        self.assertEqual(recall.history(self.db, 10, 20, {'latest': 'trade', 'date_basis': 'trade'})['status'], 'trade_date_ambiguous')
 
     def test_resolved_latest_is_bound_across_new_save_and_display_number_change(self):
         context = MarketConversation(owner=(10,20,'discord'))
@@ -304,7 +304,7 @@ class BundleTests(unittest.TestCase):
 
     def test_studies_are_not_selected_as_latest_trade(self):
         self.conn.execute("UPDATE theses SET status='IDEA' WHERE id=40")
-        result = recall.history(self.db, 10, 20, {'latest': 'trade'})
+        result = recall.history(self.db, 10, 20, {'latest': 'trade', 'date_basis': 'trade'})
         self.assertEqual(result['journals'][0]['trade_number'], 1)
 
 
@@ -325,9 +325,9 @@ class RecallIntentTests(unittest.TestCase):
         self.assertEqual((args['latest'], args['date_basis']), ('trade', 'trade'))
         self.assertIsNone(args['legacy_journal_number'])
         journal, _ = recall.bind_recall_intent('get_journal_history', {}, 'My last journal entry')
-        self.assertEqual((journal['latest'], journal['date_basis']), ('journal', 'saved'))
+        self.assertEqual((journal['latest'], journal['date_basis']), ('journal', None))
         recorded, _ = recall.bind_recall_intent('get_journal_history', {}, 'My latest recorded trade')
-        self.assertEqual(recorded['date_basis'], 'saved')
+        self.assertIsNone(recorded['date_basis'])
 
     def test_text_only_and_exact_identity_are_preserved(self):
         args, denial = recall.bind_recall_intent('send_journal_history', {'trade_number': 2},
@@ -357,7 +357,7 @@ class RecallIntentTests(unittest.TestCase):
         runner.assert_not_called()
         context.run('get_journal_history', {'limit': 1}, runner)
         self.assertEqual(runner.call_args.args[1]['latest'], 'trade')
-        self.assertEqual(runner.call_args.args[1]['date_basis'], 'trade')
+        self.assertIsNone(runner.call_args.args[1]['date_basis'])
 
 
 if __name__ == '__main__':

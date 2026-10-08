@@ -197,11 +197,16 @@ is absent. Exact-record recall also offers read-only full-context pages, includi
 all saved feelings, SELF grades, execution/management history and photo notes.
 Questions use those pages without sending private messages.
 
-`latest=trade` orders by actual reported trade dates. Missing, conflicting or
-overlapping date precision requires clarification; a market-review default date
-is not a member execution date. `date_basis=saved` explicitly requests the latest
-saved trade; `latest=journal` uses saved/updated time. A selected identity is bound
-through the same turn's context pages and send even if display numbers change.
+Ordinary “last trade” or “last journal” reads use `latest=trade` or
+`latest=journal` with `date_basis=null`: the newest substantive saved information
+across trades, standalone notes and unfinished drafts, with its linked context.
+A newer standalone feeling note wins over an older execution. Read/prompt/receipt
+bookkeeping does not advance recency; unfinished drafts remain outside performance.
+Answer directly with a short missing-date caveat, without a permission/type question.
+Only explicit actual chronology uses `date_basis=trade`; missing, conflicting or
+overlapping dates stay unknown. Saved timestamps and market-review defaults never
+become member execution dates. Same-turn context pages pin the selected identity.
+This read alone never authorizes private delivery or finalization.
 
 `send_journal_history` sends one complete private bundle by default. It includes
 all images associated through the selected owned trade, journal source pages,

@@ -79,17 +79,17 @@ def variant_explanation(row, bars, end, step, *, candle_timeframe=None):
     range_name, man_name = clock(anchor['start_ny']), clock(stamp(manipulation))
     pending_resoup = None
     if man_inside and not invalid and not internal_gap and not any(v['code'] == 'V6' for v in labels):
-        midpoint = next((o.get('evidence') for o in row.get('objectives', []) if o['objective'] == 'midpoint'), None)
-        midpoint_start = parse_time(midpoint['bar_open_ny']) if midpoint and parse_time(midpoint['bar_close_ny']) <= end else float('inf')
+        full_touch = next((o.get('evidence') for o in row.get('objectives', []) if o['objective'] == 'opposing_liquidity'), None)
+        completion_start = parse_time(full_touch['bar_open_ny']) if full_touch and parse_time(full_touch['bar_close_ny']) <= end else float('inf')
         for t, stop in clock_rows[manipulation_index + 1:]:
             if t >= min(prefix, end):
                 break
             partial = summarize(bars, t, min(stop, prefix, end), step)
             swept = (partial.get('high', man['high']) > man['high'] if direction == 'bearish'
                      else partial.get('low', man['low']) < man['low'])
-            if swept and stop > prefix and midpoint_start >= stop:
+            if swept and stop > prefix and completion_start >= stop:
                 pending_resoup = {'code': 'V6', 'name': NAMES['V6'],
-                    'requires': f"{clock(stamp(t))} {tf} must close inside before midpoint delivery after sweeping {man_name}'s extreme."}
+                    'requires': f"{clock(stamp(t))} {tf} must close inside before full opposing-liquidity delivery after sweeping {man_name}'s extreme."}
                 break
     reasons = {}
     if labels:
@@ -101,7 +101,7 @@ def variant_explanation(row, bars, end, step, *, candle_timeframe=None):
         reasons['V4'] = f'{inside_names} was inside before {man_name} manipulation returned inside'
         reasons['V5'] = f'{inside_names} were {len(inside)} inside candles before {man_name} manipulation returned inside'
         resoup = evidence.get('resoup_hour_ny')
-        reasons['V6'] = (f'{clock(resoup)} swept {man_name}\'s extreme and closed inside before midpoint delivery'
+        reasons['V6'] = (f'{clock(resoup)} swept {man_name}\'s extreme and closed inside before full opposing-liquidity delivery'
                          if resoup else '')
         result['reason'] = '; '.join(reasons[v['code']] for v in labels if reasons.get(v['code']))
         result['status'] = 'completed' if target and evidence.get('status') == 'distribution_observed' else 'structure_observed'

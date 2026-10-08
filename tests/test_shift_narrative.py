@@ -85,7 +85,7 @@ class ShiftNarrativeTests(unittest.TestCase):
     def test_post_distribution_resoup_is_not_v6(self):
         data = candles([(100,110,90,100),(106,109,104,106),(106,109,104,106),(106,109,104,106)])
         data[12]['high'] = 112
-        data[14]['low'] = 99  # midpoint before re-soup
+        data[14]['low'] = 89  # full opposing delivery before re-soup
         data[24]['high'] = 113
         self.assertNotIn('V6', [x['code'] for x in self.review(data)['ranges'][0]['variant_evidence']['labels']])
 

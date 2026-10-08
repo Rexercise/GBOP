@@ -149,7 +149,7 @@ def attach_directional_outcome(review, bars, end, step):
     return review
 
 
-def classify_structure(row, bars, end, step, *, candle_timeframe=None):
+def _classify_structure(row, bars, end, step, *, candle_timeframe=None):
     """Canonical V1–V6 on the supplied range's own closed candle grid.
 
     H1 callers keep their existing contract; nested Model 1 CRTs explicitly
@@ -240,11 +240,13 @@ def classify_structure(row, bars, end, step, *, candle_timeframe=None):
         return result
 
     # A repeat touch of the original range boundary is NOT enough for V6.
-    # Require a later H1 to sweep the completed manipulation extreme and close
-    # inside, before any midpoint delivery (a conservative distribution boundary).
-    midpoint = next((o['evidence'] for o in row['objectives'] if o['objective'] == 'midpoint'), None)
-    distribution_start = parse_time(midpoint['bar_open_ny']) if midpoint else end
-    invalid_at = parse_time(row['invalidated_at_ny']) if row['invalidated_at_ny'] else end
+    # Midpoint is partial delivery, not the end of the re-soup window. Require
+    # the range's own completed candle to return inside before full opposing
+    # delivery. Even an unordered full touch bounds what can be proved before it.
+    full_touch = next((o['evidence'] for o in row['objectives']
+                       if o['objective'] == 'opposing_liquidity' and o.get('evidence')), None)
+    distribution_start = parse_time(full_touch['bar_open_ny']) if full_touch else end
+    invalid_at = parse_time(row['invalidated_at_ny']) if row.get('invalidated_at_ny') else end
     bearish = row['direction_observed'] == 'bearish'
     for t, stop in clock_rows[manipulation_index + 1:]:
         if t >= min(end, invalid_at):
@@ -253,15 +255,111 @@ def classify_structure(row, bars, end, step, *, candle_timeframe=None):
         if not later['complete']:
             break
         resoup = later['high'] > manipulation['high'] if bearish else later['low'] < manipulation['low']
-        if (resoup and stop <= distribution_start
+        if (resoup and stop <= min(distribution_start, invalid_at, end)
                 and anchor['low'] <= later['close'] <= anchor['high']):
-            label('V6', 're-soup', f'A later completed {tf} swept the first manipulation extreme and returned inside before midpoint delivery.')
+            label('V6', 're-soup', f'A later completed {tf} swept the first manipulation extreme and returned inside before full opposing-liquidity delivery.')
             result['resoup_hour_ny'] = later['start_ny']
             break
     if result['labels'] and result['status'] == 'developing':
         result['status'] = 'structure_observed_distribution_unresolved'
     if not result['labels']:
         result['reason'] = 'Completed variant not established; retain the observed purge and objective facts.'
+    return result
+
+
+def _delivery_milestones(row, bars, end, step, *, candle_timeframe=None):
+    """Freeze each objective's manner at its first ordered source touch.
+
+    This describes partial/full objective delivery, not an execution or the
+    later own-timeframe closure required by the structural classifier. A later
+    re-soup can change the final manner but cannot rewrite the midpoint snapshot.
+    """
+    if row.get('validity_evidence_through_ny'):
+        end = min(end, parse_time(row['validity_evidence_through_ny']))
+    anchor = row['anchor']
+    tf = timeframe(candle_timeframe or 'H1')
+    start = parse_time(anchor['start_ny'])
+    invalid = parse_time(row['invalidated_at_ny']) if row.get('invalidated_at_ny') else None
+    result = {}
+    for objective in ('midpoint', 'opposing_liquidity'):
+        fact = next((o for o in row['objectives'] if o['objective'] == objective), {})
+        hit = fact.get('evidence')
+        milestone = {'status': 'pending' if row.get('direction_observed') and anchor.get('complete')
+                     and 'unresolved' not in str(fact.get('status')) else 'unverified'}
+        result[objective] = milestone
+        if not hit or parse_time(hit['bar_close_ny']) > end:
+            if (invalid is not None and invalid <= end
+                    and fact.get('status') == 'not_observed_before_invalidation'):
+                milestone['status'] = 'not_reached_before_invalidation'
+            continue
+        cutoff = parse_time(hit['bar_close_ny'])
+        milestone.update(status='unverified', is_full_completion=False, source_interval={k:hit[k] for k in
+            ('bar_open_ny','bar_close_ny','precision_seconds','exact_tick_time_known') if k in hit},
+            known_at_ny=hit['bar_close_ny'])
+        if (fact.get('status') != 'observed_after_purge' or not anchor.get('complete')
+                or hit.get('coverage_through_touch_complete') is False
+                or invalid is not None and cutoff >= invalid):
+            continue
+        prefix = [b for b in bars if start <= b['time'] and b['time'] + step <= cutoff]
+        coverage = summarize(prefix, parse_time(anchor['end_ny']), cutoff, step)
+        if not coverage['complete']:
+            continue
+        # Supply no post-milestone events or objectives to the frozen classifier.
+        # Its opposing target is this milestone only for the manner projection.
+        events = [e for e in row['events'] if e.get('bar_close_ny')
+                  and parse_time(e['bar_close_ny']) <= cutoff]
+        frozen = {**row, 'events': events, 'invalidated_at_ny': None,
+                  'objectives': [{'objective':'opposing_liquidity',
+                                  'status':'observed_after_purge','evidence':hit}]}
+        structure = _classify_structure(frozen, prefix, cutoff, step, candle_timeframe=candle_timeframe)
+        clock_rows = variant_clock(start, cutoff, tf)
+        purges = [e for e in events if e['kind'].endswith('_side_purge')]
+        direction = row.get('direction_observed')
+        manner = {'status':'unverified', 'labels':[], 'snapshot_through_ny':hit['bar_close_ny']}
+        milestone.update(status='observed', is_full_completion=objective == 'opposing_liquidity', manner=manner)
+        opening = datetime.fromisoformat(anchor['start_ny'])
+        if (not purges or not direction or candle_timeframe is None and tf == 'H1'
+                and (opening.minute or opening.second)):
+            continue
+        first = min(purges, key=lambda e: e['bar_open_ny'])
+        manipulation_index = containing_index(clock_rows, parse_time(first['bar_open_ny']))
+        delivery_index = containing_index(clock_rows, parse_time(hit['bar_open_ny']))
+        if (manipulation_index is None or delivery_index is None or manipulation_index == 0
+                or parse_time(first['bar_close_ny']) > parse_time(hit['bar_open_ny'])):
+            continue
+        inside = [summarize(prefix,t,stop,step) for t,stop in clock_rows[1:manipulation_index]]
+        if not all(c['complete'] and c['high'] <= anchor['high'] and c['low'] >= anchor['low'] for c in inside):
+            continue
+        t, stop = clock_rows[manipulation_index]
+        manipulation = summarize(prefix,t,stop,step)
+        if delivery_index > manipulation_index and (not manipulation['complete']
+                or not anchor['low'] <= manipulation['close'] <= anchor['high']):
+            continue
+        codes = [v['code'] for v in structure['labels']]
+        count = delivery_index + 1
+        if len(inside) == 1:
+            timing = 'V4'
+        elif len(inside) >= 2:
+            timing = 'V5'
+        elif manipulation_index == 1:
+            timing = 'V2' if count == 2 else 'V1' if count == 3 else 'V3'
+        else:
+            timing = None
+        if timing and timing not in codes:
+            codes.insert(0,timing)
+        if codes:
+            manner.update(status='observed', primary_code='V6' if 'V6' in codes else codes[0],
+                          labels=[{'code':code,'name':NAMES[code]} for code in codes],
+                          candles_through_milestone=count)
+    if any(m.get('source_interval') for m in result.values()):
+        result.update(range_start_ny=anchor['start_ny'],timeframe=tf)
+    return result
+
+
+def classify_structure(row, bars, end, step, *, candle_timeframe=None):
+    """Keep confirmed structure and objective-delivery milestones separate."""
+    result = _classify_structure(row, bars, end, step, candle_timeframe=candle_timeframe)
+    result['delivery_milestones'] = _delivery_milestones(row, bars, end, step, candle_timeframe=candle_timeframe)
     return result
 
 

@@ -1,5 +1,5 @@
 SUPER SOUP — MODEL 1 OWN CRT
-Apply canonical V1–V6 to Model 1's own timeframe/extremes. V4/V5 allow inside bars; V6 re-soups the manipulation extreme before distribution, not just the original boundary.
+Apply canonical V1–V6 to Model 1's own timeframe/extremes. V4/V5 allow inside bars; V6 re-soups the manipulation extreme before full opposing delivery; midpoint is partial. The same own-timeframe inside-close/validity rules apply.
 V2 — Pattern Trader’s Kryptonite: candle 2 purges then delivers ordered opposing liquidity before its outside close. This is valid completed Super Soup; no inside close is required after full delivery. SS and CISD may confirm on the same assigned close. Same-source-bar order stays unverified.
 Use candle_lifecycle.purge_candles[].super_soup_structure; raw model1.lifecycle/model1.lifecycles. Keep own CRT, local_function delivery, parent objectives, CISD and execution separate. Later delivery never restores a previously failed CRT. Preserve source intervals/relative_to_model1_invalidation and the selected-range cutoff. Clean can fail; unclean can function.
 Forming/gapped evidence gives candidates or uncertainty, never completed variants. Recap Model 1 → SS variant → CISD. No fills, profits, superiority, probability or monitoring inferred.

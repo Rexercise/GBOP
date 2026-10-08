@@ -52,7 +52,7 @@ class VariantExplanationTests(unittest.TestCase):
         v5 = base(); v5[36]['high'] = 112; v5[38]['low'] = 89
         cases.append(('V5', v5, ('9:00 AM/10:00 AM', '2 inside candles')))
         v6 = base(); v6[12]['high'] = 112; v6[24]['high'] = 113; v6[37]['low'] = 89
-        cases.append(('V6', v6, ('10:00 AM swept', "9:00 AM's extreme", 'before midpoint delivery')))
+        cases.append(('V6', v6, ('10:00 AM swept', "9:00 AM's extreme", 'before full opposing-liquidity delivery')))
         for code, data, snippets in cases:
             with self.subTest(code=code):
                 row = review(data)
@@ -156,10 +156,12 @@ class VariantExplanationTests(unittest.TestCase):
         self.assertIn('V6', candidates(row))
         self.assertIn("10:00 AM swept 9:00 AM's extreme", detail(row)['reason'])
         candidate = next(c for c in detail(row).get('candidates', []) if c['code'] == 'V6')
-        self.assertIn('close inside before midpoint', candidate['requires'])
+        self.assertIn('close inside before full opposing-liquidity delivery', candidate['requires'])
         data[24]['high'] = 111
         self.assertNotIn('V6', candidates(review(data, '10:30')))
         data[24]['high'] = 113; data[25]['low'] = 99
+        self.assertIn('V6', candidates(review(data, '10:30')))
+        data[25]['low'] = 89  # full completion ends the re-soup window
         self.assertNotIn('V6', candidates(review(data, '10:30')))
 
     def test_no_purge_or_same_source_tie_does_not_invent_candidates(self):

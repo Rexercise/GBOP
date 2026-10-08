@@ -6,6 +6,7 @@ are retained. Callers hold the normal authenticated member transaction guard.
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import re
 
 SCHEMA_SQL = [
     '''CREATE TABLE IF NOT EXISTS journal_story_drafts (
@@ -52,6 +53,56 @@ def read(conn, guild, user, draft_id=None):
     return result
 
 
+
+def substantive_raw_passages(draft):
+    """Keep narration for recency without counting pure read/resume/save commands.
+
+    Original passages remain stored untouched. This projection is only an
+    ordering aid; it never supplies missing trade dates or performance facts.
+    """
+    passages=draft.get('raw_story') or []
+    if not isinstance(passages,list):return []
+    output=[]
+    control_words=set(('the my this that a an new same unfinished saved current last latest '
+        'reported journal journaling draft story narration trade record recording it now '
+        'please again only up there one').split())
+    for passage in passages:
+        if not isinstance(passage,dict) or not isinstance(passage.get('text'),str):continue
+        text=passage['text'].strip()
+        normalized=text.casefold().replace('’',"'")
+        normalized=re.sub(r'\b(trade|journal|draft)\s*#?\s*\d+\b(?![-/:]\d)',r'\1',normalized)
+        words=re.findall(r"[^\W_]+(?:'[^\W_]+)?",normalized)
+        if not text:continue
+        if not words:
+            output.append(passage)
+            continue
+        if words in (['yes'],['no'],['okay'],['ok'],['sure'],['thanks'],['yes','please']):continue
+        for prefix in (['can','you'],['could','you'],['would','you'],['i','want','to'],['i','need','to'],["let's"]):
+            if words[:len(prefix)]==prefix:words=words[len(prefix):];break
+        while words and words[0] in ('please','okay','ok','yes'):words=words[1:]
+        if words and words[0] in ('start','resume','continue','read','show','open','get','save','finish',
+                'finalize','finalise','pause','stop','journal','log','record') and all(word in control_words for word in words[1:]):
+            continue
+        output.append(passage)
+    return output
+
+
+def substantive_content(draft):
+    """Member narrative/facts only; bookkeeping/provenance clocks are excluded."""
+    values=deepcopy(draft.get('values') or {})
+    if not isinstance(values,dict):values={}
+    provenance=draft.get('provenance') or {}
+    title_provenance=provenance.get('title') if isinstance(provenance,dict) else None
+    if isinstance(title_provenance,dict) and title_provenance.get('source')=='derived_title':
+        values.pop('title',None)
+    values={key:value for key,value in values.items() if value not in (None,'',[],{})}
+    if isinstance(values.get('entries'),list):
+        entries=[entry for entry in values['entries'] if isinstance(entry,dict)
+                 and any(key!='entry_index' and value not in (None,'',[],{}) for key,value in entry.items())]
+        if entries:values['entries']=entries
+        else:values.pop('entries',None)
+    return {'values':values,'narration':[p['text'] for p in substantive_raw_passages(draft)]}
+
 def write(conn, guild, user, draft, *, expected_revision=None, finalized=False, journal_id=None, thesis_id=None):
     """Optimistic version check complements the shared per-member transaction lock."""
     current=read(conn,guild,user,draft['id'])
@@ -64,6 +115,16 @@ def write(conn, guild, user, draft, *, expected_revision=None, finalized=False, 
         value.pop(key,None)
     value['member']=[guild,user]
     value.setdefault('created_at',now)
+    # Only a changed factual/narrative projection moves activity recency.
+    # A receipt, delivered question, pause/resume or identical patch cannot.
+    before=substantive_content(current[0]) if current else {'values':{},'narration':[]}
+    after=substantive_content(value)
+    if after!=before:
+        value['substantive_updated_at']=now
+    elif current and 'substantive_updated_at' in current[0]:
+        value['substantive_updated_at']=current[0]['substantive_updated_at']
+    else:
+        value.pop('substantive_updated_at',None)
     payload=json.dumps(value,ensure_ascii=False,separators=(',',':'))
     if len(payload.encode('utf-8'))>262144:
         raise ValueError('This journal is too large to add another passage safely. Existing saved narration is intact; start a separate journal.')

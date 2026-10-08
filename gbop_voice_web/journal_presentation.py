@@ -190,6 +190,16 @@ def _record(value, preview_chars=600):
     if not isinstance(value, dict):
         return value
     result = deepcopy(value)
+    drafts = result.get('unfinished_journals')
+    if isinstance(drafts, list):
+        result['unfinished_journals'] = [
+            {**_exact(draft, ('draft_id','draft_status','title','saved_at')),
+             'story': metadata_summary({**draft.get('story', {}), 'story_provenance': draft.get('provenance', {})}),
+             'raw_story_preview': '\n'.join(str(part.get('text') or '') for part in draft.get('raw_story') or [])[:preview_chars],
+             'details_omitted': True} for draft in drafts[:3]]
+        result['unfinished_journal_count'] = len(drafts)
+        result['unfinished_journal_details_omitted'] = True
+        result['unfinished_journal_note'] = 'Read-only unfinished narratives. Complete text remains in context_text pages; do not finalize or send automatically.'
     previews = []
     for field in ('description', 'summary', 'study_note', 'rule_adherence'):
         if isinstance(result.get(field), str) and len(result[field]) > preview_chars:
@@ -256,7 +266,7 @@ def journal_tool_payload(name, result):
         for key in ('journals',):
             out[key] = [_exact(row, ('journal_number','trade_number','legacy_journal_number',
                 'record_key','is_legacy','record_kind','saved_at','reported_trade_date',
-                'photo_count','photos_available','update_count','legacy_history_count'))
+                'draft_id','draft_status','photo_count','photos_available','update_count','legacy_history_count'))
                 for row in result.get(key) or []]
         if _size(out) <= JOURNAL_PRESENTATION_MAX_CHARS:
             return out
@@ -284,7 +294,8 @@ def journal_tool_payload(name, result):
         'result_r', 'final_result_r', 'journal_count', 'canonical_journal_count',
         'legacy_journal_count', 'preserved_legacy_history_count', 'stored_journal_entry_count', 'trade_count',
         'open_trade_count', 'closed_trade_count', 'error', 'status', 'rule_adherence',
-        'risk_flags', 'recorded_thesis_risk', 'advisory_status', 'selection_basis', 'selection_note', 'latest'))
+        'risk_flags', 'recorded_thesis_risk', 'advisory_status', 'selection_basis', 'selection_note', 'latest',
+        'latest_recorded','is_latest_trade','drafts_available','unfinished_journal_count','draft_id','draft_status'))
     minimal['journal_view'] = {'kind': 'journal_details_omitted',
         'character_budget': JOURNAL_PRESENTATION_MAX_CHARS, 'saved_records_unchanged': True,
         'note': 'Details exceed one reply and were not supplied. Check a smaller history page '

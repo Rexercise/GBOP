@@ -84,8 +84,15 @@ class RangeIdentityNarrationTests(unittest.TestCase):
         wire = voice_tool_payload('review_market_session', {'ok':True,'asset':'NAS100','review':review})
         self.assertTrue(wire['ok'])
         synopsis = expand(wire)['review']['shift_synopsis']
-        self.assertIn("10:00 PM H1 candle swept the 9:00 PM H1 range's sell-side", synopsis['spoken_summary'])
-        self.assertIn('closed bullish inside that range', synopsis['spoken_summary'])
+        # Failed secondary mechanics are now on request. The short default
+        # retains their own range verdict and exact retrieval/cutoff identity.
+        self.assertIn('9:00 PM H1 range: bullish, failed before its objectives', synopsis['spoken_summary'])
+        self.assertNotIn("10:00 PM H1 candle swept the 9:00 PM H1 range's sell-side", synopsis['spoken_summary'])
+        self.assertIn('Keep failed secondary ranges brief', build_shift_synopsis(review)['response_contract'])
+        indexed = next(r for r in synopsis['range_index'] if r['anchor_start_ny'] == ny('21:00'))
+        route = indexed.get('detail_request') or synopsis['range_detail_request']
+        self.assertEqual(route['args'].get('anchor_start_ny', indexed['anchor_start_ny']), ny('21:00'))
+        self.assertEqual(route['args']['through_ny'], '2026-10-06T00:00:00-04:00')
         self.assertEqual(synopsis['shift_end']['selection_status'], 'range_under_review')
         self.assertEqual(synopsis['shift_end']['selected_range_crt_status'], 'not_established')
         self.assertEqual(synopsis['shift_end']['active_anchor_ny'], ny('23:00'))
@@ -94,7 +101,8 @@ class RangeIdentityNarrationTests(unittest.TestCase):
         hour = next(h for h in detail['active_range_context']['hourly_development'] if h['candle_start_ny']==ny('22:00'))
         self.assertEqual(detail['active_range_context']['anchor_start_ny'], ny('21:00'))
         self.assertEqual(hour['own_range_crt_status_at_cutoff'], 'not_established')
-        self.assertIn('10:00 PM H1 candle', detail['spoken_summary'])
+        self.assertIn("10:00 PM H1 candle swept the 9:00 PM H1 range's sell-side", detail['spoken_summary'])
+        self.assertIn('closed bullish back inside the 9:00 PM H1 range', detail['spoken_summary'])
         followup=build_other_ranges(review,'NAS100',discussed=(ny('21:00'),))
         self.assertIn("10:00 PM H1 candle swept the 9:00 PM H1 range's sell-side",followup['spoken_summary'])
         self.assertNotIn('10:00 PM H1 candle swept its',followup['spoken_summary'])
