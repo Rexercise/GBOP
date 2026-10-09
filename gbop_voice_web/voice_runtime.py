@@ -31,6 +31,7 @@ JOURNAL_WRITE_NAMES = frozenset({
 })
 JOURNAL_WRITE_TERMINAL = frozenset({'saved', 'not_saved'})
 _journal_write_sink = ContextVar('gbop_journal_write_sink', default=None)
+_journal_recovery_sink = ContextVar('gbop_journal_recovery_sink', default=None)
 
 
 def _journal_write_outcome(name, status, result=None):
@@ -59,6 +60,8 @@ def _journal_write_outcome(name, status, result=None):
 
 
 def _journal_result_status(result):
+    if isinstance(result, dict) and result.get('write_attempted') is False:
+        return 'not_saved'  # Server-proven cancellation before the writer ran.
     if not isinstance(result, dict) or result.get('status') in {
             'journal_outcome_uncertain', 'stale_market_context', 'uncertain', 'pending'}:
         return 'uncertain'
@@ -88,15 +91,73 @@ def journal_write_committed(guild_id, member_id, result):
         sink(guild_id, member_id, result)
 
 
+def journal_write_recovery_ready(guild_id, member_id, reader):
+    """Register a server-owned exact-draft reader, never a model-supplied ID."""
+    sink = _journal_recovery_sink.get()
+    if sink is not None:
+        sink(guild_id, member_id, reader)
+
+
+async def _reconcile_journal_write(session, entry):
+    """One bounded read per fresh turn, after the original writer has settled."""
+    turn = getattr(session, '_voice_turn_count', 0)
+    connection = getattr(session, 'websocket', None)
+    if (not entry or entry.get('running') or not entry.get('reader')
+            or entry['outcome']['status'] != 'uncertain'
+            or turn <= entry['turn'] or entry.get('recovery_attempt_turn') == turn or entry.get('recovery_running')
+            or entry['identity'] != delivery_identity(session) or entry['websocket'] is not connection):
+        return
+    entry['recovery_attempt_turn'] = turn
+    entry['recovery_running'] = True
+    task = asyncio.create_task(asyncio.to_thread(entry['reader']))
+    def finished(completed):
+        entry['recovery_running'] = False
+        if not completed.cancelled():
+            completed.exception()  # Consume late read errors after a timeout.
+    task.add_done_callback(finished)
+    try:
+        result = await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        authorize = getattr(session, 'authorize_tool', None)
+        denial = await authorize() if authorize is not None else 'Current member authorization is required.'
+        if denial:
+            return {'ok': False, 'error': denial}
+        if (entry is not getattr(session, '_journal_write_recovery', None)
+                or entry['identity'] != delivery_identity(session)
+                or connection is not getattr(session, 'websocket', None)
+                or turn != getattr(session, '_voice_turn_count', 0)
+                or getattr(session, 'closed', False)
+                or getattr(getattr(session, 'market_context', None), 'closed', False)
+                or not isinstance(result, dict) or result.get('reconciliation_verified') is not True):
+            return
+        status = _journal_result_status(result)
+        if status in JOURNAL_WRITE_TERMINAL:
+            entry['outcome'] = _journal_write_outcome(entry['tool'], status, result)
+            entry['reconciled'] = False
+            entry['recovered_at_turn'] = turn
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print('[GBOP-WRITE-RECONCILE] unavailable:', type(exc).__name__)
+
+
 def journal_write_result_reported(session, name, call_id, result):
-    """Release the write barrier only when its verified result reached context."""
+    """Release a fence only after its verified receipt reached current context."""
     entry = getattr(session, '_journal_write_recovery', None)
-    if (entry and entry['tool'] == name and entry['call_id'] == call_id
-            and entry['identity'] == delivery_identity(session)
+    if not (entry and entry['identity'] == delivery_identity(session)
             and entry['websocket'] is getattr(session, 'websocket', None)
             and entry['outcome']['status'] in JOURNAL_WRITE_TERMINAL
-            and isinstance(result, dict)
-            and _journal_result_status(result) == entry['outcome']['status']):
+            and isinstance(result, dict)):
+        return
+    own_result = (entry['tool'] == name and entry['call_id'] == call_id
+                  and _journal_result_status(result) == entry['outcome']['status'])
+    recovery = result.get('journal_write_recovery')
+    if result.get('status') == 'journal_write_reconciliation_required':
+        recovery = result.get('prior_write')
+    recovered_result = (recovery == entry['outcome']
+                        and getattr(session, '_voice_turn_count', 0) > entry['turn'])
+    if recovered_result:
+        entry['recovered_at_turn'] = getattr(session, '_voice_turn_count', 0)
+    if own_result or recovered_result:
         entry['published'] = json.dumps(entry['outcome'], sort_keys=True, separators=(',', ':'))
         entry['reconciled'] = True
         entry['reconciled_turn'] = getattr(session, '_voice_turn_count', 0)
@@ -104,7 +165,8 @@ def journal_write_result_reported(session, name, call_id, result):
 
 def journal_write_needs_reconciliation(entry, turn):
     return bool(entry and (not entry['reconciled']
-        or 'interrupted_at' in entry and turn <= entry.get('reconciled_turn', turn)))
+        or ('interrupted_at' in entry or 'recovered_at_turn' in entry)
+        and turn <= entry.get('reconciled_turn', turn)))
 
 
 def journal_write_barrier(session, entry):
@@ -165,11 +227,20 @@ async def _run_journal_write(session, name, call_id, runner, identity, turn):
         except RuntimeError:
             pass  # Closed event loop: no current voice connection can recover.
 
+    def recovery_ready(guild, member, reader):
+        bound_member, owner, session_id = identity
+        if (bound_member and session_id and len(owner) >= 2
+                and (guild, member) == tuple(owner[:2]) and member == bound_member
+                and callable(reader)):
+            entry['reader'] = reader
+
     token = _journal_write_sink.set(committed)
+    recovery_token = _journal_recovery_sink.set(recovery_ready)
     try:
         result = await runner()
     except BaseException as exc:
-        entry['running'] = False
+        # Cancelling an asyncio waiter does not prove its DB worker stopped.
+        entry['running'] = isinstance(exc, asyncio.CancelledError)
         publish('uncertain')
         if isinstance(exc, Exception) and entry['outcome']['status'] == 'saved':
             return {'ok': True, **entry['outcome'], 'post_save_processing': 'unavailable',
@@ -185,6 +256,7 @@ async def _run_journal_write(session, name, call_id, runner, identity, turn):
         return result
     finally:
         _journal_write_sink.reset(token)
+        _journal_recovery_sink.reset(recovery_token)
 
 
 def recovery_options(session):
@@ -350,11 +422,42 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
     cache = getattr(session, '_tool_call_results', None)
     if cache is None:
         cache = session._tool_call_results = {}
+    prior_write = getattr(session, '_journal_write_recovery', None)
+    if name in READ_ONLY_RECOVERY_NAMES | JOURNAL_WRITE_NAMES:
+        recovery_denial = await _reconcile_journal_write(session, prior_write)
+        if recovery_denial is not None:
+            return recovery_denial
+        if (turn != getattr(session, '_voice_turn_count', 0)
+                or identity != delivery_identity(session)
+                or connection is not getattr(session, 'websocket', None)
+                or getattr(session, 'closed', False)
+                or getattr(getattr(session, 'market_context', None), 'closed', False)
+                or (is_current is not None and not is_current())):
+            return {'ok': False, 'error': 'This voice request is no longer current.'}
+    async def include_recovery(result):
+        if (name in READ_ONLY_RECOVERY_NAMES and isinstance(result, dict) and result.get('ok') is True
+                and prior_write is getattr(session, '_journal_write_recovery', None)
+                and prior_write and not prior_write['reconciled']
+                and identity == delivery_identity(session)
+                and connection is getattr(session, 'websocket', None)
+                and not getattr(session, 'closed', False)
+                and not getattr(getattr(session, 'market_context', None), 'closed', False)
+                and turn == getattr(session, '_voice_turn_count', 0)
+                and prior_write['outcome']['status'] in JOURNAL_WRITE_TERMINAL):
+            denial = await authorize() if authorize is not None else 'Current member authorization is required.'
+            if denial:
+                return {'ok': False, 'error': denial}
+            if (identity != delivery_identity(session) or connection is not getattr(session, 'websocket', None)
+                    or turn != getattr(session, '_voice_turn_count', 0) or getattr(session, 'closed', False)
+                    or getattr(getattr(session, 'market_context', None), 'closed', False)):
+                return {'ok': False, 'error': 'This voice request is no longer current.'}
+            return {**result, 'journal_write_recovery': dict(prior_write['outcome'])}
+        return result
     if call_id in cache:
         write = getattr(session, '_journal_write_recovery', None)
         if name in JOURNAL_WRITE_NAMES and write and write['call_id'] == call_id:
             return {'ok': write['outcome']['status'] == 'saved', **write['outcome']}
-        return cache[call_id]
+        return await include_recovery(cache[call_id])
     if getattr(session, '_recovery_active', False) and name == 'manage_market_watch' and args.get('action') not in ('list', 'cancel'):
         return {'ok': False, 'error': 'New watches are not started during recovery. Existing watches can be listed or cancelled.'}
     if getattr(session, '_recovery_active', False) and name not in RECOVERY_NAMES:
@@ -419,7 +522,7 @@ async def guarded_voice_tool(session, name, args, call_id, runner, is_current=No
         cache.pop(next(iter(cache)))
     if len(deliveries) > 64:
         deliveries.pop(next(iter(deliveries)))
-    return result
+    return await include_recovery(result)
 
 
 def compact_voice_tool_result(name, result):

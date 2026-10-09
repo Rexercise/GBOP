@@ -1087,8 +1087,9 @@ class MarketConversation:
             return deepcopy(self._other_result)
 
     @staticmethod
-    def _stale():
+    def _stale(*, write_not_started=False):
         return {'ok': False, 'status': 'stale_market_context',
+                **({'write_attempted': False, 'saved': False} if write_not_started else {}),
                 'error': 'This market request was cancelled or superseded; do not reuse its result.'}
 
     def _run_journal(self, name, arguments, runner, ticket, operation_id=None):
@@ -1101,7 +1102,7 @@ class MarketConversation:
         with self._journal_write_lock:
             with self._lock:
                 if not self.current(ticket):
-                    return self._stale()
+                    return self._stale(write_not_started=True)
                 wants_review = self._journal_reference is True or (reference in {'selected_review', 'selected_candle'} and self._journal_reference is None)
                 existing_journal = (name in {'stage_journal_story', 'get_journal_story', 'save_journal_story', 'edit_journal', 'record_trade_feeling', 'record_trade_self_grade', 'save_ss_review'} or name == 'save_journal_entry' and
                     any(args.get(key) is not None for key in ('journal_number', 'trade_number', 'legacy_journal_number'))
@@ -1153,8 +1154,36 @@ class MarketConversation:
                         'result': {'ok': False, 'status': 'journal_outcome_uncertain',
                             'error': 'This execution was already started. Check its saved state before retrying; do not create another entry.'}}
                 if cache_result:
-                    self._journal_results[key] = {'ok': False, 'status': 'journal_outcome_uncertain',
+                    placeholder = self._journal_results[key] = {'ok': False, 'status': 'journal_outcome_uncertain',
                         'error': 'This write was already started. Check saved journal/trade state before retrying; do not create a duplicate.'}
+            finalize_reader = None
+            if name == 'save_journal_story' and self.auth_provider:
+                from gbop_voice_web.journal_finalization import prepare_story_finalization
+                try:
+                    read_finalization = prepare_story_finalization(*self.auth_provider, args)
+                except Exception as exc:
+                    # Nothing reached the writer. A stale binding or failed
+                    # preflight cannot create an ambiguous-commit barrier.
+                    with self._lock:
+                        self._journal_results.pop(key, None)
+                    print('[GBOP-JOURNAL-FINALIZE] preflight_not_saved:', type(exc).__name__)
+                    return {'ok': False, 'saved': False, 'write_attempted': False,
+                            'status': 'journal_not_saved',
+                            'error': str(exc) if isinstance(exc, ValueError) else 'This finalization did not start. Read saved state before a fresh finalize request.'}
+                if read_finalization is not None:
+                    def finalize_reader():
+                        result = read_finalization()
+                        if result is not None:
+                            with self._lock:
+                                # Never overwrite a newer turn's same-shaped key.
+                                if self._journal_results.get(key) is placeholder:
+                                    if result.get('saved'):
+                                        self._journal_results[key] = deepcopy(result)
+                                    else:
+                                        self._journal_results.pop(key, None)
+                        return result
+                    from gbop_voice_web.voice_runtime import journal_write_recovery_ready
+                    journal_write_recovery_ready(*self.auth_provider[1:], finalize_reader)
             try:
                 result = runner(name, args)
             except Exception:
@@ -1172,6 +1201,13 @@ class MarketConversation:
                         recovery_checked = True
                     except Exception:
                         pass
+                if finalize_reader is not None:
+                    try:
+                        recovered = finalize_reader()
+                    except Exception as exc:
+                        print('[GBOP-JOURNAL-FINALIZE] reconciliation_unavailable:', type(exc).__name__)
+                if recovered is not None and recovered.get('saved') is False:
+                    return recovered
                 if not recovered:
                     if execution_op and recovery_checked:
                         # Every admitted execution and receipt is atomic. After
@@ -1183,7 +1219,7 @@ class MarketConversation:
                                 'error': 'This execution was not saved. Correct the reported details before a new request.'}
                     raise
                 result = {**recovered, 'post_save_processing': 'unavailable',
-                          'warning': 'The execution was saved; optional post-save processing did not finish.'}
+                          'warning': 'The record was saved; optional post-save processing did not finish.'}
             if result.get('ok') and self.auth_provider:
                 from gbop_voice_web.trade_feelings import optional_prompt
                 try:
@@ -1276,7 +1312,7 @@ class MarketConversation:
             with self._lock:
                 ticket = self.generation if generation is None else generation
                 if not self.current(ticket):
-                    return self._stale()
+                    return self._stale(write_not_started=name in WRITE_TOOLS)
                 scope_lock = self._scoped_read_lock
             with scope_lock:
                 return self._run(name, arguments, runner, generation=ticket, operation_id=operation_id)
@@ -1296,7 +1332,7 @@ class MarketConversation:
         with self._lock:
             ticket = self.generation if generation is None else generation
             if self.closed or ticket != self.generation:
-                return self._stale()
+                return self._stale(write_not_started=name in WRITE_TOOLS)
             active = deepcopy(self.pending or self.requested or self.selected)
             intent = deepcopy(self.intent)
         if name == 'review_post_shift_followthrough':

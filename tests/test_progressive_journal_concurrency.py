@@ -143,8 +143,10 @@ class ProgressiveJournalRollbackTests(unittest.TestCase):
             return real_write(conn, guild, user, value, **kwargs)
 
         with patch.object(journal_drafts, 'write', side_effect=fail_finalized_write):
-            with self.assertRaisesRegex(RuntimeError, 'Synthetic finalization'):
-                case.saved(draft)
+            failed = case.saved(draft)
+            self.assertEqual(failed['status'], 'journal_not_saved')
+            self.assertFalse(failed['saved'])
+            self.assertTrue(failed['reconciliation_verified'])
 
         self.assertEqual(case.conn.execute('SELECT COUNT(*) FROM journals').fetchone()[0], 0)
         self.assertEqual(case.conn.execute('SELECT COUNT(*) FROM theses').fetchone()[0], 0)
@@ -152,7 +154,6 @@ class ProgressiveJournalRollbackTests(unittest.TestCase):
         self.assertEqual(case.stored(draft['draft_id']), before)
         # A new authenticated attempt after the rollback creates exactly one
         # canonical narrative, preserving its original durable identity.
-        case.context = case.fresh()
         saved = case.saved(draft)
         self.assertTrue(saved['ok'], saved)
         self.assertEqual(saved['draft_id'], draft['draft_id'])

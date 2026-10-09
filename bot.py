@@ -6984,7 +6984,7 @@ class GBOPRealtimeSession:
             return
         from gbop_voice_web.voice_runtime import delivery_result_reported, journal_write_result_reported
         delivery_result_reported(self, result)
-        journal_write_result_reported(self, name, call_id, result)
+        journal_write_result_reported(self, name, call_id, voice_result)
 
         if name in ('get_midpoint_preference', 'save_midpoint_preference') and result.get('ok'):
             # Update the existing voice session so the next answer uses the new
