@@ -773,10 +773,21 @@ class MarketConversation:
         except (ValueError, TypeError, KeyError, OverflowError):
             return unresolved('The exact candle or range time is invalid or ambiguous; clarify its opening and timeframe.')
 
-    def invalidate(self, *, client_turn=None):
+    def invalidate(self, *, client_turn=None, member_speech=False):
         with self._lock:
             if client_turn is not None and client_turn < self.client_turn:
                 return
+            # Discord fences old work before begin_turn() on every speech start,
+            # including an ordinary reply to a fully played confirmation. Carry
+            # only that exact delivered preview across this one transport fence.
+            # Failures, reconnects and teardown use the default full invalidation.
+            discard = getattr(self, '_journal_discard_preview', None)
+            carry_discard = (member_speech and not self.closed and self.owner and discard
+                and discard.get('delivered') is True and discard.get('response_id')
+                and discard.get('owner') == (*self.owner[:2], self.session_id)
+                and discard.get('generation') == self.generation
+                and discard.get('expires_at', 0) > time.monotonic()
+                and 'advanced_member_turn' not in discard)
             if client_turn is not None:
                 self.client_turn = client_turn
             self.generation += 1
@@ -785,7 +796,8 @@ class MarketConversation:
             self._begun_client_turn = None
             self._feeling_prompt = None
             self._feeling_note = self._feeling_clarification = self._feeling_reply = None
-            self._journal_discard_preview = None
+            self._journal_discard_preview = ({**discard, 'generation': self.generation,
+                'advanced_member_turn': True} if carry_discard else None)
             self.pending = None
             self._multi_request = self._multi_result = None
             self._multi_cache = {}

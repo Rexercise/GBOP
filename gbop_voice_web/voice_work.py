@@ -120,10 +120,13 @@ class VoiceToolWork:
         if response.get('status') in ('cancelled', 'failed'):
             self.cancel(preserve_read_status=True)
 
-    def cancel(self, *, preserve_read_status=False):
+    def cancel(self, *, preserve_read_status=False, member_speech=False):
         context = getattr(self.session, 'market_context', None)
         if context is not None:
-            context.invalidate()
+            if member_speech:
+                context.invalidate(member_speech=True)
+            else:
+                context.invalidate()
         self.generation += 1
         self.response_finished = False
         self.stale_responses.extend(self.responses)

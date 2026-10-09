@@ -7116,7 +7116,7 @@ class GBOPRealtimeSession:
                 if delivery is not None:
                     delivery.cancel()
                 if work is not None:
-                    work.cancel(preserve_read_status=True)
+                    work.cancel(preserve_read_status=True, member_speech=True)
                 self.rate_limit_recovery.cancel(reset=True)
                 self._recovery_active = False
                 self.tool_output_pending = False

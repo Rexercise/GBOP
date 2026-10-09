@@ -70,3 +70,22 @@ market cache and post-shift paths are unchanged.
 
 Run the repository's CI dependencies, `python -m unittest discover -s tests`,
 `node tests/test_browser_market_context.js`, compilation and `git diff --check`.
+
+
+## Ordinary voice confirmation transition
+
+The Discord speech-start path cancels older tool/audio work before beginning the
+new member turn. It carries a discard preview across that fence only when the
+preview has already completed delivery, is fresh, belongs to the same owner and
+session, and matches the exact pre-cancel generation. Its generation is rebased
+once; the subsequent turn still must be the immediate confirmation reply.
+Other cancellation, failure, reconnect and teardown paths continue to clear it.
+
+The delivery comparison tolerates punctuation-only transcript changes while
+requiring all preview words, including the recovery disclosure. Common clear
+affirmatives such as “Yes, go ahead” and “Yes, I confirm” are accepted; negation,
+questions, unrelated wording and broader deletion requests remain rejected.
+A redundant prepare call for the same unchanged draft preserves its original
+receipt and expiry. Once the preview was delivered it instructs the assistant
+to use the current explicit reply, rather than ask the same question again.
+New draft facts or any storage revision change still need a fresh preview.
