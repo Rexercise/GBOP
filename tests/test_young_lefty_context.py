@@ -34,14 +34,14 @@ class YoungLeftyContextTests(unittest.TestCase):
         self.assertEqual([v['code'] for v in checks['bullish']['variant_evidence']['labels']], ['V1'])
         self.assertEqual([v['code'] for v in checks['bearish']['variant_evidence']['labels']], ['V2'])
         self.assertEqual(result['observed_direction'], 'bearish')  # original price audit is preserved
-        self.assertIsNone(result['directional_outcome']['play_context'])
-        self.assertIsNone(result['double_purge']['original_outcome']['play_context'])
-        self.assertNotIn('(Young Lefty)', result['double_purge']['original_outcome']['spoken_summary'])
-        self.assertIn('physical_first_purge', result['variant_evidence']['scope'])
-        self.assertIn('HTF/narrative-dependent', result['recap']['spoken_summary'])
+        self.assertEqual(result['directional_outcome']['play_context'], 'Young Lefty')
+        self.assertEqual(result['double_purge']['original_outcome']['play_context'], 'Young Lefty')
+        self.assertIn('(Young Lefty)', result['double_purge']['original_outcome']['spoken_summary'])
+        self.assertEqual(result['variant_evidence']['scope'], 'observed_price_path_not_selected_thesis')
+        self.assertIn('HTF trade direction and execution remain unselected', result['recap']['spoken_summary'])
         self.assertNotIn('Young Lefty) completed its bearish', result['recap']['spoken_summary'])
         self.assertEqual(result['double_purge']['named_play_applicability'],
-                         'context_dependent_not_selected_young_lefty')
+                         'same_parent_range_price_path_not_trade_thesis')
 
     def test_native_anchor_and_source_gaps_stay_distinct_in_conditional_view(self):
         rows = two_sided(); higher = native(rows); del rows[17:29]
@@ -88,18 +88,18 @@ class YoungLeftyContextTests(unittest.TestCase):
         packet = voice_tool_payload('review_market_session', {'ok': True, 'asset': 'NAS100', 'review': session})
         self.assertEqual(session, before)
         synopsis = packet['review']['shift_synopsis']
-        self.assertEqual(synopsis['young_lefty_status'], 'context_dependent')
+        self.assertEqual(synopsis['young_lefty_status'], 'delivered')
         self.assertTrue(synopsis['young_lefty_coverage']['complete'])
         self.assertFalse(synopsis['young_lefty_coverage']['source_coverage_complete'])
         young = next(r for r in synopsis['ranges'] if r.get('play') == 'Young Lefty')
         self.assertIsNone(young['young_lefty_context']['selected_direction'])
-        self.assertIsNone(young['direction'])
+        self.assertEqual(young['direction'], 'bearish')
         self.assertIsNone(young['opposes_9ate8'])
-        self.assertEqual(young['verdict'], 'context_dependent')
-        self.assertEqual(young['outcome'], 'context_dependent')
-        self.assertEqual(young['physical_path_audit']['direction'], 'bearish')
-        self.assertEqual(young['physical_path_audit']['variant']['labels'][0]['code'], 'V2')
-        self.assertIn('conditional direction checks', synopsis['spoken_summary'])
+        self.assertEqual(young['verdict'], 'delivered')
+        self.assertEqual(young['outcome'], 'opposing_liquidity_delivered')
+        self.assertEqual(young['direction'], 'bearish')
+        self.assertEqual(young['variant']['labels'][0]['code'], 'V2')
+        self.assertIn('HTF trade direction and execution remain unselected', synopsis['spoken_summary'])
         self.assertLessEqual(len(json.dumps(packet, ensure_ascii=False, separators=(',', ':'))),
                              SHIFT_SYNOPSIS_TARGET_CHARS)
 
@@ -112,10 +112,10 @@ class YoungLeftyContextTests(unittest.TestCase):
             {'asset': 'NAS100', 'date_ny': '2026-06-11', 'shift': 'day'})
         saved = retained['range_outcomes'][0]
         self.assertIsNone(saved['young_lefty_context']['selected_direction'])
-        self.assertEqual(saved['direction_scope'], 'context_dependent_no_selected_thesis')
-        self.assertIsNone(saved['direction'])
-        self.assertEqual(saved['physical_path_audit']['direction'], 'bearish')
-        self.assertIn('HTF/narrative-dependent', saved['spoken_summary'])
+        self.assertEqual(saved['direction_scope'], 'observed_price_path_not_selected_thesis')
+        self.assertEqual(saved['direction'], 'bearish')
+        self.assertEqual(saved['direction'], 'bearish')
+        self.assertIn('HTF trade direction and execution remain unselected', saved['spoken_summary'])
 
 
 if __name__ == '__main__':

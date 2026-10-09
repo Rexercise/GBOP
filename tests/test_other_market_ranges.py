@@ -112,12 +112,11 @@ class OtherRangeConversationTests(unittest.TestCase):
 
     def test_completed_full_synopsis_excludes_every_range_actually_spoken(self):
         text = self.initial['review']['shift_synopsis']['spoken_summary']
-        # The completed synopsis now actually explains the independent ten
-        # failure; retrieval alone and earlier shorter transcripts stay unchanged.
-        self.assertIn('Independent 10:00 AM H1 range: bullish', text)
-        self.assertIn('failed before 50%/buy-side', text)
-        self.assertEqual(self.context.complete_response(text), 4)
-        self.assertEqual(self.anchors(self.other()), [ny('11:00')])
+        # Its role in nine is spoken, not ten's independent countertrend result.
+        self.assertIn('10:00 AM H1 candle souped buy-side', text)
+        self.assertNotIn('Independent 10:00 AM H1 range: bullish', text)
+        self.assertEqual(self.context.complete_response(text), 3)
+        self.assertEqual(self.anchors(self.other()), [ny('10:00'), ny('11:00')])
 
     def test_cancelled_partial_and_stale_receipts_do_not_advance(self):
         generation = self.context.generation

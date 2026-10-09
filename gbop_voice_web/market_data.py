@@ -322,24 +322,41 @@ def attach_lifecycle(review, bars, end, step):
     review['objective_approach'] = objective_approach(review, bars, end, step)
     from gbop_voice_web.double_purge import double_purge_evidence
     review['double_purge'] = double_purge_evidence(review, bars, end, step)
+    from gbop_voice_web.range_delivery_sequence import continuation_legs
+    continuation = continuation_legs(review, bars, end, step)
+    if continuation.get('legs') or continuation.get('next_boundary'):
+        review['double_purge']['continuation'] = continuation
     from gbop_voice_web.young_lefty_context import young_lefty_context
     context = young_lefty_context(review, bars, end, step)
     if context:
         review['young_lefty_context'] = context
         from gbop_voice_web.young_lefty_context import compact_young_context, young_context_sentence
-        neutral = young_context_sentence(compact_young_context(context))
-        review.setdefault('recap', {}).update(headline=neutral, spoken_summary=neutral,
-            evidence_precedence='conditional_young_lefty_context_before_physical_path_audit')
+        summary = young_context_sentence(compact_young_context(context))
+        delivered = bool(context.get('delivery_recap'))
+        scope = ('observed_price_path_not_selected_thesis' if delivered else
+                 'physical_first_purge_not_selected_named_thesis')
+        review.setdefault('recap', {}).update(headline=summary, spoken_summary=summary,
+            evidence_precedence='confirmed_range_delivery_before_thesis_selection' if delivered else
+                'conditional_young_lefty_context_before_physical_path_audit')
         for outcome in (review['directional_outcome'], review['double_purge'].get('original_outcome')):
             if not outcome:
                 continue
+            outcome['direction_scope'] = scope
+            if delivered:
+                continue
             outcome['play_context'] = None
-            outcome['direction_scope'] = 'physical_first_purge_not_selected_named_thesis'
             summary = outcome.get('spoken_summary', '').replace(' (Young Lefty)', '')
             outcome['spoken_summary'] = (summary if summary.startswith('Physical first-purge audit: ')
                                          else 'Physical first-purge audit: ' + summary)
-        review['variant_evidence']['scope'] = 'physical_first_purge_not_selected_named_thesis'
-        review['double_purge']['named_play_applicability'] = 'context_dependent_not_selected_young_lefty'
+        review['variant_evidence']['scope'] = scope
+        review['double_purge']['named_play_applicability'] = (
+            'same_parent_range_price_path_not_trade_thesis' if delivered else
+            'context_dependent_not_selected_young_lefty')
+    elif continuation.get('legs'):
+        from gbop_voice_web.range_delivery_sequence import continuation_sentence
+        recap = review.setdefault('recap', {})
+        recap['spoken_summary'] = recap.get('spoken_summary', '') + ' ' + continuation_sentence(
+            continuation, review['anchor']['start_ny'], review['anchor']['timeframe'])
     return review
 
 
@@ -447,7 +464,7 @@ MARKET_TOOLS = [
         'asset': {'type': 'string'}, 'date_ny': {'type': 'string'},
         'shift': {'type': 'string', 'enum': ['day', 'night']},
         'anchor_start_ny': {'type': 'string'},
-        'phase': {'type': 'string', 'enum': ['original', 'double_purge']},
+        'phase': {'type': 'string', 'description': 'Copy the exact returned original, double_purge or purge_N phase; never invent an ordinal.'},
         'expected_scope_id': {'type': ['string', 'null']}, 'through_ny': {'type': ['string', 'null']}}),
     schema('scan_young_lefty', 'On explicit anywhere/any other pair/whatever applicable Young Lefty requests, scan all supported instruments once. Preserve the reviewed NY date/shift/cutoff; null scope uses current NY day/window, never latest completed data. exclude_asset omits the already-reviewed market for other-pair requests. Missing evidence is not absence. Read-only, no alerts or trades.', {
         'date_ny': {'type': ['string', 'null']},

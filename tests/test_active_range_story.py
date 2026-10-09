@@ -128,7 +128,8 @@ class ActiveRangeStoryTests(unittest.TestCase):
         before = deepcopy(self.review)
         synopsis = voice_tool_payload('review_market_session', {'ok': True, 'asset': 'NAS100', 'review': self.review})
         self.assertLess(len(json.dumps(synopsis, separators=(',', ':'))), 9000)
-        active = synopsis['review']['shift_synopsis']['active_range_context']
+        from test_chronological_transport import expand
+        active = expand(synopsis)['review']['shift_synopsis']['active_range_context']
         self.assertEqual(active['anchor_start_ny'], ny('11:00'))
         self.assertEqual(active['selected_at_ny'], ny('12:00'))
         self.assertIsNone(active['next_selected_range'])

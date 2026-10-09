@@ -57,21 +57,24 @@ def _voice_market_context(context, *, evidence_ref=None):
     return out
 
 
-def _factor_review(out):
+def _factor_review(out, root='review'):
     """Losslessly share repeated evidence at resolvable, in-payload pointers.
 
     Run after all omissions so no reference can point at a removed field.
     Factoring changes the transport only, never a fact, time, or outcome.
     """
     seen = {}
+    changed = False
 
     def factor(value, path, key=None):
+        nonlocal changed
         if isinstance(value, (dict, list, str)):
             encoded = json.dumps(value, sort_keys=True, separators=(',', ':'))
             if len(encoded) > 180:
                 if encoded in seen:
                     ref = {'same_evidence_as': seen[encoded]}
                     if _encoded_size(ref) < len(encoded):
+                        changed = True
                         return ref
                 seen[encoded] = path
         if isinstance(value, dict):
@@ -81,7 +84,169 @@ def _factor_review(out):
             return [factor(v, path + '/' + str(i)) for i, v in enumerate(value)]
         return value
 
-    out['review'] = factor(out['review'], '#/review')
+    out[root] = factor(out[root], '#/' + root.replace('~', '~0').replace('/', '~1'))
+    return changed
+
+
+def _scan_voice_payload(result):
+    """Keep every scanned asset and fact within the existing transport budget."""
+    if _encoded_size(result) <= 28000:
+        return deepcopy(result)
+    out = deepcopy(result)
+    if isinstance(out.get('results'), list):
+        tables = _compact_scan_tables(out)
+        symbols = (_compact_fact_symbols(out, fields=('results',), prefix='scan')
+                   if tables and _encoded_size(out) > 27500 else False)
+        _factor_review(out, root='results')
+        out['voice_view'] = {
+            'kind': 'young_lefty_scan', 'character_budget': 28000,
+            'fact_references': 'same_evidence_as is an in-payload JSON pointer; resolve it before interpreting that field.'}
+        if tables:
+            out['voice_view']['fact_tables'] = (
+                'row[0] selects scan_columns and scan_defaults; remaining cells map to those columns. '
+                'Merge defaults to recover every original field. str selects scan_strings. '
+                'text[0] selects scan_texts fragments; interleave remaining text cells between fragments exactly. '
+                'These encodings preserve all facts, including nulls and uncertainty.')
+        if symbols:
+            out['voice_view']['fact_symbols'] = (
+                'Numeric keys/$i strings index scan_keys/strings ($$ escapes $); '
+                'a string-pool [i,clock] joins scan_clock_templates[i] around clock.')
+        if _encoded_size(out) <= 28000:
+            return out
+    return {'ok': False, 'status': 'scan_payload_budget_exceeded',
+            'message': 'Scan evidence exceeded its response budget; no complete scan result was supplied.'}
+
+
+def _compact_scan_tables(out):
+    return _compact_record_tables(out, 'results', prefix='scan')
+
+
+def _compact_record_tables(container, fields, *, prefix='fact'):
+    """Losslessly encode selected records; leave sibling prose/navigation alone.
+
+    Encode before factoring so JSON pointers always use final transport paths.
+    Existing references/codec markers are opaque and never relocated.
+    The columns/defaults/strings/texts headers live on the supplied container.
+    """
+    from collections import Counter, defaultdict
+    import re
+    fields = (fields,) if isinstance(fields, str) else tuple(fields)
+    selected = {key: container[key] for key in fields if key in container}
+    names = {key: prefix + '_' + key for key in
+             ('columns', 'defaults', 'strings', 'texts', 'keys', 'clock_templates')}
+    reserved = {'row', 'str', 'text', 'same_evidence_as', *names.values()}
+    if not selected or any(key in container for key in names.values()):
+        return False
+    shapes, strings = defaultdict(list), Counter()
+    collision = False
+
+    def inspect(value):
+        nonlocal collision
+        if isinstance(value, dict):
+            collision = collision or bool(reserved & set(value))
+            if len(value) >= 2 and not ('asset' in value and 'status' in value):
+                shapes[tuple(sorted(value))].append(value)
+            for child in value.values():
+                inspect(child)
+        elif isinstance(value, list):
+            for child in value:
+                inspect(child)
+        elif isinstance(value, str):
+            strings[value] += 1
+
+    for value in selected.values():
+        inspect(value)
+    if collision:
+        return False
+    columns, defaults, indexes = [], [], {}
+    for keys, values in shapes.items():
+        if len(values) < 2:
+            continue
+        common = {key: deepcopy(values[0][key]) for key in keys
+                  if not isinstance(values[0][key], (dict, list))
+                  and all(type(item[key]) is type(values[0][key]) and item[key] == values[0][key]
+                          for item in values)}
+        varying = [key for key in keys if key not in common]
+        # Keep only schemas whose key/default savings exceed their header.
+        before = sum(_encoded_size(value) for value in values)
+        after = sum(_encoded_size({'row': [len(columns), *[value[key] for key in varying]]})
+                    for value in values) + _encoded_size(varying) + _encoded_size(common)
+        if after >= before:
+            continue
+        indexes[keys] = len(columns)
+        columns.append(varying)
+        defaults.append(common)
+    if not columns:
+        return False
+    def encode_rows(value):
+        if isinstance(value, dict):
+            keys = tuple(sorted(value))
+            if keys in indexes and not ('asset' in value and 'status' in value):
+                index = indexes[keys]
+                return {'row': [index, *[encode_rows(value[key]) for key in columns[index]]]}
+            return {key: encode_rows(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [encode_rows(child) for child in value]
+        return value
+
+    candidate = {key: encode_rows(value) for key, value in selected.items()}
+    strings.clear()
+    def count_strings(value):
+        if isinstance(value, dict):
+            for child in value.values():
+                count_strings(child)
+        elif isinstance(value, list):
+            for child in value:
+                count_strings(child)
+        elif isinstance(value, str):
+            strings[value] += 1
+    count_strings(candidate)
+    # Long generated summaries often differ only in source-candle clocks.
+    # Share literal fragments, never round or infer a timestamp or its order.
+    templates, text_indexes, groups = [], {}, defaultdict(list)
+    for value, count in strings.items():
+        if len(value) > 180:
+            pieces = re.split(r'(\b(?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)\b)', value)
+            if len(pieces) > 1:
+                groups[tuple(pieces[::2])].append((value, count, pieces[1::2]))
+    for fragments, values in groups.items():
+        if len(values) < 2:
+            continue
+        before = sum(_encoded_size(value) * count for value, count, _ in values)
+        after = _encoded_size(fragments) + sum(
+            _encoded_size({'text': [len(templates), *clocks]}) * count
+            for _, count, clocks in values)
+        if after < before:
+            for value, _, clocks in values:
+                text_indexes[value] = [len(templates), *clocks]
+            templates.append(list(fragments))
+    pool, string_indexes = [], {}
+    for value, count in strings.items():
+        length = _encoded_size(value)
+        reference_length = _encoded_size({'str': len(pool)})
+        if value not in text_indexes and count > 1 and (length - reference_length) * count > length + 1:
+            string_indexes[value] = len(pool)
+            pool.append(value)
+
+    def encode_strings(value):
+        if isinstance(value, dict):
+            return {key: encode_strings(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [encode_strings(child) for child in value]
+        if isinstance(value, str):
+            if value in text_indexes:
+                return {'text': text_indexes[value]}
+            if value in string_indexes:
+                return {'str': string_indexes[value]}
+        return value
+    candidate = encode_strings(candidate)
+    header = {names['columns']: columns, names['defaults']: defaults,
+              names['strings']: pool, names['texts']: templates}
+    if _encoded_size(candidate) + _encoded_size(header) < _encoded_size(selected):
+        container.update(candidate)
+        container.update(header)
+        return True
+    return False
 
 
 def _compact_interval_tables(out):
@@ -161,6 +326,117 @@ def _compact_interval_tables(out):
     if _encoded_size(candidate) + len(instruction) + 24 < _encoded_size(review):
         out['review'] = candidate
         out['voice_view']['interval_tables'] = instruction
+
+
+def _compact_fact_symbols(synopsis, fields=None, *, prefix='fact'):
+    """Share repeated field names and exact strings in record-table payloads.
+
+    Only analytical facts/codec headers change. Prose, navigation, scope and
+    unknown transport metadata remain directly readable at their original paths.
+    """
+    from collections import Counter, defaultdict
+    import re
+    names = {key: prefix + '_' + key for key in ('columns', 'keys', 'strings', 'defaults', 'clock_templates')}
+    if (any(names[key] in synopsis for key in ('keys', 'clock_templates'))
+            or not all(isinstance(synopsis.get(names[key]), list)
+                       for key in ('columns', 'strings', 'defaults'))):
+        return False
+    fields = (('ranges', 'chronological_context', 'active_range_context', 'shift_end', 'range_defaults')
+              if fields is None else tuple(fields)) + (names['defaults'],)
+    selected = {key: deepcopy(synopsis[key]) for key in fields if key in synopsis}
+    old_strings = synopsis[names['strings']]
+    key_counts, strings = Counter(), Counter()
+    collision = False
+
+    def inspect(value):
+        nonlocal collision
+        if isinstance(value, dict):
+            if set(value) == {'str'}:
+                inspect(old_strings[value['str']])
+                return
+            if set(value) == {'text'}:
+                return
+            collision = collision or any(key.isdigit() or key == 'same_evidence_as' for key in value)
+            direct = ('asset', 'status') if 'asset' in value and 'status' in value else ()
+            key_counts.update(key for key in value if key not in ('row', 'str', 'text', *direct))
+            for key, child in value.items():
+                if key not in direct:
+                    inspect(child)
+        elif isinstance(value, list):
+            for child in value:
+                inspect(child)
+        elif isinstance(value, str):
+            strings[value] += 1
+
+    inspect(selected)
+    if collision:
+        return False
+    for columns in synopsis[names['columns']]:
+        if any(key.isdigit() for key in columns):
+            return False
+        key_counts.update(columns)
+    for key in ('source_interval_columns', 'objective_columns'):
+        if any(column.isdigit() for column in synopsis.get(key, [])):
+            return False
+        key_counts.update(synopsis.get(key, []))
+    keys, aliases = [], {}
+    for key, count in key_counts.most_common():
+        alias = str(len(keys))
+        if (len(key) - len(alias)) * count > _encoded_size(key) + 1:
+            aliases[key] = alias
+            keys.append(key)
+    pool, indexes = [], {}
+    for value, count in strings.items():
+        short = '$' + str(len(pool))
+        if (_encoded_size(value) - _encoded_size(short)) * count > _encoded_size(value) + 1:
+            indexes[value] = short
+            pool.append(value)
+
+    def encode(value):
+        if isinstance(value, dict):
+            if set(value) == {'str'}:
+                return encode(old_strings[value['str']])
+            if set(value) == {'text'}:
+                return value
+            direct = ('asset', 'status') if 'asset' in value and 'status' in value else ()
+            def visible(child):
+                if isinstance(child, dict) and set(child) == {'str'}:
+                    child = old_strings[child['str']]
+                return '$' + child if isinstance(child, str) and child.startswith('$') else child
+            return {(key if key in direct else aliases.get(key, key)):
+                    (visible(child) if key in direct else encode(child)) for key, child in value.items()}
+        if isinstance(value, list):
+            return [encode(child) for child in value]
+        if isinstance(value, str):
+            return indexes.get(value, '$' + value if value.startswith('$') else value)
+        return value
+
+    candidate = {key: encode(value) for key, value in selected.items()}
+    candidate[names['columns']] = [[aliases.get(key, key) for key in columns]
+                                   for columns in synopsis[names['columns']]]
+    for key in ('source_interval_columns', 'objective_columns'):
+        if key in synopsis:
+            candidate[key] = [aliases.get(column, column) for column in synopsis[key]]
+    # Pool entries are strings; an explicit [template, clock] entry preserves
+    # ISO text exactly, including date, offset, seconds and optional suffix.
+    groups, templates = defaultdict(list), []
+    for index, value in enumerate(pool):
+        match = re.fullmatch(r'(\d{4}-\d{2}-\d{2}T)(\d{2}:\d{2})(:\d{2}.*)', value)
+        if match:
+            groups[(match[1], match[3])].append((index, match[2]))
+    for parts, members in groups.items():
+        before = sum(_encoded_size(pool[index]) for index, _ in members)
+        after = _encoded_size(parts) + sum(_encoded_size([len(templates), clock]) for _, clock in members)
+        if after < before:
+            for index, clock in members:
+                pool[index] = [len(templates), clock]
+            templates.append(list(parts))
+    candidate.update({names['keys']: keys, names['strings']: pool, names['clock_templates']: templates})
+    previous = {key: synopsis[key] for key in candidate if key in synopsis}
+    if _encoded_size(candidate) >= _encoded_size(previous):
+        return False
+    synopsis.update(candidate)
+    return True
 
 
 def _bounded_error(error, budget=SHIFT_OVERVIEW_TARGET_CHARS):
@@ -609,14 +885,32 @@ def shift_voice_synopsis(result):
             and any(row.get('pending_reversal') for row in synopsis.get('ranges', []))):
         _compact_synopsis_facts(out)
     if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
-        _factor_review(out)
-        out['voice_view']['fact_references'] = 'same_evidence_as is an in-payload pointer.'
+        _compact_interval_tables(out)
+    record_tables = False
+    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS * .75:
+        record_tables = _compact_record_tables(synopsis,
+            ('ranges', 'chronological_context', 'active_range_context', 'shift_end'), prefix='fact')
+        if record_tables:
+            out['voice_view']['fact_codec'] = ('Lossless: row=[schema,cells] via fact_columns/defaults; str=id via fact_strings; '
+                'text=[schema,cells] interleaves fact_texts fragments.')
+            synopsis['response_contract'] = 'Keep scope, event order, original/reversal and uncertainty. No trade inference.'
+    if (record_tables and _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS * .75
+            and _compact_fact_symbols(synopsis)):
+        for key in ('note', 'fact_tables', 'fact_codec', 'fact_references'):
+            out['voice_view'].pop(key, None)
+        out['voice_view']['fact_codec'] = (
+            'Numeric keys/$i strings index fact_keys/strings ($$ escapes $). '
+            'row=[i,...cells] uses fact_columns/defaults; text interleaves fact_texts. '
+            'String=[i,clock] joins fact_clock_templates. Fill range_defaults; arrays use *_columns.')
+    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+        if _factor_review(out):
+            out['voice_view']['fact_references'] = 'same_evidence_as is an in-payload pointer.'
     if _encoded_size(out) >= SHIFT_SYNOPSIS_TARGET_CHARS - 300 and 'post_shift_followthrough' in out:
         # Optional navigation is re-readable with expected_scope_id=null. Never
         # drop original shift evidence or fail a previously fitting synopsis
         # merely to carry future-context hashes in every spoken recap.
         out.pop('post_shift_followthrough')
-    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS - 600:
+    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS - 600 or 'fact_columns' in synopsis:
         _compact_shift_envelope(out)
     if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
         summary = synopsis.get('spoken_summary')
@@ -684,10 +978,7 @@ def voice_tool_payload(name, result):
                 'message': 'The selected evidence exceeds the output budget; request one exact range and candle. No outcome was supplied.'})
         return selected
     if name == 'scan_young_lefty':
-        if _encoded_size(result) > 28000:
-            return {'ok': False, 'status': 'scan_payload_budget_exceeded',
-                    'message': 'Scan evidence exceeded its response budget; no complete scan result was supplied.'}
-        return deepcopy(result)
+        return _scan_voice_payload(result)
     if (name == 'review_other_market_ranges' and isinstance(result, dict)
             and isinstance(result.get('review', {}).get('other_range_followup'), dict)):
         out = deepcopy(result)

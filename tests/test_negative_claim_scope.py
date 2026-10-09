@@ -79,7 +79,8 @@ class NegativeClaimScopeTests(unittest.TestCase):
     def test_double_purge_and_original_delivery_remain_independent_facts(self):
         result = double_result()
         wire = voice_tool_payload('review_market_session', result)
-        synopsis = wire['review']['shift_synopsis']
+        from test_chronological_transport import expand
+        synopsis = expand(wire)['review']['shift_synopsis']
         self.assertTrue(synopsis['ranges'][0]['double_purge']['observed'])
         self.assertEqual(synopsis['ranges'][0]['outcome'], 'opposing_liquidity_delivered')
         self.assertIn('assess double purges separately', CONTRACT)

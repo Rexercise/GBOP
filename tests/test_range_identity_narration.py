@@ -150,8 +150,9 @@ class RangeIdentityNarrationTests(unittest.TestCase):
         setbar(bars,'20:31',(100,111,99,105))
         syn=session_review(bars,DAY,'night',60)['shift_synopsis']
         young=next(r for r in syn['ranges'] if r['play']=='Young Lefty')
-        self.assertIsNone(young['direction'])
-        self.assertEqual(young['verdict'],'context_dependent')
+        self.assertEqual(young['direction'],'bullish')
+        self.assertEqual(young['verdict'],'delivered')
+        self.assertEqual(young['direction_scope'],'observed_price_path_not_selected_thesis')
         self.assertTrue(syn['spoken_summary'].startswith('Young Lefty'))
         self.assertIsNone(young['young_lefty_context']['selected_direction'])
 

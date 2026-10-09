@@ -162,7 +162,7 @@ class TargetApproachTests(unittest.TestCase):
 
     def test_canonical_examples_and_no_threshold_apply_on_all_transports(self):
         self.assertIn('gtop_targets.txt', KNOWLEDGE_FILES)
-        for phrase in ('SAME selected CRT', 'ORIGINAL FIRST-PURGED SIDE',
+        for phrase in ('SAME CRT', 'prior first-purged side',
                        'No universal numeric inducement cutoff', '7.76 points', '33.20 points',
                        'not proof of intentional manipulation', 'At their first relevant mention',
                        'Unrecognized nicknames are not saved alternatives'):

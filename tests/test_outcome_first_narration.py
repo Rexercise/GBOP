@@ -69,7 +69,8 @@ class OutcomeFirstNarrationTests(unittest.TestCase):
         wire = voice_tool_payload('review_market_session', {'ok': True, 'asset': 'NAS100', 'review': source})
         self.assertTrue(wire['ok'])
         self.assertLessEqual(len(json.dumps(wire, separators=(',', ':'))), 12000)
-        synopsis = wire['review']['shift_synopsis']
+        from test_chronological_transport import expand
+        synopsis = expand(wire)['review']['shift_synopsis']
         lead = synopsis['ranges'][0]
         self.assertEqual((lead['verdict'], lead['outcome']), ('delivered', 'opposing_liquidity_delivered'))
         text = synopsis['spoken_summary']

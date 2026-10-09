@@ -92,6 +92,8 @@ def _double_context(row, asset=None, story=None):
             value[key] = {k: v for k, v in event.items() if k in ('bar_open_ny', 'known_at_ny',
                 'timeframe', 'close', 'confirmation_basis', 'ohlc_basis', 'source_coverage_complete',
                 'native_ohlc_provenance')}
+    if evidence.get('continuation'):
+        value['continuation'] = deepcopy(evidence['continuation'])
     return value
 
 
@@ -130,6 +132,9 @@ def _double_sentence(value, short=False):
                  + f'; its full objective is the original {side}-side, with 50% only halfway.')
         if outcome == 'failed_to_deliver_objectives_by_shift_end':
             text += ' Neither 50% nor the original boundary was reached; the range was not structurally invalidated.'
+    if value.get('continuation'):
+        from gbop_voice_web.range_delivery_sequence import continuation_sentence
+        text += ' ' + continuation_sentence(value['continuation'], value['range_start_ny'], value['confirmation_timeframe'])
     return text
 
 

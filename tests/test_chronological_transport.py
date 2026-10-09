@@ -23,6 +23,46 @@ def expand(root):
         return value
     result = refs(root)
     synopsis = result['review']['shift_synopsis']
+    if 'fact_columns' in synopsis:
+        symbols = 'fact_keys' in synopsis
+        def key_name(key):
+            return synopsis['fact_keys'][int(key)] if symbols and key.isdigit() else key
+        def string(index):
+            value = synopsis['fact_strings'][index]
+            if symbols and isinstance(value, list):
+                template, clock = value
+                prefix, suffix = synopsis['fact_clock_templates'][template]
+                return prefix + clock + suffix
+            return value
+        def facts(value):
+            if isinstance(value, dict):
+                if set(value) == {'row'}:
+                    index, *cells = value['row']
+                    columns = [key_name(key) for key in synopsis['fact_columns'][index]]
+                    assert len(columns) == len(cells)
+                    return {**facts(synopsis['fact_defaults'][index]),
+                            **{key: facts(cell) for key, cell in zip(columns, cells)}}
+                if set(value) == {'str'}:
+                    return string(value['str'])
+                if set(value) == {'text'}:
+                    index, *cells = value['text']
+                    fragments = synopsis['fact_texts'][index]
+                    assert len(fragments) == len(cells) + 1
+                    return fragments[0] + ''.join(cell + fragment for cell, fragment in zip(cells, fragments[1:]))
+                return {key_name(key): facts(child) for key, child in value.items()}
+            if isinstance(value, list):
+                return [facts(child) for child in value]
+            if symbols and isinstance(value, str) and value.startswith('$'):
+                return value[1:] if value.startswith('$$') else string(int(value[1:]))
+            return value
+        for key in ('ranges', 'chronological_context', 'active_range_context', 'shift_end', 'range_defaults'):
+            if key in synopsis:
+                synopsis[key] = facts(synopsis[key])
+        for key in ('source_interval_columns', 'objective_columns'):
+            if key in synopsis:
+                synopsis[key] = [key_name(column) for column in synopsis[key]]
+        for key in ('fact_columns', 'fact_defaults', 'fact_strings', 'fact_texts', 'fact_keys', 'fact_clock_templates'):
+            synopsis.pop(key, None)
     defaults = synopsis.pop('range_defaults', {})
     synopsis['ranges'] = [{**deepcopy(defaults), **row} for row in synopsis['ranges']]
     columns = synopsis.pop('source_interval_columns', None)
