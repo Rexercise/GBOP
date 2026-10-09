@@ -146,7 +146,7 @@ def _summary(record):
     keys = ('status', 'anchor', 'anchor_timeframe', 'assigned_timeframe', 'observed_direction',
             'invalidated_at_ny', 'observation_coverage', 'directional_outcome', 'objectives',
             'shift_synopsis', 'availability', 'young_lefty_context', 'hourly_evidence_conflict',
-            'validity_evidence_through_ny')
+            'validity_evidence_through_ny', 'post_shift_outcomes')
     facts = {k: deepcopy(review[k]) for k in keys if k in review}
     story = review.get('shift_story') or {}
     if story:
@@ -183,9 +183,15 @@ def _summary(record):
             out['evidence']['anchor_coverage'] = facts['anchor_coverage']
         synopsis = review.get('shift_synopsis') or {}
         out['evidence']['spoken_summary'] = synopsis.get('spoken_summary')
+        if review.get('post_shift_outcomes'):
+            out['evidence']['spoken_summary']=(out['evidence']['spoken_summary'] or '')+' '+review['post_shift_outcomes'].get('summary','')
         out['evidence_note'] = 'Detailed outcomes exceeded this comparison summary; retrieve this exact context before asserting them.'
     if _size(out) > 5500:
         out['evidence'] = {'status': review.get('status'), 'evidence_omitted': True}
+        appendix=review.get('post_shift_outcomes') or {}
+        if appendix.get('summary'):
+            out['evidence']['post_shift_summary']=appendix['summary']
+            out['evidence']['post_shift_through_ny']=appendix.get('through_ny')
     return out
 
 

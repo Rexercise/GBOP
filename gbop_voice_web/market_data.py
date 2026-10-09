@@ -589,13 +589,12 @@ automatic PD-array recognition is not required.
 
 MARKET_RESPONSE_CONTRACT = """
 NAMED-RANGE ANSWERS
-Use shift_synopsis.chronological_context: under review is not CRT confirmation. Keep source/H1 returns distinct; count event-time ranges, not Soup/closure votes. End at the GTOP shift boundary.
-POST-SHIFT: For qualified full DOL pending at cutoff, review_post_shift_followthrough
-appends later closed evidence for the same parent/phase without changing the shift
-verdict. through_ny=null uses latest closed evidence bounded by now; expected_scope_id=null
-reads original scope. No extra user parameter. Stop first delivery/invalidation;
-later physical touch is not valid success. State horizon/gaps; no never, later
-qualification of cutoff trades, or member results.
+Use shift_synopsis.chronological_context: under review is not CRT confirmation. Keep source/H1 returns distinct; count event-time ranges, not Soup/closure votes. Freeze the shift verdict at its GTOP boundary.
+POST-SHIFT: Always append supplied post_shift_outcomes: later outcome, variant,
+source time and horizon. A relevant range unqualified at cutoff is later development,
+not an earlier trade. Gaps stay unknown. review_post_shift_followthrough supplies
+qualified-phase detail; null expected_scope_id reads frozen scope, null horizon uses
+closed evidence. Stop first delivery/invalidation; no hindsight qualification or fills.
 Outcomes: first name the range and direction, then full delivery, midpoint only, pending, failed or unverified; then mechanism.
 Name acting candle AND affected range. Own CRT needs subsequent purge/return evidence beyond anchor closure. Recheck the same parent.
 Use directional_outcome/variant_evidence; later invalidation preserves earlier V2 delivery.
@@ -872,7 +871,7 @@ def latest_available_shift_date(feed, shift, db=None, now=None):
     raise ValueError('No completed usable shift was found in retained candles.')
 
 
-def market_tool(db, name, args, now=None):
+def market_tool(db, name, args, now=None, *, include_post_shift=True):
     now = int(time.time() if now is None else now)
     try:
         if name not in MARKET_NAMES:
@@ -1008,6 +1007,10 @@ def market_tool(db, name, args, now=None):
             reconcile_paired_recap(result['review'], result['asset'])
             if name == 'review_market_session':
                 result['review']['shift_synopsis'] = build_shift_synopsis(result['review'], result['asset'])
+                from gbop_voice_web.automatic_postshift import build_plan, append_fresh_outcomes
+                result['review']['post_shift_plan'] = build_plan(result['review'],result['asset'],result['symbol'],bars,native_h1)
+                if include_post_shift:
+                    append_fresh_outcomes(db,source_feed,result['review'],now)
                 from gbop_voice_web.post_shift_followthrough import continuation_candidates
                 candidates = continuation_candidates(result['review'], result['asset'], result['symbol'])
                 if candidates:

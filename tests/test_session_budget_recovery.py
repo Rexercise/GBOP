@@ -30,7 +30,8 @@ class SessionBudgetRecoveryTests(unittest.TestCase):
                 synopsis=expand(wire)['review']['shift_synopsis']
                 original=raw['review']['shift_synopsis']
                 for key in ('spoken_summary','ranges','chronological_context','shift_end','active_range_context'):
-                    self.assertEqual(synopsis.get(key),original.get(key),key)
+                    self.assertEqual(synopsis.get(key),original.get(key) + (' '+raw['review']['post_shift_outcomes']['summary']
+                    if raw['review'].get('post_shift_outcomes') else '') if key=='spoken_summary' else original.get(key),key)
                 self.assertFalse(wire['is_live'])
                 self.assertEqual(wire['broker_session'],raw['broker_session'])
                 self.assertEqual(wire['feed_health']['quote_status'],'stale')
@@ -77,7 +78,8 @@ class SessionBudgetRecoveryTests(unittest.TestCase):
         self.assertLessEqual(voice._encoded_size(wire),voice.SHIFT_SYNOPSIS_TARGET_CHARS)
         self.assertNotIn('review',wire)
         self.assertNotIn('evidence_ref',wire['market_context'])
-        self.assertEqual(wire['verified_spoken_summary'],raw['review']['shift_synopsis']['spoken_summary'])
+        self.assertEqual(wire['verified_spoken_summary'],raw['review']['shift_synopsis']['spoken_summary']
+            + (' '+raw['review']['post_shift_outcomes']['summary'] if raw['review'].get('post_shift_outcomes') else ''))
         self.assertTrue(wire['verified_summary_supplied'])
         self.assertTrue(wire['detail_evidence_omitted'])
         self.assertIn('Use verified_spoken_summary',wire['market_context']['snapshot_note'])

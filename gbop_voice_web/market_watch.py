@@ -9,7 +9,7 @@ from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.member_access import member_access_error
 
 NY = ZoneInfo('America/New_York')
-VERSION = 'tab-watch-completed-fact-cache-2026-10-09'
+VERSION = 'tab-watch-auto-postshift-2026-10-09'
 TABLES = ('gbop_market_watches', 'gbop_market_alerts', 'gbop_watch_runtime', 'gbop_prepared_shifts')
 SCHEMA = [
     '''CREATE TABLE IF NOT EXISTS gbop_market_watches (
@@ -146,6 +146,9 @@ def watch_tool(db, guild_id, user_id, owner_id, name, args, now=None):
             if not row:
                 return {'ok': False, 'status': 'not_prepared', 'next_action': 'Call list_market_shifts before offering reviews; review_market_session can read a supported shift. Never invent availability.'}
             review.pop('analysis_cache', None)
+            if review.get('post_shift_plan'):
+                from gbop_voice_web.automatic_postshift import append_fresh_outcomes
+                append_fresh_outcomes(db,None,review,now)
             return {'ok': True, 'asset': asset, 'date_ny': row['date_ny'], 'shift': shift,
                     'prepared_at_epoch': row['prepared_at'], 'age_seconds': now-row['prepared_at'],
                     'availability': review['availability'], 'review': review,

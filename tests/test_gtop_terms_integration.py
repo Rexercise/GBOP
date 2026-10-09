@@ -39,7 +39,8 @@ class TermsIntegrationTests(unittest.TestCase):
         self.assertNotIn('inducement in GTOP terms', text)
         self.assertNotIn('remained pending', text)
         # The short default includes the handoff, concurrent DOL and primary Model 1.
-        self.assertLess(len(text.split()), 360)
+        self.assertLess(len(result['review']['shift_synopsis']['spoken_summary'].split()), 360)
+        self.assertEqual(text, result['review']['shift_synopsis']['spoken_summary']+' '+result['review']['post_shift_outcomes']['summary'])
         self.assertIn('10:00 AM H1 candle souped buy-side', text)
         # Retain newly requested later-range and double-purge evidence inside
         # the unchanged production cap, with the existing transport margin.

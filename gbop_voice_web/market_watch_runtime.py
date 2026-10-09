@@ -274,7 +274,7 @@ def prepare_next_shift(db,fingerprints,now=None):
     if selected is None:
         return None
     asset,day,shift,token,availability=selected
-    result=market_tool(db,'review_market_session',{'asset':asset,'date_ny':day,'shift':shift},now=now)
+    result=market_tool(db,'review_market_session',{'asset':asset,'date_ny':day,'shift':shift},now=now,include_post_shift=False)
     if not result.get('ok'):
         return None
     review=result['review']; story=review.get('shift_story',{})
@@ -303,6 +303,7 @@ def prepare_next_shift(db,fingerprints,now=None):
            'date_ny':day,'shift':shift,'timezone':'America/New_York',
            'source_resolution_seconds':review.get('source_resolution_seconds'),'recap':story.get('recap'),
            'shift_synopsis':review.get('shift_synopsis'),
+           'post_shift_plan':review.get('post_shift_plan'),
            'range_transitions':story.get('range_transitions',[]),'paired_smt':review.get('paired_smt'),
            'paired_context':review.get('paired_context'),
            'selected_ranges':[{'anchor_start_ny':r.get('anchor_start_ny'),'variant_evidence':r.get('variant_evidence'),
