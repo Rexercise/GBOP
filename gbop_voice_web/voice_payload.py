@@ -34,7 +34,7 @@ def _voice_market_context(context, *, evidence_ref=None):
     """
     out = deepcopy(context)
     if not isinstance(out, dict) or out.get('source_tool') not in {
-            'review_market_session', 'review_market_crt', 'review_current_market', 'review_other_market_ranges'}:
+            'review_market_session', 'get_prepared_market_brief', 'review_market_crt', 'review_current_market', 'review_other_market_ranges'}:
         return out
     if not all(key in out for key in ('selection', 'scope_id', 'evidence_id')):
         return out
@@ -855,7 +855,7 @@ def _compact_synopsis_facts(out):
         'Event-time order; no probability votes. Omission is not absence; use exact details.')
 
 
-def shift_voice_synopsis(result):
+def shift_voice_synopsis(result, *, prepared=False):
     """Small default presentation after raw conversation evidence was captured.
 
     The complete overview remains available via shift_voice_overview. Nothing in
@@ -867,7 +867,10 @@ def shift_voice_synopsis(result):
     if 'market_context' in out:
         out['market_context'] = _voice_market_context(out['market_context'], evidence_ref='#/review')
     out['review'] = _pick(review, ('date_ny', 'shift', 'timezone', 'source_resolution_seconds'))
-    out['review']['shift_synopsis'] = build_shift_synopsis(review, result.get('asset'))
+    out['review']['shift_synopsis'] = (deepcopy(review['shift_synopsis']) if prepared else
+                                        build_shift_synopsis(review, result.get('asset')))
+    if prepared:
+        out['review']['as_of_ny'] = review.get('as_of_ny')
     out['voice_view'] = {
         'kind': 'shift_synopsis', 'detail_omitted': True,
         'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
@@ -1009,6 +1012,14 @@ def voice_tool_payload(name, result):
     if (name == 'review_current_market' and isinstance(result, dict)
             and result.get('review', {}).get('mode') == 'current_market'):
         return current_voice_overview(result)
+    if name == 'get_prepared_market_brief' and isinstance(result, dict) and result.get('ok'):
+        review = result.get('review')
+        from gbop_voice_web.market_watch import prepared_synopsis_valid
+        if not prepared_synopsis_valid(review):
+            return {'ok': False, 'status': 'prepared_synopsis_unavailable',
+                    'asset': result.get('asset'),
+                    'message': 'Saved overview is incomplete. Request review_market_session for verified facts.'}
+        return shift_voice_synopsis(result, prepared=True)
     if (name == 'review_market_session' and isinstance(result, dict)
             and isinstance(result.get('review', {}).get('shift_story'), dict)):
         return shift_voice_synopsis(result)

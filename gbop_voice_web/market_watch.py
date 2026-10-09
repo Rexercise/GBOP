@@ -9,7 +9,7 @@ from gbop_voice_web.trade_photos import schema
 from gbop_voice_web.member_access import member_access_error
 
 NY = ZoneInfo('America/New_York')
-VERSION = 'tab-watch-young-lefty-delivery-2026-10-09'
+VERSION = 'tab-watch-completed-fact-cache-2026-10-09'
 TABLES = ('gbop_market_watches', 'gbop_market_alerts', 'gbop_watch_runtime', 'gbop_prepared_shifts')
 SCHEMA = [
     '''CREATE TABLE IF NOT EXISTS gbop_market_watches (
@@ -31,6 +31,26 @@ SCHEMA = [
     'CREATE INDEX IF NOT EXISTS gbop_watches_due ON gbop_market_watches(state,expires_at)',
     'CREATE INDEX IF NOT EXISTS gbop_alerts_due ON gbop_market_alerts(state,updated_at)',
 ]
+
+
+def preparation_rules_hash():
+    from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE
+    return hashlib.sha256(CANONICAL_KNOWLEDGE.encode()).hexdigest()
+
+
+def prepared_synopsis_valid(brief):
+    synopsis = brief.get('shift_synopsis') if isinstance(brief, dict) else None
+    return (isinstance(synopsis, dict) and isinstance(synopsis.get('spoken_summary'), str)
+            and isinstance(synopsis.get('ranges'), list)
+            and all(isinstance(r, dict) for r in synopsis['ranges'])
+            and isinstance(synopsis.get('range_index'), list)
+            and all(isinstance(r, dict) and isinstance(r.get('label'), str)
+                    and isinstance(r.get('anchor_start_ny'), str)
+                    and isinstance(r.get('detail_request'), dict)
+                    and isinstance(r['detail_request'].get('tool'), str)
+                    and isinstance(r['detail_request'].get('args'), dict)
+                    and r['detail_request']['args'].get('anchor_start_ny') == r['anchor_start_ny']
+                    for r in synopsis['range_index']))
 
 
 def init_watches(db):
@@ -108,15 +128,24 @@ def watch_tool(db, guild_id, user_id, owner_id, name, args, now=None):
                                         (asset, shift, VERSION)).fetchall()
             row, review = None, None
             for candidate in rows:
-                payload = json.loads(candidate['payload'])
-                availability = payload.get('availability') or {}
-                if (availability.get('reviewable') and availability.get('temporal_status') == 'completed'
+                try:
+                    payload = json.loads(candidate['payload'])
+                except (TypeError, ValueError):
+                    continue
+                if not prepared_synopsis_valid(payload):
+                    continue
+                cache = payload.get('analysis_cache')
+                if not isinstance(cache, dict) or cache.get('rules_hash') != preparation_rules_hash():
+                    continue
+                availability = payload.get('availability')
+                if (isinstance(availability, dict) and availability.get('reviewable') and availability.get('temporal_status') == 'completed'
                         and availability.get('date_ny') == candidate['date_ny']
                         and availability.get('shift') == shift and availability.get('asset') == asset):
                     row, review = candidate, payload
                     break
             if not row:
                 return {'ok': False, 'status': 'not_prepared', 'next_action': 'Call list_market_shifts before offering reviews; review_market_session can read a supported shift. Never invent availability.'}
+            review.pop('analysis_cache', None)
             return {'ok': True, 'asset': asset, 'date_ny': row['date_ny'], 'shift': shift,
                     'prepared_at_epoch': row['prepared_at'], 'age_seconds': now-row['prepared_at'],
                     'availability': review['availability'], 'review': review,
