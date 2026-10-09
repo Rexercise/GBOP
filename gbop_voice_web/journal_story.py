@@ -152,7 +152,7 @@ def begin_story_turn(context,text,*,generation=None):
         except Exception:
             with context._lock:
                 if context.current(ticket):context._journal_capture_error='Recording is paused; the earlier saved journal remains unchanged.'
-    if is_discard_request(text):return
+    if is_discard_request(text, context):return
     # Audio has no local transcript; its first stage tool records the passage.
     if not _journaling_request(text) or not getattr(context,'auth_provider',None):return
     if len(text.split())<8 and not re.search(r'\b(?:resume|continue|NAS(?:100)?|NASDAQ|SPX|US30|XAUUSD|BTCUSD|EURUSD|9ate8|bought|sold|shorted|entered)\b',text,re.I):return
@@ -362,7 +362,7 @@ def stage_story(db,guild,user,args):
     capability,context=_context(args,guild,user)
     if getattr(context,'_journal_blocked_draft_id',None) and not args.get('draft_id') and args.get('new_draft') is not True:
         raise ValueError('The previous draft is no longer active. Select another draft, explicitly restore it, or ask to start a new draft.')
-    if is_discard_request(getattr(context,'_client_text',None) or args.get('raw_story')):
+    if is_discard_request(getattr(context,'_client_text',None) or args.get('raw_story'), context):
         raise ValueError('Use prepare_journal_discard for draft removal, or restore_journal_story for restoration. Do not record this command as narration.')
     try:
         patch=_patch(args.get('story_json'))

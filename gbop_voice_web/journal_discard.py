@@ -17,8 +17,10 @@ DISCARD_PROMPT = """
 UNFINISHED DRAFT DISCARD
 For delete/discard/remove an unfinished draft, use prepare_journal_discard with
 its exact draft_id. If several drafts could be meant, list titles and ask which.
-Say the returned confirmation_prompt verbatim and wait for the member's next
-reply. Only then call discard_journal_story. For voice quote their actual reply
+YOU say the returned confirmation_prompt and wait for the member's next reply.
+Natural assent or a clear discard request confirms that selected draft; never
+require a magic phrase, repeated question, or spoken draft ID. Only then call
+discard_journal_story. For voice quote their actual reply
 in confirmation_text; typed requests are checked directly by the server. Never
 stage deletion commands as narration, finalize, or use delete_journal/delete_trade
 for this request. Cancel/no/unrelated replies leave the draft unchanged. Discard
@@ -46,14 +48,51 @@ def _normalized(text):
     return ' '.join(str(text or '').casefold().replace('’', "'").split()).strip(' .!')
 
 
+# Whole-utterance grammar, not a magic phrase or a model-supplied approval flag.
+# Every reference below means the one server-bound, delivered draft preview.
+_DISCARD_TARGET = (r"(?:it|this|that|(?:this|that|the|my)(?: selected)?"
+    r"(?: unfinished)? draft|(?:this|that|the|my) unfinished journal(?: draft)?"
+    r"|(?:this|that|the)(?: unfinished)? one|(?:unfinished )?draft|unfinished journal(?: draft)?)")
+_DISCARD_ACTION = r"(?:discard|delete|remove|archive|trash|scrap|bin|toss|throw away|get rid of) " + _DISCARD_TARGET
+_DISCARD_POLITE = r"(?: please| thanks| thank you| for me| now| then){0,3}"
+_DISCARD_INTENT = (r"(?:(?:i want|i would like|i'd like) (?:you )?to |you can |let's )?")
+_DISCARD_COMMAND = (r"(?:please )?(?:just )?(?:(?:go ahead|proceed) and )?"
+    + _DISCARD_INTENT + r"(?:please )?(?:just )?" + _DISCARD_ACTION + _DISCARD_POLITE)
+_DISCARD_PASSIVE = (r"(?:i want|i would like|i'd like) " + _DISCARD_TARGET
+    + r" (?:discarded|deleted|removed|archived|gone)" + _DISCARD_POLITE)
+_DISCARD_ASSENT = (r"(?:please )?(?:yes|yeah|yep|yup|sure(?: thing)?|okay|ok|alright|all right|fine"
+    r"|absolutely|definitely|of course|sounds good|all good|that's (?:fine|right)|that is (?:fine|right)"
+    r"|confirm|confirmed|i confirm|please do|do it|go ahead|proceed)" + _DISCARD_POLITE)
+_DISCARD_ACTION_CLAUSE = r"(?:" + _DISCARD_COMMAND + r"|" + _DISCARD_PASSIVE + r")"
+_DISCARD_ASSENT_CHAIN = _DISCARD_ASSENT + r"(?: (?:and |so )?" + _DISCARD_ASSENT + r"){0,2}"
+# At most one action clause: 'remove this and delete that' may name two targets.
+_DISCARD_CONFIRMATION = re.compile(r"(?:um |uh |well )?(?:"
+    + _DISCARD_ASSENT_CHAIN + r"|(?:" + _DISCARD_ASSENT_CHAIN + r" (?:and |so )?)?"
+    + _DISCARD_ACTION_CLAUSE + r"(?: (?:and |so )?" + _DISCARD_ASSENT_CHAIN + r")?)")
+
+
 def _confirm(text):
-    affirmative = r"(?:yes|yeah|yep|sure|okay|ok|confirm|confirmed|i confirm|please do|go ahead)"
-    target = r"(?:it|(?:this|that|the)(?: unfinished)? draft)"
-    action = r"(?:discard|delete|remove) " + target
-    followup = r"(?:please|(?:please )?(?:do(?: it)?|go ahead(?: and " + action + r")?|i confirm|" + action + r")(?: please)?)"
-    value = ' '.join(re.sub(r"[,.!]+", " ", _normalized(text)).split())
-    return bool(re.fullmatch(affirmative + r"(?: " + followup + r")?"
-        r"|(?:please )?(?:" + action + r"|go ahead(?: and " + action + r")?|do it)(?: please)?", value))
+    """Accept natural assent only within the separate exact-receipt guard.
+
+    Full-string composition permits ordinary politeness and first-person intent,
+    without extracting a stray 'yes' from a refusal, quotation or hypothetical.
+    Unknown targets, third-person claims and wider deletion scope fail closed.
+    """
+    value = _normalized(text)
+    if len(value) > 600 or re.search(r'[?"“”]', value):
+        return False
+    value = ' '.join(re.sub(r"[,;.!–—]+", " ", value).split())
+    return bool(_DISCARD_CONFIRMATION.fullmatch(value))
+
+
+def _cancel_discard(text):
+    value = ' '.join(re.sub(r"[,;.!–—]+", " ", _normalized(text)).split())
+    cancel = (r"(?:cancel(?: it| that)?|keep " + _DISCARD_TARGET
+        + r"|wait|stop|never mind|nevermind|not now|not yet|leave " + _DISCARD_TARGET
+        + r" (?:alone|unchanged)|(?:do not|don't|dont|never) (?:discard|delete|remove|archive|trash|get rid of) "
+        + _DISCARD_TARGET + r")")
+    clause = r"(?:no(?: thanks| thank you)?|(?:please )?" + cancel + r")(?: please)?"
+    return bool(re.fullmatch(clause + r"(?: (?:and )?" + clause + r"){0,2}", value))
 
 
 def _prompt_words(text):
@@ -70,9 +109,33 @@ def _restore_request(text, draft_id=None):
     return bool(target and re.fullmatch(r"(?:please )?(?:restore|recover|bring back) (?:[^\n]{1,300})|(?:please )?undo (?:the )?(?:discard|deletion)(?: of (?:this|that|the) (?:draft|journal))?", value))
 
 
-def is_discard_request(text):
-    """Keep lifecycle requests out of automatic or model-generated narration."""
-    return bool(text and re.search(r'\b(?:discard|delete|remove|archive|restore|recover)\b.*\b(?:draft|unfinished journal)\b|\b(?:draft|unfinished journal)\b.*\b(?:discard|delete|remove|archive)\b|\b(?:discard|delete|remove|archive) it\b|\bundo\b.*\bdiscard', text, re.I))
+def is_discard_request(text, context=None):
+    """Keep lifecycle requests and receipt-bound assent out of narration."""
+    if not text:
+        return False
+    cancellation = getattr(context, '_journal_discard_cancel_reply', None)
+    if context is not None and cancellation == (context.generation, _normalized(text)):
+        return True
+    item = getattr(context, '_journal_discard_preview', None)
+    pending_reply = False
+    if context is not None and item:
+        try:
+            _pending(context, item['draft_id'])
+            pending_reply = True
+        except ValueError:
+            pass
+    affirmative = _confirm(text)
+    lifecycle = bool(re.search(r'\b(?:discard|delete|remove|archive|restore|recover)\b.*\b(?:draft|unfinished journal)\b|\b(?:draft|unfinished journal)\b.*\b(?:discard|delete|remove|archive)\b|\b(?:discard|delete|remove|archive) it\b|\bundo\b.*\bdiscard', text, re.I))
+    natural_action = affirmative and bool(re.search(r'\b(?:discard|delete|remove|archive|trash|scrap|bin|toss|throw away|get rid of|discarded|deleted|removed|archived|gone)\b', text, re.I))
+    guarded = bool(lifecycle or natural_action or pending_reply and (affirmative or _cancel_discard(text)))
+    if guarded and pending_reply and not affirmative:
+        # Any refused lifecycle source (negative, quoted, hypothetical, etc.)
+        # consumes the receipt, so a model retry cannot substitute a later yes.
+        with context._lock:
+            if getattr(context, '_journal_discard_preview', None) is item:
+                context._journal_discard_preview = None
+                context._journal_discard_cancel_reply = (context.generation, _normalized(text))
+    return guarded
 
 
 def _summary(draft):
@@ -112,6 +175,10 @@ def _pending(context, draft_id, *, require_reply=True):
 def begin_discard_turn(context, text):
     with context._lock:
         item = getattr(context, '_journal_discard_preview', None)
+        context._journal_discard_cancel_reply = None
+        if (item and item['delivered'] and context.generation == item['generation'] + 1
+                and text is not None and _cancel_discard(text)):
+            context._journal_discard_cancel_reply = (context.generation, _normalized(text))
         if item and (item['expires_at'] <= time.monotonic()
                 or context.generation > item['generation'] + 1
                 or context.generation == item['generation'] + 1 and text is not None and not _confirm(text)):
@@ -159,9 +226,15 @@ def prepare_discard(db, guild, user, args):
         # A read-only eligibility check must match the storage mutation boundary.
         journal_drafts.ensure_discardable(conn, guild, user, draft)
         title = ' '.join(str(_summary(draft)['title']).split())[:100]
-        prompt = (f'Discard unfinished draft "{title}" (draft {draft["id"][-8:]})? '
+        prompt = (f'Discard unfinished draft "{title}"? '
                   'It will be removed from active journals and can be restored. Saved journals and trades will stay unchanged.')
         previous = getattr(context, '_journal_discard_preview', None)
+        if (previous and previous['generation'] == capability.generation
+                and (previous['draft_id'] != draft['id']
+                     or previous['revision'] != draft['storage_revision'])):
+            # A spoken title need not be unique. Never let an earlier question's
+            # delivery authorize a replacement target/revision in the same turn.
+            raise ValueError('A different draft or revision was already previewed in this turn. Clarify the intended draft, then prepare it in a new member turn. Nothing changed.')
         if (previous and previous['draft_id']==draft['id']
                 and previous['revision']==draft['storage_revision']
                 and previous['owner']==(guild,user,context.session_id)
@@ -183,7 +256,7 @@ def prepare_discard(db, guild, user, args):
             'expires_at': time.monotonic() + PREVIEW_TTL, 'delivered': False, 'prompt': prompt}
         return {'ok': True, 'status': 'draft_discard_confirmation_required', 'requires_confirmation': True,
                 'draft': _summary(draft), 'confirmation_prompt': prompt,
-                'instruction': 'Say confirmation_prompt verbatim; wait for the immediate next member reply. Nothing changed.'}
+                'instruction': 'YOU say confirmation_prompt, then wait for one natural confirmation. The member need not repeat any phrase or draft ID. Use the same draft_id and quote their actual reply. Nothing changed.'}
 
 
 def _result(action, draft):
@@ -251,8 +324,15 @@ def discard_story(db, guild, user, args):
     try:
         with journal_transaction(db, args, guild, user, serialize=True) as conn:
             pending = _pending(context, draft_id)
-            if not _confirm(_source(context, args)):
-                raise ValueError('The member has not explicitly confirmed this draft discard. Nothing changed.')
+            source = _source(context, args)
+            if not _confirm(source):
+                # A later tool retry cannot replace a rejected current reply
+                # with a model-generated yes, including audio-only cancellation.
+                with context._lock:
+                    if getattr(context, '_journal_discard_preview', None) is pending:
+                        context._journal_discard_preview = None
+                        context._journal_discard_cancel_reply = (context.generation, _normalized(source))
+                raise ValueError('No clear confirmation of the selected draft discard was verified. Nothing changed. Clarify intent naturally; never require a special phrase or spoken draft ID.')
             reader = _recovery_reader(db, guild, user, context, draft_id, pending['revision'], 'discard')
             draft = journal_drafts.discard(conn, guild, user, draft_id, expected_revision=pending['revision'])
         result = _result('discard', draft)
@@ -284,7 +364,7 @@ def restore_story(db, guild, user, args):
 
 
 DISCARD_TOOLS = [
-    schema('prepare_journal_discard', 'Preview one exact member-owned unlinked unfinished draft for recoverable discard. Show confirmation_prompt verbatim and wait for the next member reply. Never use finalized journal/trade deletion for an unfinished draft.', {'draft_id': STR}),
-    schema('discard_journal_story', 'Discard ONLY after the delivered preview and explicit immediate next-turn confirmation. Soft archive; no journal/trade/execution deletion. For voice confirmation_text quotes the actual member reply; null for typed requests.', {'draft_id': {'type':'string'}, 'confirmation_text': STR}),
+    schema('prepare_journal_discard', 'Preview one exact member-owned unlinked unfinished draft for recoverable discard. YOU say confirmation_prompt and wait for one natural confirmation; never require a member phrase or spoken ID. Never use finalized journal/trade deletion for an unfinished draft.', {'draft_id': STR}),
+    schema('discard_journal_story', 'Discard ONLY after the delivered preview and clear natural assent in the immediate next member turn. No magic phrase or spoken ID. Soft archive; no journal/trade/execution deletion. For voice confirmation_text quotes the actual member reply; null for typed requests.', {'draft_id': {'type':'string'}, 'confirmation_text': STR}),
     schema('restore_journal_story', 'Restore one explicitly selected archived draft from get_journal_story view=discarded using its storage_revision, only when the member asks to restore. Voice confirmation_text quotes the actual request; null for typed.', {'draft_id': {'type':'string'}, 'storage_revision': {'type':'integer'}, 'confirmation_text': STR}),
 ]
