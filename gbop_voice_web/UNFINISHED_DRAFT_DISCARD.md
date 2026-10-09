@@ -89,3 +89,29 @@ A redundant prepare call for the same unchanged draft preserves its original
 receipt and expiry. Once the preview was delivered it instructs the assistant
 to use the current explicit reply, rather than ask the same question again.
 New draft facts or any storage revision change still need a fresh preview.
+
+
+## Natural confirmation language
+
+The member does not need a magic phrase, verbatim response or spoken draft ID.
+The assistant delivers the selected title and recovery disclosure; internal
+`draft_id`, owner/session, revision and delivery receipt stay server-bound. The
+spoken question omits the opaque identifier, which remains in the tool result.
+
+Confirmation uses a bounded whole-utterance grammar rather than searching for a
+stray yes: natural assent, first-person intent, discard synonyms, passive intent
+and polite clauses can compose. Examples include “sure thing”, “get rid of it”,
+“I'd like you to archive that one”, and “I want that draft removed, thanks”.
+Negation, cancellation, quotations, hypotheticals, third-person instructions,
+questions, other targets and wider deletion scope do not authorize this flow.
+An unclear reply gets a normal intent clarification, never a prescribed phrase.
+
+Natural discard requests and receipt-bound assent cannot be recorded as journal
+narration by a mistaken stage call. Ordinary narrative/finalization behavior is
+unchanged outside this draft-discard context. These checks still do not infer an
+audio transcript: Discord voice must quote the actual current member reply.
+
+A different target or storage revision cannot replace an outstanding preview in
+the same generation. This preserves delivery identity even when two titles are
+identical or truncate identically. Pure cancellation replies to a pending preview
+are also kept out of narration; subsequent actual journal edits still work.
