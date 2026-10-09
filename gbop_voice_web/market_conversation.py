@@ -35,7 +35,7 @@ def contextual_tools(tools):
     """Copy schemas so global market/watch tools and nonconversation users stay intact."""
     result = deepcopy(tools)
     for tool in result:
-        if tool.get('name') in WRITE_TOOLS and tool.get('name') not in {'save_ss_review','stage_journal_story','get_journal_story','save_journal_story'}:
+        if tool.get('name') in WRITE_TOOLS and tool.get('name') not in {'save_ss_review','stage_journal_story','get_journal_story','save_journal_story','prepare_journal_discard','discard_journal_story','restore_journal_story'}:
             params = tool['parameters']
             params['properties']['market_reference'] = {'type': ['string', 'null'], 'enum': ['selected_review', 'selected_candle', 'none', None]}
             params['required'].append('market_reference')
@@ -785,6 +785,7 @@ class MarketConversation:
             self._begun_client_turn = None
             self._feeling_prompt = None
             self._feeling_note = self._feeling_clarification = self._feeling_reply = None
+            self._journal_discard_preview = None
             self.pending = None
             self._multi_request = self._multi_result = None
             self._multi_cache = {}
@@ -813,7 +814,13 @@ class MarketConversation:
                 and _fresh(self, note) and 'advanced_client_turn' not in note
                 and question and question['generation'] == self.generation
                 and response_id == question['response_id'])
+            discard = getattr(self, '_journal_discard_preview', None)
+            carry_discard = (continuation and client_turn == self.client_turn + 1 and discard
+                and discard.get('delivered') and discard['generation'] == self.generation
+                and discard.get('response_id') == response_id and 'advanced_client_turn' not in discard)
             self.invalidate(client_turn=client_turn)
+            if carry_discard:
+                self._journal_discard_preview = {**discard, 'generation': self.generation, 'advanced_client_turn': client_turn}
             if carry:
                 # One ordinary speech-start fence may precede the text delegate.
                 # It cannot revive a partial question or carry across two turns.
@@ -883,6 +890,7 @@ class MarketConversation:
             if not completed or not text or not self.current(ticket):
                 if not completed and self.current(ticket):
                     self._feeling_clarification = None
+                    self._journal_discard_preview = None
                 return 0
             receipt = (ticket, str(response_id) if response_id is not None else _digest(text))
             if receipt in self._completed_responses:
@@ -907,10 +915,13 @@ class MarketConversation:
         # lock before its generation guard, never while holding self._lock.
         from gbop_voice_web.journal_story import delivered_story_question
         delivered_story_question(self, text, ticket)
+        from gbop_voice_web.journal_discard import delivered_discard_preview
+        delivered_discard_preview(self, text, ticket, receipt[1])
         return count
 
     def prompt(self):
-        from gbop_voice_web.journal_story import story_prompt_context
+        from gbop_voice_web.journal_story import story_prompt_context, refresh_story_status
+        refresh_story_status(self)
         with self._lock:
             story_context = story_prompt_context(self)
             if not self.selected and not self.requested and not self.context_bank.entries and not self._multi_request:
@@ -1106,7 +1117,7 @@ class MarketConversation:
     def _run_journal(self, name, arguments, runner, ticket, operation_id=None):
         args = {key: value for key, value in dict(arguments).items() if not key.startswith('_')}
         reference = args.pop('market_reference', None)
-        if name in {'stage_journal_story','get_journal_story','save_journal_story'} and reference not in (None,'none'):
+        if name in {'stage_journal_story','get_journal_story','save_journal_story','prepare_journal_discard','discard_journal_story','restore_journal_story'} and reference not in (None,'none'):
             return {'ok':False,'error':'Story drafts preserve member-reported narrative, not a market-review binding. Use the existing contextual journal flow for verified candle provenance.'}
         if reference not in (None, 'none', 'selected_review', 'selected_candle'):
             return {'ok': False, 'error': 'Use market_reference selected_review, selected_candle, none, or null.'}
@@ -1115,7 +1126,7 @@ class MarketConversation:
                 if not self.current(ticket):
                     return self._stale(write_not_started=True)
                 wants_review = self._journal_reference is True or (reference in {'selected_review', 'selected_candle'} and self._journal_reference is None)
-                existing_journal = (name in {'stage_journal_story', 'get_journal_story', 'save_journal_story', 'edit_journal', 'record_trade_feeling', 'record_trade_self_grade', 'save_ss_review'} or name == 'save_journal_entry' and
+                existing_journal = (name in {'stage_journal_story', 'get_journal_story', 'save_journal_story', 'prepare_journal_discard', 'discard_journal_story', 'restore_journal_story', 'edit_journal', 'record_trade_feeling', 'record_trade_self_grade', 'save_ss_review'} or name == 'save_journal_entry' and
                     any(args.get(key) is not None for key in ('journal_number', 'trade_number', 'legacy_journal_number'))
                     or name == 'open_trade' and args.get('trade_id') is not None)
                 if existing_journal:
@@ -1136,7 +1147,7 @@ class MarketConversation:
                         return {'ok': False, 'status': 'journal_candle_required',
                                 'error': 'Which candle opening and timeframe was your entry? Several or unverified candle identities remain in this review.'}
                 story_revision = (getattr(self, '_journal_story', None) or {}).get('revision') if name == 'save_journal_story' else None
-                cache_result = name not in {'stage_journal_story','get_journal_story'}
+                cache_result = name not in {'stage_journal_story','get_journal_story','prepare_journal_discard','discard_journal_story','restore_journal_story'}
                 from gbop_voice_web.execution_identity import EXECUTION_TOOLS, bind_operation
                 execution_op = bind_operation(self, ticket, name, args, operation_id) if name in EXECUTION_TOOLS else None
                 if execution_op:

@@ -12,7 +12,7 @@ import json
 import math
 import re
 
-WRITE_TOOLS = {'stage_journal_story', 'get_journal_story', 'save_journal_story', 'record_trade_feeling', 'record_trade_self_grade', 'save_journal_entry', 'open_trade', 'close_trade', 'add_entry', 'record_trade_event', 'edit_journal', 'save_ss_review'}
+WRITE_TOOLS = {'prepare_journal_discard', 'discard_journal_story', 'restore_journal_story', 'stage_journal_story', 'get_journal_story', 'save_journal_story', 'record_trade_feeling', 'record_trade_self_grade', 'save_journal_entry', 'open_trade', 'close_trade', 'add_entry', 'record_trade_event', 'edit_journal', 'save_ss_review'}
 EVENT = 'journal_context_v1'
 REPORTED_KEYS = {'reported_entry_at', 'reported_exit_at', 'reported_outcome'}
 

@@ -256,7 +256,7 @@ class VoiceToolWork:
                 text = ('JOURNAL WRITE STATUS CONTEXT. Metadata for the earlier interrupted '
                         'record change, not a new request. Use only for that save or its status. '
                         'Saved means the database transaction committed: report the actual Trade # '
-                        'and replace any earlier waiting claim. If draft_status is unfinished, say the '
+                        'and replace any earlier waiting claim. If discarded=true or draft_status=discarded, say the draft was discarded and can be restored; never resume it. If restored=true, say the unfinished draft was restored, not finalized. Otherwise if draft_status is unfinished, say the '
                         'unfinished journal was saved; do not claim it is finalized or invent a Trade #. '
                         'Pending means its worker has not '
                         'finished; it does not promise a reply. Uncertain means a save may have '
