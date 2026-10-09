@@ -25,6 +25,7 @@ class PreparationTests(unittest.TestCase):
         self.feed={'ok':True,'asset':'NAS100','symbol':'USTECm','bars':[dict(bar,time=T+7*3600)],'bars_m1':[]}
         self.result={'ok':True,'asset':'NAS100','available_through_ny':'2026-10-02T10:05:00-04:00',
             'review':{'shift_story':{'recap':{'classification':'synthetic test only'},'ranges':[]},
+                      'shift_synopsis':{'spoken_summary':'synthetic test only','ranges':[],'range_index':[]},
                       'paired_smt':{'status':'unavailable','reason':'SPX not connected'}}}
     def tearDown(self):
         self.conn.close()
@@ -78,7 +79,8 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(selected['candle_lifecycle_summary'],actual['candle_lifecycle']['spoken_summary'])
     def test_native_evidence_change_refreshes_same_source_bars_and_bucket(self):
         cache={}
-        self.result['review']['shift_synopsis']={'young_lefty_status':'context_dependent',
+        self.result['review']['shift_synopsis']={'spoken_summary':'synthetic native test','ranges':[],'range_index':[],
+            'young_lefty_status':'context_dependent',
             'young_lefty_coverage':{'ohlc_basis':'native_broker_H1','source_coverage_complete':False}}
         higher={'time':T-7200,'open':100,'high':110,'low':90,'close':100,
             'provenance':{'source':'MT5','timeframe':'H1','method':'copy_rates_from_pos',

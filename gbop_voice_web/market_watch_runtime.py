@@ -164,6 +164,79 @@ async def deliver_alerts(db,guild_id,owner_id,sender,role_check,now=None):
     return delivered
 
 
+def _completed_input_token(db, feed, asset, day, shift, bars, step, native, start, end, now):
+    """All candle inputs affecting local/paired facts, never member context."""
+    from gbop_voice_web.market_data import PAIRINGS, read_feed, _history_sets
+    from gbop_voice_web.market_watch import preparation_rules_hash
+    # history_native_h1 already rejects captures before bar close. A later
+    # retrieval of identical validated OHLC is not a new analysis input. Keep
+    # every other provenance field; the saved brief retains its original age.
+    native_facts = [dict(bar, provenance={k:v for k,v in bar.get('provenance',{}).items()
+                                         if k != 'captured_at'}) for bar in native]
+    inputs = {'symbol': feed.get('symbol'), 'source_bars': bars, 'step': step,
+              'native_h1': native_facts, 'rules_hash': preparation_rules_hash()}
+    peer = PAIRINGS.get(asset)
+    if peer:
+        # Later selected paired ranges can choose a different source resolution
+        # from the opening pair. Include all bounded source sets, not just M1.
+        try:
+            other = read_feed(db, peer, now)
+            inputs['paired'] = {'asset': peer, 'available': bool(other.get('ok'))}
+            if other.get('ok'):
+                inputs['paired'].update(symbol=other.get('symbol'),
+                    source_sets=_history_sets(db, other, start+3600, end),
+                    local_source_sets=_history_sets(db, feed, start+3600, end))
+        except Exception:
+            return None  # Never cache a transient unreadable dependency.
+    digest = hashlib.sha256(json.dumps(inputs,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    return (VERSION,asset,day,shift,digest)
+
+
+def _prepared_matches(db, key, token, fingerprints):
+    """Database-validated reuse, including process restart and payload repair."""
+    if token is None:
+        return False
+    known = fingerprints.get(('payload',*key)) if fingerprints.get(key)==token else None
+    with db() as conn:
+        if hasattr(conn, '_conn'):
+            # PostgreSQL computes the digest without retransferring a warm
+            # payload. No new table, column, function or extension is required.
+            row=conn.execute("""SELECT version,prepared_at,md5(payload) AS payload_fingerprint,
+                CASE WHEN md5(payload)=? THEN NULL ELSE payload END AS payload
+                FROM gbop_prepared_shifts WHERE asset=? AND date_ny=? AND shift=?""",
+                (known,*key)).fetchone()
+        else:
+            row=conn.execute('SELECT version,prepared_at,payload FROM gbop_prepared_shifts WHERE asset=? AND date_ny=? AND shift=?',key).fetchone()
+        if not row or row['version'] != VERSION:
+            return False
+        digest=(row['payload_fingerprint'] if hasattr(conn, '_conn') else
+                hashlib.md5(row['payload'].encode()).hexdigest())
+    header=(row['version'],row['prepared_at'])
+    if (known is not None and digest==known
+            and fingerprints.get(('stored',*key))==header):
+        return True
+    try:
+        brief=json.loads(row['payload'])
+    except (TypeError,ValueError):
+        return False
+    from gbop_voice_web.market_watch import preparation_rules_hash, prepared_synopsis_valid
+    if not isinstance(brief,dict):
+        return False
+    cache=brief.get('analysis_cache')
+    availability=brief.get('availability')
+    if (not isinstance(cache,dict) or not isinstance(availability,dict)
+            or not prepared_synopsis_valid(brief)
+            or cache.get('rules_hash') != preparation_rules_hash()
+            or cache.get('input_token') != list(token)
+            or not availability.get('reviewable') or availability.get('temporal_status')!='completed'
+            or any(availability.get(k)!=v for k,v in zip(('asset','date_ny','shift'),key))):
+        return False
+    fingerprints[key]=token
+    fingerprints[('stored',*key)]=header
+    fingerprints[('payload',*key)]=digest
+    return True
+
+
 def prepare_next_shift(db,fingerprints,now=None):
     """One changed asset/shift per tick; bounded retention and no model calls."""
     from gbop_voice_web.market_data import read_feed, market_tool, latest_available_shift_date, history_bars, history_native_h1
@@ -190,12 +263,12 @@ def prepare_next_shift(db,fingerprints,now=None):
         if not availability['reviewable'] or availability['temporal_status'] != 'completed':
             continue
         key=(asset,day,shift)
-        # A narrative/qualification change must rebuild derived summaries even
-        # when candle bytes and the five-minute freshness bucket are unchanged.
-        token=(VERSION,asset,day,shift,hashlib.sha256(json.dumps(
-            {'source_bars':bars,'native_h1':native},separators=(',',':')).encode()).hexdigest(),now//300)
-        if fingerprints.get(key)==token:
-            continue
+        token=_completed_input_token(db,feed,asset,day,shift,bars,step,native,start,end,now)
+        if _prepared_matches(db,key,token,fingerprints):
+            fingerprints[('checked',*key)]=now
+            # One eligible completed context per tick, whether reused or rebuilt.
+            # Rotation still advances; do not triple source reads on cache hits.
+            return None
         selected=(asset,day,shift,token,availability)
         break
     if selected is None:
@@ -206,8 +279,29 @@ def prepare_next_shift(db,fingerprints,now=None):
         return None
     review=result['review']; story=review.get('shift_story',{})
     availability=result.get('availability',availability)
+    if (not isinstance(availability,dict) or not availability.get('reviewable')
+            or availability.get('temporal_status') != 'completed'
+            or any(availability.get(k)!=v for k,v in zip(('asset','date_ny','shift'),(asset,day,shift)))):
+        return None
+    # Analysis reads source evidence itself. Reject a concurrently changed
+    # input rather than tagging one revision's facts with another's hash.
+    if token is not None:
+        try:
+            feed=read_feed(db,asset,now)
+            opening,end=shift_bounds(day,shift); start=opening-7200
+            native=history_native_h1(db,feed,start,end)
+            bars,step=history_bars(db,feed,start,end,day,shift,now,native_h1=native)
+            verified=_completed_input_token(db,feed,asset,day,shift,bars,step,native,start,end,now)
+        except Exception:
+            return None
+        if verified != token:
+            return None
     # Keep the prepared copy small; full evidence remains available on demand.
-    brief={'as_of_ny':result.get('available_through_ny'),'availability':availability,'recap':story.get('recap'),
+    from gbop_voice_web.market_watch import preparation_rules_hash
+    brief={'analysis_cache':{'input_token':list(token) if token else None,'rules_hash':preparation_rules_hash()},
+           'as_of_ny':result.get('available_through_ny'),'availability':availability,
+           'date_ny':day,'shift':shift,'timezone':'America/New_York',
+           'source_resolution_seconds':review.get('source_resolution_seconds'),'recap':story.get('recap'),
            'shift_synopsis':review.get('shift_synopsis'),
            'range_transitions':story.get('range_transitions',[]),'paired_smt':review.get('paired_smt'),
            'paired_context':review.get('paired_context'),
@@ -235,6 +329,10 @@ def prepare_next_shift(db,fingerprints,now=None):
         conn.execute("DELETE FROM gbop_market_alerts WHERE updated_at<? AND state<>'pending'",(now-7*86400,))
         conn.execute("DELETE FROM gbop_market_watches WHERE expires_at<? AND state<>'active'",(now-7*86400,))
     fingerprints[(asset,day,shift)]=token
+    fingerprints[('stored',asset,day,shift)]=(VERSION,now)
+    from gbop_voice_web.market_watch import prepared_synopsis_valid
+    fingerprints[('payload',asset,day,shift)]=(hashlib.md5(payload.encode()).hexdigest()
+                                             if prepared_synopsis_valid(brief) else None)
     fingerprints[('checked',asset,day,shift)]=now
     return {'asset':asset,'date_ny':day,'shift':shift,'prepared_at':now}
 
