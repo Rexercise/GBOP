@@ -1,6 +1,3 @@
-SOUPIER SOUP — TERMINOLOGY ONLY
-Use the exact name Soupier Soup (S O U P I E R Soup).
-Soupier Soup is conceptually a "soup of a Super Soup".
-This clarification establishes the name and concept only. Qualification, timeframe, confirmation, entry sequence, entry timing, tier, invalidation and targets remain unspecified.
-Do not infer a tier, entry model classification or trade classification from this term or its definition. Do not inherit Super Soup's tier, timing or qualification merely because the definition mentions Super Soup. Do not detect or confirm Soupier Soup from market evidence without further user-defined rules.
-All existing rules for other named models remain unchanged.
+SOUPIEROR SOUP
+Soupieror Soup (formerly Soupier Soup) is a soup of the Super Soup: its candle is a CRT for a refined entry. The resulting candle can be a CRT recursively; retain immediate parent and original play/range.
+Stage literal entry_model, parent play, candle_label and lineage in context_notes/entry notes via stage_journal_story; stable entry_index tracks fills. Finalize on request. Naming/risk/tier never gate save; unknown risk/R/tier stay unknown. Preserve raw terms. "Superior Soup" is a spoken alias only in clear recursive context. Qualification, thresholds, timeframes, confirmation, timing, invalidation and targets are unspecified.
