@@ -1,5 +1,10 @@
 # Frozen-shift follow-through
 
+For the automatic recap appendix added on 2026-10-09, including separately
+reported later development of an under-review anchor, see
+[AUTOMATIC_POSTSHIFT_RECAP.md](AUTOMATIC_POSTSHIFT_RECAP.md). The strict qualified-phase
+tool described below retains its original eligibility boundary.
+
 Prepared against byte-verified main `773b40f` in a separate checkout. No live
 database, migration, push, merge or deployment is part of this patch.
 

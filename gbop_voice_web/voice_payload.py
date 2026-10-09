@@ -13,7 +13,16 @@ from gbop_voice_web.directional_evidence import directional_candidate_evidence
 SHIFT_OVERVIEW_TARGET_CHARS = 32000
 VOICE_COMPACTION_TARGET_CHARS = 31000
 SHIFT_SYNOPSIS_TARGET_CHARS = 12000
+POST_SHIFT_SYNOPSIS_TARGET_CHARS = 16000
 CURRENT_OVERVIEW_TARGET_CHARS = 16000
+
+
+def _shift_synopsis_budget(review):
+    appendix=review.get('post_shift_outcomes') or (review.get('other_range_followup') or {}).get('post_shift_outcomes')
+    if (isinstance(appendix,dict) and appendix.get('status')=='bounded_later_evidence'
+            and isinstance(appendix.get('ranges'),list) and 0 < len(appendix['ranges']) <= 5):
+        return POST_SHIFT_SYNOPSIS_TARGET_CHARS
+    return SHIFT_SYNOPSIS_TARGET_CHARS
 
 
 def _encoded_size(value):
@@ -341,7 +350,7 @@ def _compact_fact_symbols(synopsis, fields=None, *, prefix='fact'):
             or not all(isinstance(synopsis.get(names[key]), list)
                        for key in ('columns', 'strings', 'defaults'))):
         return False
-    fields = (('ranges', 'chronological_context', 'active_range_context', 'shift_end', 'range_defaults')
+    fields = (('ranges', 'chronological_context', 'active_range_context', 'shift_end', 'post_shift_outcomes', 'range_defaults')
               if fields is None else tuple(fields)) + (names['defaults'],)
     selected = {key: deepcopy(synopsis[key]) for key in fields if key in synopsis}
     old_strings = synopsis[names['strings']]
@@ -589,6 +598,11 @@ def shift_voice_overview(result):
     recap = review.get('shift_recap', story.get('recap', {}))
     view = _pick(review, ('date_ny', 'shift', 'timezone', 'source_resolution_seconds', 'limits'))
     view['shift_recap'] = _pick(recap, ('headline', 'spoken_summary', 'closing', 'evidence_precedence', 'hourly_crt_summary', 'range_summaries'))
+    if review.get('post_shift_outcomes'):
+        appendix=deepcopy(review['post_shift_outcomes'])
+        view['shift_recap']['spoken_summary']=(view['shift_recap'].get('spoken_summary') or '')+' '+appendix.pop('summary','')
+        for row in appendix.get('ranges',[]): row.pop('summary',None)
+        view['post_shift_outcomes']=appendix
     view['shift_story'] = _pick(story, ('start_ny', 'end_ny', 'active_anchor_ny',
         'progression_complete', 'range_transitions', 'hourly_progression', 'limits'))
     view['shift_story']['coverage'] = _pick(story.get('coverage', {}), (
@@ -863,17 +877,27 @@ def shift_voice_synopsis(result, *, prepared=False):
     """
     from gbop_voice_web.shift_synopsis import build_shift_synopsis
     review = result['review']
+    budget = _shift_synopsis_budget(review)
     out = {key: deepcopy(value) for key, value in result.items() if key != 'review'}
     if 'market_context' in out:
         out['market_context'] = _voice_market_context(out['market_context'], evidence_ref='#/review')
     out['review'] = _pick(review, ('date_ny', 'shift', 'timezone', 'source_resolution_seconds'))
     out['review']['shift_synopsis'] = (deepcopy(review['shift_synopsis']) if prepared else
                                         build_shift_synopsis(review, result.get('asset')))
+    if review.get('post_shift_outcomes'):
+        appendix=deepcopy(review['post_shift_outcomes'])
+        # The verified later prose is spoken once; every analytical fact stays
+        # separately scoped in the appendix. No optional tool call is needed.
+        narrative=appendix.pop('summary','')
+        for row in appendix.get('ranges',[]):
+            row.pop('summary',None)
+        out['review']['shift_synopsis']['post_shift_outcomes']=appendix
+        out['review']['shift_synopsis']['spoken_summary']+=' '+narrative
     if prepared:
         out['review']['as_of_ny'] = review.get('as_of_ny')
     out['voice_view'] = {
         'kind': 'shift_synopsis', 'detail_omitted': True,
-        'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
+        'character_budget': budget,
         'note': 'Follow the selected range to shift_end; only a recorded transition '
                 'changes selection. Name supported variants/candidates with reasons and missing conditions. '
                 'Omission is not absence; range_index retrieves Model 1/CISD/Soup detail.'}
@@ -881,23 +905,24 @@ def shift_voice_synopsis(result, *, prepared=False):
     range_index = deepcopy(synopsis['range_index'])
     # Factor repeated navigation before the hard ceiling, leaving room for
     # conversation scope and the newly required concurrent/pending evidence.
-    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS * .75:
+    if _encoded_size(out) > budget * .75:
         _compact_synopsis_navigation(out)
-    if (_encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS
-            or _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS * .75
+    if (_encoded_size(out) > budget
+            or _encoded_size(out) > budget * .75
             and any(row.get('pending_reversal') for row in synopsis.get('ranges', []))):
         _compact_synopsis_facts(out)
-    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+    if _encoded_size(out) > budget:
         _compact_interval_tables(out)
+        synopsis = out['review']['shift_synopsis']
     record_tables = False
-    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS * .75:
+    if _encoded_size(out) > budget * .75:
         record_tables = _compact_record_tables(synopsis,
-            ('ranges', 'chronological_context', 'active_range_context', 'shift_end'), prefix='fact')
+            ('ranges', 'chronological_context', 'active_range_context', 'shift_end', 'post_shift_outcomes'), prefix='fact')
         if record_tables:
             out['voice_view']['fact_codec'] = ('Lossless: row=[schema,cells] via fact_columns/defaults; str=id via fact_strings; '
                 'text=[schema,cells] interleaves fact_texts fragments.')
             synopsis['response_contract'] = 'Keep scope, event order, original/reversal and uncertainty. No trade inference.'
-    if (record_tables and _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS * .75
+    if (record_tables and _encoded_size(out) > budget * .75
             and _compact_fact_symbols(synopsis)):
         for key in ('note', 'fact_tables', 'fact_codec', 'fact_references'):
             out['voice_view'].pop(key, None)
@@ -905,17 +930,17 @@ def shift_voice_synopsis(result, *, prepared=False):
             'Numeric keys/$i strings index fact_keys/strings ($$ escapes $). '
             'row=[i,...cells] uses fact_columns/defaults; text interleaves fact_texts. '
             'String=[i,clock] joins fact_clock_templates. Fill range_defaults; arrays use *_columns.')
-    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+    if _encoded_size(out) > budget:
         if _factor_review(out):
             out['voice_view']['fact_references'] = 'same_evidence_as is an in-payload pointer.'
-    if _encoded_size(out) >= SHIFT_SYNOPSIS_TARGET_CHARS - 300 and 'post_shift_followthrough' in out:
+    if _encoded_size(out) >= budget - 300 and 'post_shift_followthrough' in out:
         # Optional navigation is re-readable with expected_scope_id=null. Never
         # drop original shift evidence or fail a previously fitting synopsis
         # merely to carry future-context hashes in every spoken recap.
         out.pop('post_shift_followthrough')
-    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS - 600 or 'fact_columns' in synopsis:
+    if _encoded_size(out) > budget - 600 or 'fact_columns' in synopsis:
         _compact_shift_envelope(out)
-    if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+    if _encoded_size(out) > budget:
         summary = synopsis.get('spoken_summary')
         retained_summary = (summary if isinstance(summary, str) and 0 < _encoded_size(summary) <= 6000 else None)
         return _bounded_error({'ok': False, 'status': 'voice_synopsis_budget_exceeded',
@@ -928,7 +953,7 @@ def shift_voice_synopsis(result, *, prepared=False):
             **({'negative_claim_guard': deepcopy(synopsis['negative_claim_guard'])}
                if synopsis.get('negative_claim_guard') else {}),
             'detail_request': next((r['detail_request'] for r in range_index if r['label'] == '9ate8'), None)},
-            SHIFT_SYNOPSIS_TARGET_CHARS)
+            budget)
     return out
 
 
@@ -985,11 +1010,12 @@ def voice_tool_payload(name, result):
     if (name == 'review_other_market_ranges' and isinstance(result, dict)
             and isinstance(result.get('review', {}).get('other_range_followup'), dict)):
         out = deepcopy(result)
+        budget = _shift_synopsis_budget(result['review'])
         out['market_context'] = _voice_market_context(out.get('market_context'), evidence_ref='#/review')
         out['voice_view'] = {'kind': 'other_range_followup', 'detail_omitted': True,
-                            'character_budget': SHIFT_SYNOPSIS_TARGET_CHARS,
+                            'character_budget': budget,
                             'note': 'Follow mode and named ranges through shift end; keep phase identities and discussion bridge. Retrieval is not discussion.'}
-        if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+        if _encoded_size(out) > budget:
             # The same selected-range narrative also exists in structured
             # active context and the top-level follow-up summary. Keep phase
             # evidence (including official double-purge confirmation) rather
@@ -998,16 +1024,18 @@ def voice_tool_payload(name, result):
             if isinstance(active, dict) and active.get('spoken_summary'):
                 active.pop('spoken_summary')
                 out['voice_view']['secondary_prose_omitted'] = 'Active-range prose; structured chronology and follow-up summary remain.'
-        if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+        if _encoded_size(out) > budget:
             # Reuse the existing lossless in-payload references. No range,
             # actor/parent relation, objective or qualification is discarded.
             _factor_review(out)
             out['voice_view']['reference_format'] = 'same_evidence_as resolves to an in-payload JSON pointer.'
-        if _encoded_size(out) > SHIFT_SYNOPSIS_TARGET_CHARS:
+        if _encoded_size(out) > budget:
             return _bounded_error({'ok': False, 'status': 'voice_other_ranges_budget_exceeded',
                 'asset': out.get('asset'), 'market_context': _voice_market_context(out.get('market_context')),
-                'message': 'Remaining range evidence exceeds the voice budget. Request one exact range; no follow-up was supplied.'},
-                SHIFT_SYNOPSIS_TARGET_CHARS)
+                'message': 'Detailed range evidence exceeds the budget. Use the verified summary and retrieve exact range details.',
+                **({'verified_spoken_summary': out['review']['other_range_followup']['spoken_summary']}
+                   if 0 < len(out['review']['other_range_followup'].get('spoken_summary','')) <= 6000 else {})},
+                budget)
         return out
     if (name == 'review_current_market' and isinstance(result, dict)
             and result.get('review', {}).get('mode') == 'current_market'):

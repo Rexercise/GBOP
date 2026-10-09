@@ -55,7 +55,7 @@ def expand(root):
             if symbols and isinstance(value, str) and value.startswith('$'):
                 return value[1:] if value.startswith('$$') else string(int(value[1:]))
             return value
-        for key in ('ranges', 'chronological_context', 'active_range_context', 'shift_end', 'range_defaults'):
+        for key in ('ranges', 'chronological_context', 'active_range_context', 'shift_end', 'post_shift_outcomes', 'range_defaults'):
             if key in synopsis:
                 synopsis[key] = facts(synopsis[key])
         for key in ('source_interval_columns', 'objective_columns'):

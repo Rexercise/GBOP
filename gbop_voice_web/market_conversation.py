@@ -1061,6 +1061,17 @@ class MarketConversation:
                                 'error': 'The selected range is outside the active selected-range story. Retrieve its exact detail to continue it.'}
                 followup = build_other_ranges(review, target['asset'], self._discussed.get(_discussion_scope(target), ()),
                     **({'continue_active': True, 'anchor_start_ny': explicit_anchor} if continue_active else {}))
+                appendix=review.get('post_shift_outcomes')
+                if appendix:
+                    anchors={r.get('anchor_start_ny') for r in followup.get('ranges',[])}
+                    anchors.add((followup.get('active_range_context') or {}).get('anchor_start_ny'))
+                    anchors.update(r.get('anchor_start_ny') for r in followup.get('next_selected_context',[]))
+                    selected_appendix=deepcopy(appendix)
+                    selected_appendix['ranges']=[r for r in appendix.get('ranges',[]) if r['anchor_start_ny'] in anchors]
+                    if selected_appendix['ranges']:
+                        selected_appendix['summary']=' '.join(r['summary'] for r in selected_appendix['ranges'])
+                        followup['spoken_summary']+=' '+selected_appendix['summary']
+                        followup['post_shift_outcomes']=selected_appendix
                 if continue_active:
                     active_anchor = followup['active_range_context']['anchor_start_ny']
                     # Validate returned identity inside this same bounded shift,

@@ -73,7 +73,8 @@ class VoicePayloadBudgetTests(unittest.TestCase):
             self.assertEqual(overview.get('market_context'), source.get('market_context'))
         review, original = expanded(overview, overview['review']), source['review']
         self.assertEqual((review['date_ny'], review['shift']), (original['date_ny'], original['shift']))
-        self.assertEqual(review['shift_recap']['spoken_summary'], original['shift_story']['recap']['spoken_summary'])
+        self.assertEqual(review['shift_recap']['spoken_summary'], original['shift_story']['recap']['spoken_summary']
+            + (' '+original['post_shift_outcomes']['summary'] if original.get('post_shift_outcomes') else ''))
         self.assertEqual(review['shift_recap'].get('evidence_precedence'), original['shift_story']['recap'].get('evidence_precedence'))
         for key in ('hourly_crt_summary', 'range_summaries'):
             if key in review['shift_recap']:

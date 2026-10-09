@@ -262,8 +262,16 @@ class PreparedPresentationTests(unittest.TestCase):
                         self.assertLessEqual(_encoded_size(wire),12000)
                         self.assertEqual(raw,before)
                         actual=expand(wire)['review']['shift_synopsis']
-                        for key in ('ranges','chronological_context','active_range_context','shift_end','spoken_summary'):
+                        for key in ('ranges','chronological_context','active_range_context','shift_end'):
                             self.assertEqual(actual[key],raw['review']['shift_synopsis'][key],key)
+                        appendix=raw['review'].get('post_shift_outcomes')
+                        self.assertEqual(actual['spoken_summary'],raw['review']['shift_synopsis']['spoken_summary']
+                            + (' '+appendix['summary'] if appendix else ''))
+                        if appendix:
+                            expected_appendix=deepcopy(appendix)
+                            expected_appendix.pop('summary',None)
+                            for row in expected_appendix.get('ranges',[]): row.pop('summary',None)
+                            self.assertEqual(actual['post_shift_outcomes'],expected_appendix)
                         self.assertEqual(wire['age_seconds'],600)
                         self.assertEqual(wire['prepared_at_epoch'],now)
                         self.assertEqual(wire['review']['as_of_ny'],raw['review']['as_of_ny'])

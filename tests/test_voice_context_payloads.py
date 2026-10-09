@@ -100,7 +100,8 @@ class VoiceContextPayloadTests(unittest.TestCase):
                     self.assertEqual(actual['detail_request']['args']['context_action'], 'continue')
                 self.assertFalse(page['is_live'])
                 self.assertEqual(page['broker_session']['status'], 'unknown')
-                self.assertEqual(page['review']['shift_recap']['spoken_summary'], raw['review']['shift_story']['recap']['spoken_summary'])
+                self.assertEqual(page['review']['shift_recap']['spoken_summary'], raw['review']['shift_story']['recap']['spoken_summary']
+                    + (' '+raw['review']['post_shift_outcomes']['summary'] if raw['review'].get('post_shift_outcomes') else ''))
 
     def test_generated_nas_nine_detail_retains_ten_model1_and_local_parent_chronology(self):
         _, _, full = self.full('NAS100')

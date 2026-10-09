@@ -270,7 +270,11 @@ class ShiftSynopsisTests(unittest.TestCase):
                                 SHIFT_SYNOPSIS_TARGET_CHARS - 300)
                 # Official confirmation and pre-confirmation observations must remain distinct.
                 # Handoffs, concurrent DOL and primary Model 1 are required in the default.
-                self.assertLess(len(payload['review']['shift_synopsis']['spoken_summary'].split()), 360)
+                self.assertLess(len(source['review']['shift_synopsis']['spoken_summary'].split()), 360)
+                expected=source['review']['shift_synopsis']['spoken_summary']
+                if source['review'].get('post_shift_outcomes'):
+                    expected+=' '+source['review']['post_shift_outcomes']['summary']
+                self.assertEqual(payload['review']['shift_synopsis']['spoken_summary'],expected)
 
     def test_default_ignores_unbounded_legacy_prose_but_bounds_unknown_metadata(self):
         source = self.replay(retained.RetainedMarketReplayTests).tool('NAS100')

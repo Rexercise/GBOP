@@ -12,12 +12,12 @@ import math
 import re
 
 from gbop_voice_web.candle_evidence import (
-    h1_anchor, interval, missing_source_intervals, parse_time, stamp, summarize,
+    h1_anchor, interval, missing_source_intervals, next_boundary, parse_time, stamp, summarize,
 )
 from gbop_voice_web.shift_availability import shift_bounds
 
 
-VERSION = 'post-shift-followthrough-persistent-phases-v2'
+VERSION = 'post-shift-followthrough-variant-evidence-v3'
 TOOL_NAME = 'review_post_shift_followthrough'
 MAX_WINDOW_SECONDS = 90 * 86400
 CONTRACT = (
@@ -28,7 +28,10 @@ CONTRACT = (
     'Stop the structural path at its first verified full delivery or invalidation. '
     'A physical touch after invalidation is not valid delivery. Missing candles '
     'leave coverage and ordering unverified; never say never. Source intervals '
-    'are candle evidence, not exact tick times or member fills, exits, P/L or R.'
+    'are candle evidence, not exact tick times or member fills, exits, P/L or R. '
+    'Report full delivery with its supported variant or source-time delivery manner; '
+    'later own-H1 structural confirmation is separate. Preserve the frozen midpoint '
+    'manner. Never borrow an original-phase variant for a later purge phase.'
 )
 
 
@@ -46,11 +49,13 @@ def _finite(value):
 
 def _objective(value, source_name, level):
     # Preserve the exact cutoff status and source interval without transporting
-    # a duplicate target-approach/variant tree in every continuation request.
+    # a duplicate target-approach tree. Existing milestone manner stays frozen.
     return {'source_objective': source_name, 'level': level,
             'status': value.get('status'),
             'evidence': deepcopy(value.get('evidence')),
-            'boundary_observations': deepcopy(value.get('boundary_observations', []))}
+            'boundary_observations': deepcopy(value.get('boundary_observations', [])),
+            **({'delivery_manner': deepcopy(value['delivery_manner'])}
+               if 'delivery_manner' in value else {})}
 
 
 def _frozen_contexts(review, asset, symbol):
@@ -147,6 +152,10 @@ def _frozen_contexts(review, asset, symbol):
                 'full_objective': _objective(targets[full_name], full_name, full_level)},
             'tradeability_at_cutoff': 'not_assessed', 'member_execution': 'not_assessed',
         }
+        if context['phase'] == 'original':
+            milestone = (row.get('variant_evidence') or {}).get('delivery_milestones', {}).get('midpoint')
+            if milestone:
+                frozen['objectives']['midpoint']['delivery_milestone'] = deepcopy(milestone)
         encoded = json.dumps(frozen, sort_keys=True, separators=(',', ':'), allow_nan=False)
         frozen['source_scope_id'] = hashlib.sha256(encoded.encode()).hexdigest()
         result[context['context_id']] = frozen
@@ -193,6 +202,121 @@ def _later_bars(bars, cutoff, through, step):
             raise ValueError('Later candle evidence is malformed or has conflicting duplicate openings.')
         seen.add(opening)
     return rows
+
+
+def _variant_evidence(frozen, bars, objectives, through, terminal, invalidation, conflict):
+    """Reuse canonical phase evidence, never restart the parent or infer a label.
+
+    A completed source-time delivery freezes its manner immediately. Its own
+    H1 closure may subsequently confirm structure, but no later hour can alter
+    the completed path. Missing source history leaves variant evidence unknown
+    even when the separately frozen qualification/delivery remains established.
+    """
+    from gbop_voice_web.shift_narrative import classify_structure
+    from gbop_voice_web.variant_explanation import variant_explanation
+    from gbop_voice_web.range_delivery_sequence import _resoup_manner
+
+    anchor = {**deepcopy(frozen['parent']), 'complete': True}
+    step = frozen['source_resolution_seconds']
+    phase = frozen['context']['phase']
+    end = through
+    delivered = terminal and terminal['kind'] == 'full_objective_delivered'
+    if delivered:
+        hit = objectives['full_objective']['evidence']
+        end = min(end, next_boundary(parse_time(hit['bar_open_ny']) // 3600 * 3600, 'H1'))
+    elif terminal:
+        end = min(end, parse_time(terminal['known_at_ny']))
+    if conflict:
+        end = min(end, parse_time(conflict['start_ny']))
+    rows = _later_bars(bars, parse_time(anchor['end_ny']), end, step)
+    targets = []
+    for key, name in (('midpoint', 'midpoint'), ('full_objective', 'opposing_liquidity')):
+        item, original = objectives[key], frozen['objectives'][key]
+        already = item['status'] == 'already_delivered_at_shift_cutoff'
+        hit = deepcopy(original.get('evidence') if already else item.get('evidence'))
+        valid = already or item['status'] == 'delivered_after_cutoff_while_range_valid'
+        if hit and parse_time(hit['bar_close_ny']) > end:
+            hit, valid = None, False
+        targets.append({'objective': name, 'level': item['level'], 'evidence': hit,
+            'status': 'observed_after_purge' if valid and hit else
+                      'unresolved_later_evidence' if 'unverified' in item['status'] or conflict else
+                      'not_observed_before_invalidation' if invalidation else item['status']})
+    if phase == 'original':
+        row = {'anchor': anchor, 'direction_observed': frozen['context']['direction'],
+            'events': [deepcopy(e) for e in frozen['qualification_provenance']['purges']
+                       if parse_time(e['bar_close_ny']) <= end],
+            'objectives': targets,
+            'invalidated_at_ny': invalidation['known_at_ny'] if invalidation else None}
+        result = classify_structure(row, rows, end, step)
+        row['variant_evidence'] = result
+        result['explanation'] = variant_explanation(row, rows, end, step)
+        midpoint = frozen['objectives']['midpoint'].get('delivery_milestone')
+        if (objectives['midpoint']['status'] == 'already_delivered_at_shift_cutoff'
+                and midpoint and midpoint.get('known_at_ny')
+                and parse_time(midpoint['known_at_ny']) <= parse_time(frozen['cutoff_ny'])):
+            result['delivery_milestones']['midpoint'] = deepcopy(midpoint)
+    else:
+        # The later-phase detector establishes V6 only. Applying the first-
+        # purge candle-count classifier would invent V1–V5 phase mappings.
+        provenance = frozen['qualification_provenance']
+        confirmation = (provenance.get('double_purge_sequence', {}).get('selected_timeframe_return_inside')
+                        if phase == 'double_purge' else
+                        provenance.get('continuation_phase', {}).get('confirmation'))
+        result = {'status': 'unresolved', 'labels': [], 'entry_confirmed': False,
+            'reason': 'No canonical variant is established for this later purge phase.',
+            'delivery_milestones': {}}
+        for target in targets:
+            key = 'midpoint' if target['objective'] == 'midpoint' else 'full_objective'
+            original, item = frozen['objectives'][key], objectives[key]
+            hit = target['evidence']
+            milestone = {'status': 'unverified' if hit else 'pending'}
+            result['delivery_milestones'][target['objective']] = milestone
+            if target['status'] != 'observed_after_purge' or not hit:
+                continue
+            milestone.update(status='observed', is_full_completion=key == 'full_objective',
+                source_interval={k: deepcopy(hit[k]) for k in
+                    ('bar_open_ny', 'bar_close_ny', 'precision_seconds', 'exact_tick_time_known') if k in hit},
+                known_at_ny=hit['bar_close_ny'])
+            saved_manner = original.get('delivery_manner')
+            if item['status'] == 'already_delivered_at_shift_cutoff' and saved_manner is not None:
+                milestone['manner'] = deepcopy(saved_manner)
+                continue
+            manner = None
+            if confirmation and parse_time(confirmation['known_at_ny']) <= parse_time(hit['bar_open_ny']):
+                prefix = summarize(rows, parse_time(confirmation['bar_open_ny']),
+                                   parse_time(hit['bar_close_ny']), step)
+                if prefix['complete']:
+                    manner = _resoup_manner(anchor, rows, confirmation,
+                        {**target, 'status': 'observed_after_confirmation'}, frozen['context']['direction'], step)
+            milestone['manner'] = ({'status': 'observed', 'primary_code': manner['code'],
+                'labels': [{'code': manner['code'], 'name': manner['name']}],
+                'snapshot_through_ny': hit['bar_close_ny'], 'structure': manner}
+                if manner else {'status': 'unverified', 'labels': [],
+                    'snapshot_through_ny': hit['bar_close_ny']})
+            if key == 'full_objective' and manner:
+                result.update(status='distribution_observed', labels=deepcopy(milestone['manner']['labels']))
+                result.pop('reason')
+    result.update(phase=phase, range_start_ny=anchor['start_ny'],
+                  evidence_through_ny=stamp(end), entry_confirmed=False)
+    return result
+
+
+def delivery_variant_clause(variant):
+    """A compact full-outcome clause, never substituting midpoint manner."""
+    from gbop_voice_web.variant_explanation import variant_clause
+
+    full = variant.get('delivery_milestones', {}).get('opposing_liquidity', {})
+    manner = full.get('manner') or {}
+    confirmed = variant.get('status') == 'distribution_observed'
+    labels = variant.get('labels', []) if confirmed else []
+    if not labels and full.get('status') == 'observed' and manner.get('status') == 'observed':
+        labels = manner.get('labels', [])
+    if not labels:
+        return 'variant unverified'
+    primary = manner.get('primary_code')
+    primary_labels = [v for v in labels if v.get('code') == primary]
+    text = variant_clause({'labels': primary_labels or labels})
+    return text if confirmed else text + ' manner; completed H1 variant classification remains unverified'
 
 
 def build_followthrough(review, bars, *, asset, symbol, anchor_start_ny, phase,
@@ -311,12 +435,14 @@ def build_followthrough(review, bars, *, asset, symbol, anchor_start_ny, phase,
                'unverified_later_evidence' if not coverage['complete'] or conflict
                     or full['status'] == 'touch_validity_unverified' else
                'pending_at_followthrough_cutoff')
+    variants = _variant_evidence(frozen, bars, objectives, through, terminal, invalidation, conflict)
     events.sort(key=lambda e: (parse_time(e['known_at_ny']), e['kind']))
     label = frozen['context']['name']
     summary = (f"At {frozen['cutoff_ny']}, {label}'s {direction} full objective was still pending. ")
     if delivered:
         source = full['evidence']
         summary += (f"Later evidence records full delivery in {source['bar_open_ny']} to {source['bar_close_ny']}. "
+                    f"Full delivery: {delivery_variant_clause(variants)}. "
                     'The structural follow-through ends at that delivery.')
     elif invalidation:
         summary += f"A later H1 close outside the same range is observed at {invalidation['known_at_ny']}."
@@ -339,6 +465,7 @@ def build_followthrough(review, bars, *, asset, symbol, anchor_start_ny, phase,
             'as_of_ny': stamp(as_of), 'last_observed_bar_close_ny': stamp(rows[-1]['time'] + step) if rows else None,
             'coverage': coverage, 'status': outcome, 'objectives': objectives, 'events': events,
             'terminal': terminal, 'invalidation': invalidation, 'hourly_evidence_conflict': conflict,
+            'variant_evidence': variants,
             'structural_path_stops_at_first_terminal': True,
             'later_evidence_cannot_establish_cutoff_tradeability': True,
             'member_execution': 'not_assessed', 'member_result': 'not_assessed'},
