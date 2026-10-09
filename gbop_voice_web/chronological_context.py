@@ -10,11 +10,15 @@ from datetime import datetime
 from gbop_voice_web.candle_evidence import parse_time, stamp, h1_anchor
 from gbop_voice_web.candle_naming import candle_label, closure_label, range_label
 
-VERSION = 'chronological-range-context-2026-10-06'
+VERSION = 'chronological-range-context-2026-10-09'
 CONTRACT = ('Under review is not a confirmed CRT or named-play eligibility. Keep source return and '
     'H1 return confirmation separate. Count distinct named ranges, not candles, closures or Soup '
-    'confirmations. Compare contexts at the later event time; retire full delivery/invalidation, '
-    'keep 50%-only full DOL pending. Chronological precedence is descriptive, never a majority '
+    'confirmations. Compare contexts at the later event time. Full delivery retires that pending '
+    'objective phase, not its parent range; the parent persists until its own-timeframe outside '
+    'close, within verified coverage. Keep completed objectives separate from pending DOL, '
+    'including simultaneous phases/ranges and 50%-only delivery. Selection handoff is navigation, '
+    'not parent invalidation. Observed phase directions never select an HTF trade thesis. '
+    'Chronological precedence is descriptive, never a majority '
     'vote, probability improvement or instruction to trade.')
 
 
@@ -143,6 +147,15 @@ def _event_time(target):
     return event.get('known_at_ny') or event.get('bar_close_ny')
 
 
+def _phase_label(phase):
+    if phase == 'double_purge':
+        return 'double purge'
+    if phase.startswith('purge_'):
+        number = phase.removeprefix('purge_')
+        return 'triple purge' if number == '3' else 'purge ' + number
+    return 'H1'
+
+
 def _context(row, phase, direction, known, full, midpoint, cutoff):
     anchor = row['anchor']
     invalid = row.get('invalidated_at_ny')
@@ -153,10 +166,11 @@ def _context(row, phase, direction, known, full, midpoint, cutoff):
         full['status'] = 'touch_in_invalidating_bar_order_unresolved'
         completed = None
     # Full delivery before establishment is historical; it must not become a
-    # still-active context merely because confirmation is known later.
+    # pending objective merely because confirmation is known later. This is
+    # phase retirement, independent of the parent range's own-timeframe validity.
     retired = min((t for t in (completed, invalid) if t), key=parse_time, default=None)
     prefix = row.get('context_qualification', {}).get(
-        'double_purge_evidence_through_ny' if phase == 'double_purge' else 'evidence_through_ny')
+        'evidence_through_ny' if phase == 'original' else 'double_purge_evidence_through_ny')
     ambiguous = full.get('status') in ('same_bar_order_unknown', 'touch_in_invalidating_bar_order_unresolved',
         'unverified_boundary_bar_order', 'observed_touch_validity_unverified')
     boundary_times = [(b.get('source_interval') or {}).get('known_at_ny') or
@@ -169,30 +183,48 @@ def _context(row, phase, direction, known, full, midpoint, cutoff):
               'invalidated' if invalid else 'unverified' if not order_known or not prefix or parse_time(prefix) < parse_time(cutoff)
               else 'active_full_DOL_pending')
     name = (f"the {_clock(anchor['start_ny'])} H1 double-purge range" if phase == 'double_purge' else
+            f"the {_clock(anchor['start_ny'])} H1 {_phase_label(phase)} phase" if phase.startswith('purge_') else
             f"the {row['label']} ({_clock(anchor['start_ny'])} H1 range)" if row.get('label') in ('Young Lefty', '9ate8', 'GCT') else
             range_label(anchor))
-    return {'context_id': anchor['start_ny'] + '/' + phase, 'range_id': anchor['start_ny'],
+    context = {'context_id': anchor['start_ny'] + '/' + phase, 'range_id': anchor['start_ny'],
         'name': name, 'phase': phase, 'direction': direction, 'established_at_ny': known,
         'status': status, 'retired_at_ny': retired, 'retirement_reason': 'full_DOL_delivered' if retired == completed and retired else
             'range_invalidated' if retired else None, 'evidence_through_ny': prefix,
+        'parent_status': ('invalidated' if invalid and parse_time(invalid) <= parse_time(cutoff) else
+            'intact_in_observed_closes' if prefix and parse_time(prefix) >= parse_time(cutoff) else 'unverified'),
+        'parent_invalidated_at_ny': invalid,
         'remaining_DOL': {'side': 'buy-side' if direction == 'bullish' else 'sell-side',
                           'level': full.get('level'), 'status': full.get('status')},
         'midpoint_status': midpoint.get('status'), 'objective_order_known': order_known,
         'ambiguous_objective_at_ny': ambiguous_at}
+    if row.get('young_lefty_context'):
+        context['direction_scope'] = 'observed_price_path_not_selected_thesis'
+    return context
 
 
 def _active_at(context, known):
-    return ((not context.get('ambiguous_objective_at_ny') or parse_time(known) < parse_time(context['ambiguous_objective_at_ny']))
+    """A phase still has a pending objective; not a parent-validity test."""
+    return (_parent_context_at(context, known)
+        and (not context['retired_at_ny'] or parse_time(known) < parse_time(context['retired_at_ny'])))
+
+
+def _parent_context_at(context, known):
+    """Retain completed phases while the same parent remains verifiably intact."""
+    return bool((not context.get('ambiguous_objective_at_ny') or parse_time(known) < parse_time(context['ambiguous_objective_at_ny']))
         and parse_time(context['established_at_ny']) <= parse_time(known)
-        and (not context['retired_at_ny'] or parse_time(known) < parse_time(context['retired_at_ny']))
+        and (not context['parent_invalidated_at_ny'] or parse_time(known) < parse_time(context['parent_invalidated_at_ny']))
         and context.get('evidence_through_ny') and parse_time(known) <= parse_time(context['evidence_through_ny']))
 
 
 def build_context_graph(story, young=None):
-    """At most five hourly ranges/two phases; separate chronology from selection."""
+    """Bounded hourly ranges and confirmed phases; chronology is not selection."""
     cutoff = story['end_ny']
     rows = list(story.get('ranges', []))
-    if young and not young.get('young_lefty_context') and young.get('context_qualification'):
+    young_context = (young or {}).get('young_lefty_context')
+    young_double = (young or {}).get('double_purge', {})
+    if (young and young.get('context_qualification') and (not young_context or
+            young_context.get('delivery_recap') and young_double.get('observed')
+            and young_double.get('confirmation_status') == 'confirmed')):
         rows = [{**young, 'label': 'Young Lefty'}] + rows
     contexts = []
     for row in rows:
@@ -209,6 +241,10 @@ def build_context_graph(story, young=None):
             reverse = double['reversal_thesis']
             contexts.append(_context(row, 'double_purge', reverse['direction'], double['confirmed_at_ny'],
                 reverse['objectives']['original_side'], reverse['objectives']['midpoint'], cutoff))
+            for leg in double.get('continuation', {}).get('legs', []):
+                contexts.append(_context(row, 'purge_' + str(leg['leg_index']), leg['direction'],
+                    leg['confirmation']['known_at_ny'], leg['objectives']['opposing_liquidity'],
+                    leg['objectives']['midpoint'], cutoff))
     contexts.sort(key=lambda c: (parse_time(c['established_at_ny']), parse_time(c['range_id']), c['phase']))
     relations = []
     for later in contexts:
@@ -225,12 +261,37 @@ def build_context_graph(story, young=None):
                 'earlier_opposing_distinct_ranges': len(opposed), 'earlier_aligned_distinct_ranges': len(aligned)})
     active = [c for c in contexts if _active_at(c, cutoff)]
     distinct = {c['range_id']: c for c in active}
+    parent_contexts = [c for c in contexts if _parent_context_at(c, cutoff)]
+    simultaneous = []
+    event_times = {cutoff, *(c['established_at_ny'] for c in contexts)}
+    event_times.update(c['retired_at_ny'] for c in contexts if c['retirement_reason'] == 'full_DOL_delivered')
+    for known in sorted(event_times, key=parse_time):
+        if parse_time(known) > parse_time(cutoff):
+            continue
+        concurrent = [c for c in contexts if _parent_context_at(c, known)]
+        if len(concurrent) < 2:
+            continue
+        simultaneous.append({'known_at_ny': known,
+            'context_ids': [c['context_id'] for c in concurrent],
+            'completed_context_ids': [c['context_id'] for c in concurrent
+                if c['retirement_reason'] == 'full_DOL_delivered' and parse_time(c['retired_at_ny']) <= parse_time(known)],
+            'distinct_ranges': len({c['range_id'] for c in concurrent})})
     return {'version': VERSION, 'contexts': contexts, 'relationships': relations,
+        'simultaneous_contexts': simultaneous,
         'at_shift_end': {'active_context_ids': [c['context_id'] for c in distinct.values()],
             'distinct_ranges': len(distinct),
             'bullish_ranges': sum(c['direction'] == 'bullish' for c in distinct.values()),
-            'bearish_ranges': sum(c['direction'] == 'bearish' for c in distinct.values())},
+            'bearish_ranges': sum(c['direction'] == 'bearish' for c in distinct.values()),
+            'parent_context_ids': [c['context_id'] for c in parent_contexts],
+            'parent_distinct_ranges': len({c['range_id'] for c in parent_contexts})},
         'response_contract': CONTRACT}
+
+
+def _recap_overlap(graph):
+    """One event-time overlap keeps the voice recap bounded, without future facts."""
+    candidates = graph.get('simultaneous_contexts', [])
+    return max(candidates, key=lambda r: (bool(r['completed_context_ids']), r['distinct_ranges'],
+        len(r['context_ids']), parse_time(r['known_at_ny'])), default=None)
 
 
 def context_sentence(graph):
@@ -239,13 +300,27 @@ def context_sentence(graph):
     active = [by_id[i] for i in graph['at_shift_end']['active_context_ids']]
     if active:
         parts.append('Pending full DOL: ' + '; '.join(
-            f"{_clock(c['range_id'])} {'double purge' if c['phase'] == 'double_purge' else 'H1'} {c['direction']} {c['remaining_DOL']['side']}" for c in active) + '.')
+            f"{_clock(c['range_id'])} {_phase_label(c['phase'])} {c['direction']} {c['remaining_DOL']['side']}" for c in active) + '.')
     for relation in graph['relationships']:
         if relation['countertrend_to']:
             later = by_id[relation['later_context_id']]
             prior = [by_id[key]['name'] for key in relation['countertrend_to']]
             parts.append(f"{later['name'][0].upper() + later['name'][1:]} formed a {later['direction']} context countertrend to "
                 f"{len(prior)} earlier intact distinct range{'s' if len(prior) != 1 else ''}: " + ', '.join(prior) + '.')
+    overlap = _recap_overlap(graph)
+    if overlap:
+        # Speak each parent once; original/reversal phase completion remains
+        # explicit in the graph rather than sounding like additional ranges.
+        parents = sorted({by_id[key]['range_id'] for key in overlap['context_ids']}, key=parse_time)
+        clocks = [_clock(parent) for parent in parents]
+        if len(clocks) == 1:
+            text = f"the {clocks[0]} H1 parent remained valid across simultaneous phases"
+        else:
+            names = ', '.join(clocks[:-1]) + ' and ' + clocks[-1]
+            text = names + ' H1 parents remained valid simultaneously'
+        if overlap['completed_context_ids']:
+            text += ' after an earlier objective completed'
+        parts.append(f"At {_clock(overlap['known_at_ny'])}, {text}.")
     return ' '.join(parts)
 
 
@@ -328,21 +403,30 @@ def compact_context_graph(graph):
     """Bounded chronology; full target detail remains on each source range."""
     relationships = [r for r in graph['relationships'] if r['countertrend_to']]
     used = set(graph['at_shift_end']['active_context_ids'])
+    used.update(graph['at_shift_end'].get('parent_context_ids', []))
+    overlap = _recap_overlap(graph)
+    if overlap:
+        used.update(overlap['context_ids'])
     for relation in relationships:
         used.add(relation['later_context_id'])
         used.update(relation['countertrend_to'] + relation['aligned_with'])
     rows = [c for c in graph['contexts'] if c['context_id'] in used]
     ids = {c['context_id']: i for i, c in enumerate(rows)}
-    contexts = [{'id': ids[c['context_id']], **{k: deepcopy(c[k]) for k in ('name', 'direction',
-        'established_at_ny', 'status', 'retired_at_ny', 'retirement_reason')
-        if c[k] is not None}, 'DOL_side': c['remaining_DOL']['side']} for c in rows]
+    contexts = [{'id': ids[c['context_id']], **{k: deepcopy(c[k]) for k in ('name', 'phase', 'direction',
+        'established_at_ny', 'status', 'retired_at_ny', 'retirement_reason',
+        'parent_status', 'parent_invalidated_at_ny', 'direction_scope')
+        if c.get(k) is not None}, 'DOL_side': c['remaining_DOL']['side']} for c in rows]
     relations = [{'later': ids[r['later_context_id']],
         'countertrend_to': [ids[i] for i in r['countertrend_to']],
         'aligned_with': [ids[i] for i in r['aligned_with']],
         'distinct_ranges_by_list': True} for r in relationships]
     end = deepcopy(graph['at_shift_end'])
     end['active_context_ids'] = [ids[i] for i in end['active_context_ids']]
+    end['parent_context_ids'] = [ids[i] for i in end.get('parent_context_ids', [])]
     return {'contexts': contexts, 'relationships': relations, 'at_shift_end': end,
+        **({'simultaneous_contexts': [{**overlap,
+            'context_ids': [ids[i] for i in overlap['context_ids']],
+            'completed_context_ids': [ids[i] for i in overlap['completed_context_ids']]}]} if overlap else {}),
         'aligned_history_omitted_count': len(graph['relationships']) - len(relationships)}
 
 

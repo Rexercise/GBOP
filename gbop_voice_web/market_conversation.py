@@ -1679,7 +1679,7 @@ class MarketConversation:
         if name == 'review_current_market':
             ranges = [{k: deepcopy(row[k]) for k in ('anchor_start_ny', 'anchor_timeframe',
                 'assigned_timeframe', 'role', 'play', 'setup_status', 'direction', 'outcome',
-                'young_lefty_context', 'direction_scope', 'spoken_summary', 'physical_path_audit',
+                'young_lefty_context', 'direction_scope', 'spoken_summary', 'physical_path_audit', 'double_purge', 'first_purge', 'delivery_continuation',
                 'variant', 'midpoint', 'opposing_liquidity', 'invalidated_at_ny', 'coverage_complete') if k in row}
                 for row in review.get('ranges', [])[:5]]
             recap = {'headline': 'Current market snapshot as of ' + str(review.get('as_of_ny')),

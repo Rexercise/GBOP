@@ -49,7 +49,7 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(tool.call_count,1)
     def test_prior_version_is_not_served_and_is_rebuilt_with_same_candles(self):
         from gbop_voice_web.market_watch import VERSION
-        old='tab-watch-chronological-context-2026-10-06'
+        old='tab-watch-objective-milestones-2026-10-08'
         self.assertNotEqual(VERSION,old)
         cache={}
         with patch('gbop_voice_web.market_data.read_feed',return_value=self.feed),patch('gbop_voice_web.market_data.market_tool',return_value=self.result) as tool:

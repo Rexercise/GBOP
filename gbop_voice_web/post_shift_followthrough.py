@@ -9,6 +9,7 @@ from datetime import datetime
 import hashlib
 import json
 import math
+import re
 
 from gbop_voice_web.candle_evidence import (
     h1_anchor, interval, missing_source_intervals, parse_time, stamp, summarize,
@@ -16,19 +17,26 @@ from gbop_voice_web.candle_evidence import (
 from gbop_voice_web.shift_availability import shift_bounds
 
 
-VERSION = 'post-shift-followthrough-v1'
+VERSION = 'post-shift-followthrough-persistent-phases-v2'
 TOOL_NAME = 'review_post_shift_followthrough'
 MAX_WINDOW_SECONDS = 90 * 86400
 CONTRACT = (
     'The frozen shift outcome is unchanged. This is a separately bounded later '
     'evidence appendix for the exact same asset, broker symbol, H1 parent and '
-    'original/double-purge phase. Qualification was already known at the shift '
+    'original or confirmed purge phase. Qualification was already known at the shift '
     'cutoff; later candles cannot establish an entry or hindsight tradeability. '
     'Stop the structural path at its first verified full delivery or invalidation. '
     'A physical touch after invalidation is not valid delivery. Missing candles '
     'leave coverage and ordering unverified; never say never. Source intervals '
     'are candle evidence, not exact tick times or member fills, exits, P/L or R.'
 )
+
+
+def _valid_phase(phase):
+    # Protocol input is bounded; actual eligibility comes only from frozen
+    # source-confirmed legs, never from an arbitrary supplied ordinal.
+    return isinstance(phase, str) and (phase in ('original', 'double_purge') or
+        len(phase) <= 16 and re.fullmatch(r'purge_(?:[3-9]|[1-9][0-9]{1,8})', phase) is not None)
 
 
 def _finite(value):
@@ -61,7 +69,7 @@ def _frozen_contexts(review, asset, symbol):
     for context in graph.get('contexts', []):
         if (context.get('context_id') not in active
                 or context.get('status') != 'active_full_DOL_pending'
-                or context.get('phase') not in ('original', 'double_purge')
+                or not _valid_phase(context.get('phase'))
                 or context.get('direction') not in ('bullish', 'bearish')
                 or context.get('objective_order_known') is not True
                 or context.get('retired_at_ny')
@@ -93,6 +101,17 @@ def _frozen_contexts(review, asset, symbol):
                 continue
             targets = phase.get('objectives') or {}
             full_name = 'original_side'
+        elif context['phase'].startswith('purge_'):
+            legs = (row.get('double_purge') or {}).get('continuation', {}).get('legs', [])
+            phase = next((leg for index, leg in enumerate(legs, 3)
+                if context['phase'] == 'purge_' + str(index) and leg.get('leg_index') == index), None)
+            if (not phase or phase.get('direction') != direction
+                    or not phase.get('confirmation', {}).get('known_at_ny')
+                    or phase['confirmation']['known_at_ny'] != context['established_at_ny']
+                    or parse_time(phase['confirmation']['known_at_ny']) > cutoff):
+                continue
+            targets = phase.get('objectives') or {}
+            full_name = 'opposing_liquidity'
         else:
             qualification = row.get('context_qualification') or {}
             if not qualification.get('selected_tf_return_confirmed'):
@@ -121,6 +140,7 @@ def _frozen_contexts(review, asset, symbol):
                     for k in ('first_purge', 'opposing_purge', 'source_return_inside',
                               'assigned_return_inside', 'selected_timeframe_return_inside', 'known_at_ny')}}
                    if context['phase'] == 'double_purge' else {}),
+                **({'continuation_phase': deepcopy(phase)} if context['phase'].startswith('purge_') else {}),
             },
             'objectives': {
                 'midpoint': _objective(targets.get('midpoint', {}), 'midpoint', anchor['midpoint']),
@@ -181,6 +201,9 @@ def build_followthrough(review, bars, *, asset, symbol, anchor_start_ny, phase,
     if not isinstance(symbol, str) or not symbol:
         raise ValueError('Follow-through requires the verified broker symbol.')
     contexts = _frozen_contexts(review, asset, symbol)
+    if not _valid_phase(phase):
+        return {'ok': False, 'status': 'invalid_followthrough_phase',
+                'error': 'Copy one exact phase from the returned frozen candidates.'}
     context_id = stamp(parse_time(anchor_start_ny)) + '/' + str(phase)
     frozen = contexts.get(context_id)
     if frozen is None:
@@ -327,6 +350,9 @@ def review_post_shift_followthrough(db, feed, args, now):
     from gbop_voice_web.market_data import (
         _history_sets, _select_shift_history, history_native_h1, session_review,
     )
+    if not _valid_phase(args.get('phase')):
+        return {'ok': False, 'status': 'invalid_followthrough_phase',
+                'error': 'Copy one exact phase from the returned frozen candidates.'}
     opening, cutoff = shift_bounds(args['date_ny'], args['shift'])
     if now <= cutoff:
         return {'ok': False, 'status': 'shift_not_finished',

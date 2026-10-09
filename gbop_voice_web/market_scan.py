@@ -82,7 +82,8 @@ def scan_young_lefty(db, args, now):
             fact['first_assigned_purge'] = ({k: assigned[0][k] for k in
                 ('bar_open_ny', 'bar_close_ny', 'timeframe', 'purge_type', 'direction') if k in assigned[0]}
                 if assigned else None)
-            status = ('context_dependent' if fact.get('young_lefty_context') else
+            status = ('delivered' if fact.get('young_lefty_context', {}).get('delivery_recap') else
+                      'context_dependent' if fact.get('young_lefty_context') else
                       'invalidated' if fact['invalidated_at_ny'] else 'observed_setup' if fact['setup_status'] == 'initiated'
                       else 'not_observed' if fact['setup_status'] == 'not_observed_in_complete_window' else 'unverified')
             rows.append(dict(asset=asset, status=status, evidence=fact,

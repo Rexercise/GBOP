@@ -110,7 +110,7 @@ class ShiftSynopsisCompactionTests(unittest.TestCase):
         source = oversized(session(transitions=True))
         wire = transport.voice_tool_payload('review_market_session', source)
         self.assert_complete_view(source, wire)
-        synopsis = wire['review']['shift_synopsis']
+        synopsis = expand_facts(wire)['review']['shift_synopsis']
         self.assertEqual([r['anchor_start_ny'] for r in synopsis['ranges']],
                          [ny(clock) for clock in ('20:00', '21:00', '22:00', '23:00')])
         self.assertEqual(synopsis['ranges'][0]['verdict'], 'delivered')
@@ -226,7 +226,7 @@ class ShiftSynopsisCompactionTests(unittest.TestCase):
         wire = json.loads(outputs[0]['output'])
         self.assertTrue(wire['ok'])
         self.assertLessEqual(size(wire), 12000)
-        self.assertEqual(wire['review']['shift_synopsis']['ranges'],
+        self.assertEqual(expand_facts(wire)['review']['shift_synopsis']['ranges'],
                          build_shift_synopsis(source['review'], 'NAS100')['ranges'])
         self.assertEqual(next(iter(context.context_bank.entries.values()))['result']['review'],
                          source['review'])

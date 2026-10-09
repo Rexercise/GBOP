@@ -346,7 +346,7 @@ def compact_double_purge(row):
     if not evidence.get('observed') and not evidence.get('developing'):
         return None
     out = _pick(evidence, ('status', 'observed', 'original_first_purged_side',
-        'original_completion_preserved', 'developing', 'confirmed_at_ny'))
+        'original_completion_preserved', 'developing', 'confirmed_at_ny', 'continuation'))
     out['original_outcome'] = _pick(evidence.get('original_outcome', {}), ('direction', 'status'))
     sequence = evidence.get('sequence', {})
     out['sequence'] = {}
@@ -404,7 +404,7 @@ def _local_fact(row, play=None):
         fact['double_purge'] = double
     if play == 'Young Lefty' and row.get('young_lefty_context'):
         from gbop_voice_web.young_lefty_context import compact_young_context, neutral_thesis_fact
-        fact['young_lefty_context'] = compact_young_context(row['young_lefty_context'])
+        fact['young_lefty_context'] = compact_young_context(row['young_lefty_context'], brief=True)
         neutral_thesis_fact(fact)
     pending = None if fact.get('young_lefty_context') else pending_range_facts(row, fact)
     if pending:
@@ -488,7 +488,7 @@ def _delivery_text(fact):
 def _sentence(fact, *, young=False, compact=False):
     if fact.get('young_lefty_context'):
         from gbop_voice_web.young_lefty_context import young_context_sentence
-        return young_context_sentence(fact['young_lefty_context'])
+        return young_context_sentence(fact['young_lefty_context'], fact)
     name = f"{fact['play']} ({_clock(fact['anchor_start_ny'])} H1 range)" if fact.get('play') else f"The {_clock(fact['anchor_start_ny'])} H1 range"
     intro = (('failed ' if fact['verdict'] in ('failed', 'boneless_failed') else '')
              + (fact.get('direction') or 'direction unverified'))
@@ -581,6 +581,50 @@ def _later_range_relevance(story, row, fact):
         reference = max(selected, key=lambda r: parse_time(r['selected_at_ny']))
         relevance['selected_anchor_ny'] = reference['anchor_start_ny']
     return relevance
+
+
+def _acting_parent_context(row, fact, earlier):
+    """A candle's evidenced role in an intact parent precedes its own attempt."""
+    candle = row.get('anchor', {})
+    if (fact.get('role') == 'selected_range' or not candle.get('complete')
+            or fact.get('outcome') != 'failed_before_objectives'
+            or fact.get('direction') not in ('bullish', 'bearish')):
+        return None
+    parents = []
+    for parent in earlier:
+        anchor = parent['anchor']
+        prefix = parent.get('context_qualification', {}).get('evidence_through_ny')
+        if not prefix or parse_time(prefix) < parse_time(candle['end_ny']):
+            continue
+        if (parse_time(anchor['end_ny']) > parse_time(candle['start_ny'])
+                or not anchor.get('complete')
+                or parent.get('invalidated_at_ny') and
+                   parse_time(parent['invalidated_at_ny']) <= parse_time(candle['end_ny'])
+                or not anchor['low'] <= candle['close'] <= anchor['high']):
+            continue
+        above, below = candle['high'] > anchor['high'], candle['low'] < anchor['low']
+        if above == below:
+            continue
+        direction = 'bearish' if above else 'bullish'
+        outcome = parent.get('directional_outcome', {})
+        if outcome.get('direction') != direction or direction == fact.get('direction'):
+            continue
+        parents.append({'anchor_start_ny': anchor['start_ny'], 'side': 'buy' if above else 'sell',
+                        'direction': direction})
+    if not parents:
+        return None
+    return {'acting_candle_start_ny': candle['start_ny'], 'known_at_ny': candle['end_ny'],
+            'role': 'parent_purge_and_own_timeframe_return',
+            'parents': sorted(parents, key=lambda item: item['anchor_start_ny'], reverse=True)}
+
+
+def _acting_parent_sentence(context):
+    parents = context['parents']
+    first = parents[0]
+    names = ', '.join(_clock(p['anchor_start_ny']) for p in parents)
+    return (f"The {_clock(context['acting_candle_start_ny'])} H1 candle souped "
+            f"{first['side']}-side of the {names} H1 parent ranges and closed back inside; "
+            f"supporting {first['direction']} delivery; own-range detail is separate.")
 
 
 def _independent_later_sentence(fact):
@@ -702,7 +746,7 @@ def build_shift_synopsis(review, asset=None):
                 young_sentence += ' ' + pending_sentence(item['pending_range'], item['anchor_start_ny'])
             if item.get('pending_reversal'):
                 young_sentence += ' ' + pending_reversal_sentence(item['pending_reversal'], item['anchor_start_ny'])
-            young_status = 'context_dependent' if item.get('young_lefty_context') else item['verdict']
+            young_status = item['verdict']
             young_relevant = True
         elif young.get('observation_coverage', {}).get('complete'):
             young_status = 'absent'
@@ -752,7 +796,13 @@ def build_shift_synopsis(review, asset=None):
             failed_secondary = item['verdict'] in ('failed', 'boneless_failed') and item['coverage_complete']
             if completed_shared and failed_secondary:
                 brief_failures.append(f"{_clock(item['anchor_start_ny'])} {item['direction']}")
-            summary = (_failed_secondary_sentence(item, continuity, transitions_only=completed_shared)
+            actor = _acting_parent_context(row, item, [r for r in ([young] if young else []) + ranges
+                if parse_time(r['anchor']['start_ny']) < parse_time(row['anchor']['start_ny'])])
+            if actor:
+                item['acting_parent_context'] = actor
+                item['presentation_priority'] = 'parent_role_before_secondary_own_range'
+            summary = (_acting_parent_sentence(actor) if actor else
+                _failed_secondary_sentence(item, continuity, transitions_only=completed_shared)
                 if failed_secondary and (completed_shared or continuity) else
                 _short_selected_summary(continuity) if continuity else _independent_later_sentence(item))
             if summary:

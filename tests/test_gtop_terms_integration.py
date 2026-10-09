@@ -40,7 +40,7 @@ class TermsIntegrationTests(unittest.TestCase):
         self.assertNotIn('remained pending', text)
         # The short default includes the handoff, concurrent DOL and primary Model 1.
         self.assertLess(len(text.split()), 360)
-        self.assertIn('Independent 10:00 AM H1 range: bullish', text)
+        self.assertIn('10:00 AM H1 candle souped buy-side', text)
         # Retain newly requested later-range and double-purge evidence inside
         # the unchanged production cap, with the existing transport margin.
         self.assertLess(len(json.dumps(payload, separators=(',', ':'))), SHIFT_SYNOPSIS_TARGET_CHARS - 300)

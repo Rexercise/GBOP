@@ -172,6 +172,8 @@ def _range_fact(evidence, role, play, asset, cutoff, tf, assigned):
                                         for x in lifecycle.get('purge_candles', [])),
             'spoken_summary': outcome.get('spoken_summary'),
             'coverage_complete': coverage.get('complete', False)}
+    from gbop_voice_web.shift_synopsis import _delivery_manner
+    _delivery_manner(fact, variants)
     # A future/incomplete reference is inspectable as OHLC, not a valid CRT.
     if anchor['complete']:
         fact['detail_request'] = {'tool': 'review_market_crt', 'args': {
@@ -183,7 +185,11 @@ def _range_fact(evidence, role, play, asset, cutoff, tf, assigned):
         from gbop_voice_web.young_lefty_context import compact_young_context, young_context_sentence, neutral_thesis_fact
         fact['young_lefty_context'] = compact_young_context(evidence['young_lefty_context'])
         neutral_thesis_fact(fact)
-        fact['spoken_summary'] = young_context_sentence(fact['young_lefty_context'])
+        fact['spoken_summary'] = young_context_sentence(fact['young_lefty_context'], fact)
+    elif evidence.get('double_purge', {}).get('continuation', {}).get('legs'):
+        from gbop_voice_web.range_delivery_sequence import continuation_sentence
+        fact['delivery_continuation'] = deepcopy(evidence['double_purge']['continuation'])
+        fact['spoken_summary'] += ' ' + continuation_sentence(fact['delivery_continuation'], anchor['start_ny'], tf)
     return fact
 
 

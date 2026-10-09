@@ -21,6 +21,10 @@ def _outcome_first(review):
     outcome = deepcopy(review.get('directional_outcome'))
     if not outcome:
         return review
+    if review.get('young_lefty_context', {}).get('delivery_recap'):
+        from gbop_voice_web.young_lefty_context import young_context_sentence
+        outcome['spoken_summary'] = young_context_sentence(review['young_lefty_context'])
+        return {'directional_outcome': outcome, **{k: v for k, v in review.items() if k != 'directional_outcome'}}
     variant = review.get('variant_evidence', {})
     structural_labels = variant.get('labels') or []
     final = variant.get('delivery_milestones', {}).get('opposing_liquidity', {})
@@ -45,6 +49,10 @@ def _outcome_first(review):
             spoken_variant += ' (' + variant_clause({'labels': timing}) + ' timing)'
         first = first.rstrip('.') + '; ' + spoken_variant + '.'
         outcome['spoken_summary'] = first + (' ' + rest if separator else '')
+    if review.get('double_purge', {}).get('continuation', {}).get('legs'):
+        from gbop_voice_web.range_delivery_sequence import continuation_sentence
+        outcome['spoken_summary'] += ' ' + continuation_sentence(review['double_purge']['continuation'],
+            review['anchor']['start_ny'], review['anchor']['timeframe'])
     return {'directional_outcome': outcome, **{k: v for k, v in review.items() if k != 'directional_outcome'}}
 
 
@@ -151,7 +159,7 @@ def _double_purge_summary(value, request):
         'source_resolution_seconds', 'exact_tick_time_known', 'original_outcome',
         'original_completion_preserved', 'original_first_purged_side', 'reverse_direction',
         'original_coverage_through_touch', 'developing', 'confirmation_status', 'confirmed_at_ny',
-        'named_play_applicability'))
+        'named_play_applicability', 'continuation'))
     for key in ('range_start_ny', 'range_timeframe', 'review_cutoff_ny',
                 'validity_cutoff_ny', 'range_invalidated_at_ny', 'reverse_direction'):
         out.pop(key, None)
@@ -254,7 +262,7 @@ def _secondary_reversal_outcome(value):
     out = _pick(value, ('status', 'observed', 'developing', 'confirmation_status',
         'confirmed_at_ny', 'original_completion_preserved', 'original_outcome',
         'original_first_purged_side', 'original_coverage_through_touch',
-        'opposite_identity_count', 'double_purge_detail_request'))
+        'opposite_identity_count', 'double_purge_detail_request', 'continuation'))
     sequence = value.get('sequence', {})
     out['sequence'] = {}
     for key in ('source_return_inside', 'assigned_return_inside', 'selected_timeframe_return_inside'):
@@ -416,6 +424,9 @@ def crt_voice_detail(result):
         view['candle_lifecycle']['performance_summary'] = page[0]['super_soup_structure']['performance_summary']
     if review.get('paired_smt') is not None:
         view['paired_smt'] = _paired(review['paired_smt'], compact.get('asset'))
+    if view.get('young_lefty_context', {}).get('delivery_recap'):
+        from gbop_voice_web.young_lefty_context import compact_young_context
+        view['young_lefty_context'] = compact_young_context(review['young_lefty_context'])
     if review.get('recap'):
         view['recap'] = _pick(review['recap'], ('headline', 'spoken_summary', 'evidence_precedence'))
     bt = review.get('blessed_thief', {})
