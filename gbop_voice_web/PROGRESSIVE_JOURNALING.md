@@ -66,3 +66,25 @@ privacy pauses, account isolation/deletion, exact/approximate/cross-midnight tim
 explicit finalization, optimistic corrections, transaction rollback, transport
 replays, duplicate identical entries, count receipts and interruption fences.
 Live voice/device and PostgreSQL deployment verification remain release checks.
+
+## Interrupted finalization recovery
+
+A cancellation before a journal writer is dispatched is explicitly reported as
+not saved. It is not an ambiguous database commit. For a durable story
+finalization that did enter its writer, the server retains an exact member-owned
+draft/revision recovery capability. After that writer settles, recovery acquires
+the same member transaction lock and reads the draft and its linked canonical
+journal. An unchanged unfinished storage revision proves finalization did not
+commit; a matching finalized revision and owned journal prove it did. Missing,
+changed, deleted, inaccessible, or unavailable evidence remains uncertain.
+
+Recovery never resubmits finalization, creates a journal, modifies narration,
+infers risk/results, or discards a barrier merely because time passed. Reads are
+bounded and only one recovery read can be in flight per retained operation. A
+fresh member turn may retry an unavailable read. Terminal facts must actually
+reach the current authorized voice conversation before its barrier is released;
+a subsequent explicit request can finalize the same draft or start another.
+Oversized presentation fallback cannot acknowledge omitted recovery facts.
+Existing same-draft finalization remains idempotent after a committed response
+was lost. No new table, migration, credential, or persistent database setting is
+required. This repair is independent of member-context/capture schema changes.

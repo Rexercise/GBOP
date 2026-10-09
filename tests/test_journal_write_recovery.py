@@ -123,6 +123,31 @@ class JournalWriteRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await self.interrupt()
         self.assertEqual(len(self.outcomes()), 1)
 
+    async def test_actual_barge_in_before_dispatch_proves_not_saved_then_unblocks(self):
+        from gbop_voice_web.market_conversation import MarketConversation
+        context = MarketConversation((7, 101, 'discord_voice'))
+        self.session.market_context = context
+        ticket = context.generation
+        writer = Mock()
+        async def queued():
+            self.runner_calls += 1
+            self.started.set()
+            await self.gate.wait()
+            return context.run('save_journal_story', {}, writer, generation=ticket)
+        self.provider = queued
+        await self.start(name='save_journal_story'); await self.interrupt()
+        self.assertEqual(self.outcomes()[-1]['status'], 'pending')
+        await self.finish()
+        writer.assert_not_called()
+        self.assertFalse(self.session._journal_write_recovery['running'])
+        self.assertEqual(self.outcomes()[-1]['status'], 'not_saved')
+        self.assertFalse(self.session.tool_output_pending)
+        await self.interrupt()
+        requested = AsyncMock(return_value={'ok': True, 'saved': True})
+        result = await guarded_voice_tool(self.session, 'stage_journal_story', {}, 'next-journal', requested)
+        self.assertTrue(result['ok']); requested.assert_awaited_once()
+        self.assertEqual(self.runner_calls, 1)
+
     async def test_pending_transitions_to_saved_after_interrupt(self):
         async def pending():
             self.runner_calls += 1
