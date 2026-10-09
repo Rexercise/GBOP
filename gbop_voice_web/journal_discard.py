@@ -5,6 +5,7 @@ server-owned receipt of a delivered preview and a later, immediate member turn.
 """
 import re
 import time
+import unicodedata
 
 from gbop_voice_web import journal_drafts
 from gbop_voice_web.journal_context import JournalBinding, journal_transaction
@@ -46,7 +47,19 @@ def _normalized(text):
 
 
 def _confirm(text):
-    return bool(re.fullmatch(r"(?:yes|yeah|yep|confirm|confirmed|please do|go ahead)(?:[, ]+(?:please|do it))?|(?:(?:yes|yeah|yep|confirm|confirmed)[, ]+)?(?:please )?(?:discard|delete|remove) (?:it|(?:this|that|the)(?: unfinished)? draft)(?: please)?", _normalized(text)))
+    affirmative = r"(?:yes|yeah|yep|sure|okay|ok|confirm|confirmed|i confirm|please do|go ahead)"
+    target = r"(?:it|(?:this|that|the)(?: unfinished)? draft)"
+    action = r"(?:discard|delete|remove) " + target
+    followup = r"(?:please|(?:please )?(?:do(?: it)?|go ahead(?: and " + action + r")?|i confirm|" + action + r")(?: please)?)"
+    value = ' '.join(re.sub(r"[,.!]+", " ", _normalized(text)).split())
+    return bool(re.fullmatch(affirmative + r"(?: " + followup + r")?"
+        r"|(?:please )?(?:" + action + r"|go ahead(?: and " + action + r")?|do it)(?: please)?", value))
+
+
+def _prompt_words(text):
+    # Audio transcripts can omit typographic quotes/parentheses or change their
+    # style. Compare the same complete words, never a generated approval flag.
+    return ' '.join(re.findall(r'\w+', unicodedata.normalize('NFKC', str(text or '')).casefold()))
 
 
 def _restore_request(text, draft_id=None):
@@ -111,7 +124,7 @@ def delivered_discard_preview(context, text, generation, response_id):
         if (context.current(generation) and item and item['generation'] == generation
                 and item['owner'] == (*context.owner[:2], context.session_id)
                 and item['expires_at'] > time.monotonic()
-                and ' '.join(item['prompt'].split()).casefold() in ' '.join(text.split()).casefold()):
+                and ' '+_prompt_words(item['prompt'])+' ' in ' '+_prompt_words(text)+' '):
             item['delivered'] = True
             item['response_id'] = response_id
 
@@ -148,6 +161,23 @@ def prepare_discard(db, guild, user, args):
         title = ' '.join(str(_summary(draft)['title']).split())[:100]
         prompt = (f'Discard unfinished draft "{title}" (draft {draft["id"][-8:]})? '
                   'It will be removed from active journals and can be restored. Saved journals and trades will stay unchanged.')
+        previous = getattr(context, '_journal_discard_preview', None)
+        if (previous and previous['draft_id']==draft['id']
+                and previous['revision']==draft['storage_revision']
+                and previous['owner']==(guild,user,context.session_id)
+                and previous['expires_at']>time.monotonic()
+                and (capability.generation == previous['generation']
+                     or previous['delivered'] and capability.generation == previous['generation']+1)):
+            # A model retry or a redundant prepare on the confirmation turn must
+            # not erase the delivered receipt or turn the same yes into a new ask.
+            if previous['delivered']:
+                return {'ok': True, 'status': 'draft_discard_confirmation_already_asked',
+                        'requires_confirmation': True, 'confirmation_already_delivered': True,
+                        'draft': _summary(draft),
+                        'instruction': 'This exact unchanged draft was already previewed. Do not ask again. If the current member reply explicitly confirms, call discard_journal_story with the actual reply; otherwise leave it unchanged.'}
+            return {'ok': True, 'status': 'draft_discard_confirmation_required', 'requires_confirmation': True,
+                    'draft': _summary(draft), 'confirmation_prompt': previous['prompt'],
+                    'instruction': 'The existing preview is unchanged. Deliver this question once, then wait for the member reply. Nothing changed.'}
         context._journal_discard_preview = {'draft_id': draft['id'], 'revision': draft['storage_revision'],
             'owner': (guild, user, context.session_id), 'generation': capability.generation,
             'expires_at': time.monotonic() + PREVIEW_TTL, 'delivered': False, 'prompt': prompt}
