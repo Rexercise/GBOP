@@ -104,6 +104,9 @@ def _load_owned(conn,context,args,guild,user):
     if current and (current.get('owner')!=(guild,user,context.session_id) or current['id']!=requested):
         current=None
     if current and not current.get('persisted'):
+        if current.get('storage_revision') is not None:
+            latest=journal_drafts.read(conn,guild,user,requested)
+            if not latest:raise ValueError('This draft was discarded or is unavailable. Restore it explicitly before continuing.')
         if requested!=current['id']:raise ValueError('That draft is unavailable in this account.')
         return deepcopy(current)
     rows=journal_drafts.read(conn,guild,user,requested)
@@ -122,6 +125,8 @@ def _load_owned(conn,context,args,guild,user):
 
 
 def begin_story_turn(context,text,*,generation=None):
+    from gbop_voice_web.journal_discard import begin_discard_turn, is_discard_request
+    begin_discard_turn(context, text)
     # Never hold a conversation lock while waiting for a DB/member lock.
     with context._lock:
         ticket=context.generation if generation is None else generation
@@ -147,6 +152,7 @@ def begin_story_turn(context,text,*,generation=None):
         except Exception:
             with context._lock:
                 if context.current(ticket):context._journal_capture_error='Recording is paused; the earlier saved journal remains unchanged.'
+    if is_discard_request(text):return
     # Audio has no local transcript; its first stage tool records the passage.
     if not _journaling_request(text) or not getattr(context,'auth_provider',None):return
     if len(text.split())<8 and not re.search(r'\b(?:resume|continue|NAS(?:100)?|NASDAQ|SPX|US30|XAUUSD|BTCUSD|EURUSD|9ate8|bought|sold|shorted|entered)\b',text,re.I):return
@@ -167,7 +173,45 @@ def begin_story_turn(context,text,*,generation=None):
             if context.current(ticket):context._journal_capture_error='The narration could not be saved. Keep this passage available and retry staging before claiming it is saved.'
 
 
+def refresh_story_status(context):
+    # This is a read-only liveness check. Never hold the conversation lock while
+    # waiting on any DB query, including member authorization: speech must cancel.
+    with context._lock:
+        draft=deepcopy(getattr(context,'_journal_story',None))
+        generation,session,owner=context.generation,context.session_id,tuple(context.owner or ())
+        auth=context._auth_revision
+    if not draft or draft.get('storage_revision') is None or not getattr(context,'auth_provider',None):return
+    db,guild,user=context.auth_provider
+    def current():
+        return (context.current(generation) and context.session_id==session
+                and tuple(context.owner or ())==owner and owner[:2]==(guild,user)
+                and context._auth_revision==auth
+                and (getattr(context,'_journal_story',None) or {}).get('id')==draft['id'])
+    try:
+        from gbop_voice_web.journal_finalization import _bounded_connection
+        from gbop_voice_web.journal_context import member_revision
+        with _bounded_connection(db) as conn:
+            revision=member_revision(conn,guild,user)
+            if auth is not None and revision!=auth:raise ValueError('Member authorization changed.')
+            rows=journal_drafts.read(conn,guild,user,draft['id'])
+    except Exception:
+        with context._lock:
+            if current():context._journal_story_unverified=True
+        return  # Keep an unsaved private continuation; unavailable is not discarded.
+    with context._lock:
+        if not current():return
+        context._journal_story_unverified=False
+        if not rows:
+            from gbop_voice_web.journal_discard import _clear_active
+            _clear_active(context,draft['id'])
+            context._journal_discard_notice='The previous draft is no longer verified as active. Do not recall or recreate cached narration; read current draft state before continuing.'
+
+
 def story_prompt_context(context):
+    if getattr(context,'_journal_story_unverified',False):
+        return '\nJOURNAL DRAFT NOTICE: Current draft status could not be verified. Do not recall or resume cached narration until a current read succeeds; the local preview remains retained.'
+    notice=getattr(context,'_journal_discard_notice',None)
+    if notice:return '\nJOURNAL DRAFT NOTICE: '+notice
     if getattr(context,'_journal_capture_error',None):
         return '\nJOURNAL STORAGE NOTICE: '+context._journal_capture_error
     draft=getattr(context,'_journal_story',None)
@@ -314,6 +358,12 @@ def _public(draft, context,raw_offset=0):
 
 
 def stage_story(db,guild,user,args):
+    from gbop_voice_web.journal_discard import is_discard_request
+    capability,context=_context(args,guild,user)
+    if getattr(context,'_journal_blocked_draft_id',None) and not args.get('draft_id') and args.get('new_draft') is not True:
+        raise ValueError('The previous draft is no longer active. Select another draft, explicitly restore it, or ask to start a new draft.')
+    if is_discard_request(getattr(context,'_client_text',None) or args.get('raw_story')):
+        raise ValueError('Use prepare_journal_discard for draft removal, or restore_journal_story for restoration. Do not record this command as narration.')
     try:
         patch=_patch(args.get('story_json'))
     except (ValueError,TypeError,KeyError) as exc:
@@ -449,7 +499,10 @@ def stage_story(db,guild,user,args):
             draft['draft_status']='session_only'
     _bind_loaded(context,draft,generation=capability.generation)
     with context._lock:
-        if context.current(capability.generation):context._journal_capture_error=None
+        if context.current(capability.generation):
+            context._journal_capture_error=None
+            context._journal_discard_notice=None
+            context._journal_blocked_draft_id=None
         result=_public(draft,context)
     if draft.get('persisted'):
         from gbop_voice_web.voice_runtime import journal_write_committed
@@ -461,16 +514,24 @@ def stage_story(db,guild,user,args):
 def get_story(db,guild,user,args):
     capability,context=_context(args,guild,user)
     with journal_transaction(db,args,guild,user) as conn:
-        if not args.get('draft_id') and not getattr(context,'_journal_story',None):
+        if args.get('view')=='discarded':
+            from gbop_voice_web.journal_discard import discarded_stories
+            return discarded_stories(conn,guild,user,args.get('draft_id'),args.get('offset') or 0)
+        if args.get('view') not in (None,'unfinished'):raise ValueError('Use view unfinished or discarded.')
+        if not args.get('draft_id') and (args.get('offset') is not None or not getattr(context,'_journal_story',None)):
+            offset=args.get('offset') or 0
+            if type(offset) is not int or not 0<=offset<=10000:raise ValueError('Use a bounded nonnegative whole-number draft offset.')
             rows=journal_drafts.read(conn,guild,user)
-            if len(rows)>1:
-                return {'ok':True,'status':'draft_selection_required','drafts':[
-                    {'draft_id':d['id'],'title':d['values'].get('title') or 'Unfinished journal',
-                     'asset':d['values'].get('asset'),'updated_at':d['updated_at']} for d in rows],
-                    'instruction':'Which unfinished journal should we continue? Keep their existing identities.'}
+            if len(rows)>1 or args.get('offset') is not None:
+                from gbop_voice_web.journal_discard import _summary
+                return {'ok':True,'status':'draft_selection_required','drafts':[_summary(d) for d in rows[offset:offset+10]],
+                    'next_offset':offset+10 if len(rows)>offset+10 else None,'has_more':len(rows)>offset+10,
+                    'instruction':'Which unfinished journal should we continue? Keep their existing identities; page with next_offset as offset if needed.'}
         draft=_load_owned(conn,context,{**args,'_refresh':True},guild,user)
         if draft is None:return {'ok':True,'status':'no_unfinished_journal','drafts':[]}
         _bind_loaded(context,draft)
+        context._journal_discard_notice=None
+        context._journal_blocked_draft_id=None
         if draft.get('saved_journal_id') and not _saved_story_row(conn,guild,user,draft['id']):
             draft.pop('saved_revision',None)
             return {'ok':False,'status':'saved_record_unavailable','error':'The earlier saved record is unavailable. Read history; do not recreate it automatically.'}
@@ -627,6 +688,6 @@ def save_story(db,guild,user,args):
 STORY_TOOLS=[
     schema('stage_journal_story','FIRST capture/correct single-entry or multi-entry narration as a durable editable journal before follow-up questions. R is optional: unknown stays null, never zero. story_json keys: '+', '.join(sorted(FIELDS))+'; entries is an array with '+', '.join(sorted(ENTRY_FIELDS))+'. result_r is numeric overall reported R; entry risk_text and pnl_text preserve cash amounts with units. Patch only new facts; null preserves known values. clear_fields retracts unfinished fields; result_r and entries.1.risk_r may also be cleared on saved/selected narratives without deleting records. new_trade=true only for an explicitly separate trade; new_draft starts a separate story. Select existing displayed trade_number after reading current state.',
            {'draft_id':STR,'raw_story':STR,'story_json':{'type':'string'},'trade_number':NUM,'new_draft':{'type':['boolean','null']},'new_trade':{'type':['boolean','null']}}),
-    schema('get_journal_story','Resume the same member-owned unfinished journal after pauses/reconnects; read known facts and choose from titles when several remain. No write.',{'draft_id':STR,'raw_offset':NUM}),
+    schema('get_journal_story','Use view=discarded to list archived draft titles/revisions for explicit restoration. Otherwise resume the same member-owned unfinished journal after pauses/reconnects; read known facts and choose from titles when several remain. No write.',{'draft_id':STR,'raw_offset':NUM,'offset':NUM,'view':{'type':['string','null'],'enum':['unfinished','discarded',None]}}),
     schema('save_journal_story','Explicitly FINALIZE a saved unfinished narrative only when the member asks to save/finalize/finish; for voice quote the actual current request in confirmation_text. Null for typed requests. Preserves reported multi-entry details without inventing execution/risk/P&L rows. Reconciles existing Trade # and same draft retries; does not delete records.',{'draft_id':{'type':'string'},'confirmation_text':STR}),
 ]

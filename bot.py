@@ -4957,7 +4957,8 @@ For ordinary trade conversation:
 - Journal correction -> edit_journal.
 - Full trade deletion -> identify the exact trade and preview what will be
   removed; call delete_trade with confirm=true only after explicit confirmation.
-- Journal deletion -> identify/preview the exact journal; call delete_journal
+- Unfinished draft deletion -> prepare_journal_discard, deliver its confirmation_prompt, then discard_journal_story only after the next explicit member reply; archived drafts are recoverable. Never route draft removal to finalized journal/trade deletion.
+- Finalized journal deletion -> identify/preview the exact journal; call delete_journal
   with confirm=true only after explicit confirmation.
 - Deleting a journal also deletes its linked trade, executions, events, risk flags, all linked journals, and linked unfinished narration with correction history.
 
@@ -6733,9 +6734,15 @@ class GBOPRealtimeSession:
             if (self.closed or self.websocket is None
                     or not self.market_context.current(generation)):
                 return
+            connection = self.websocket
+            context = self.market_context
+            prompt = await asyncio.to_thread(context.prompt)
+            if (self.closed or self.websocket is not connection or self.market_context is not context
+                    or not context.current(generation)):
+                return
             await self.send_event({'type': 'session.update', 'session': {
                 'type': 'realtime',
-                'instructions': self._market_base_instructions + self.market_context.prompt(),
+                'instructions': self._market_base_instructions + prompt,
             }}, quiet=True)
         asyncio.create_task(update())
 
@@ -6994,15 +7001,22 @@ class GBOPRealtimeSession:
                 return
         context = getattr(self, 'market_context', None)
         from gbop_voice_web.market_conversation import SCOPED_TOOLS
-        if (context is not None and name in SCOPED_TOOLS
+        from gbop_voice_web.journal_discard import DISCARD_NAMES
+        if (context is not None and name in SCOPED_TOOLS | DISCARD_NAMES
                 and result.get('status') != 'stale_market_context'):
             # Keep verified facts AND unresolved requested scope outside the
             # truncatable conversation. An unavailable NAS night must not leave
             # an older BTC review pinned as if it answered the new request.
             # This updates existing session instructions; no extra provider call.
+            connection = self.websocket
+            generation = context.generation
+            prompt = await asyncio.to_thread(context.prompt)
+            if (self.closed or self.websocket is not connection or not context.current(generation)
+                    or work is not None and not work.current(scope)):
+                return
             await self.send_event({'type': 'session.update', 'session': {
                 'type': 'realtime',
-                'instructions': self._market_base_instructions + context.prompt(),
+                'instructions': self._market_base_instructions + prompt,
             }}, quiet=True)
             if work is not None and not work.current(scope):
                 return

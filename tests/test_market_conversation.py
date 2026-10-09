@@ -423,6 +423,7 @@ class AuthenticatedHooksTests(unittest.IsolatedAsyncioTestCase):
         context.begin_turn()
         dispatch = Mock(return_value={'ok': False, 'status': 'shift_unavailable', 'error': 'No NAS night data'})
         session = NS(member=NS(id=2), market_context=context, _market_base_instructions='base',
+                     websocket=object(), closed=False,
                      send_event=AsyncMock(return_value=True), _tool_response_options={})
         execute = method('execute_tool', dict(asyncio=asyncio, json=json, time=time,
             ai_execute_tool=dispatch, voice_tool_payload=voice_tool_payload,
