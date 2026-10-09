@@ -8,15 +8,16 @@ CANONICAL_KNOWLEDGE = "\n\n".join(
     Path(__file__).with_name(name).read_text(encoding="utf-8").strip()
     for name in KNOWLEDGE_FILES
 )
-SOUPIER_SOUP_NAME = "Soupier Soup"
-_SOUPIER_SOUP_PATTERN = re.compile(r"\b(?:soupier|s\s+o\s+u\s+p\s+i\s+e\s+r)\s+soup\b", re.IGNORECASE)
+SOUPIER_SOUP_NAME = "Soupieror Soup"
+_SOUPIER_SOUP_PATTERN = re.compile(r"\b(?:soupier(?:or)?|s\s+o\s+u\s+p\s+i\s+e\s+r(?:\s+o\s+r)?)\s+soup\b", re.IGNORECASE)
 
 
 def recognize_soupier_soup(text):
     """Recognize the exact term, without implying a setup or classification.
 
-    Case/whitespace and the user's explicit S O U P I E R spelling cue are
-    recognized. No fuzzy aliases or market qualification have been specified.
+    Case/whitespace, letter-by-letter spelling, and the former Soupier Soup
+    name are recognized. This lookup never rewrites member narration. The
+    ambiguous spoken wording Superior Soup is not an unconditional alias.
     """
     return SOUPIER_SOUP_NAME if _SOUPIER_SOUP_PATTERN.search(text or "") else None
 
