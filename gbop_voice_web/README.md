@@ -23,6 +23,21 @@ or replace the latest draft. Cancel and the ten-minute draft expiry close the fl
 A dismissed form can be reopened; text is retained after it has been submitted.
 Drafts do not survive a bot restart.
 
+To send a screenshot or photo, add the optional **image** upload to
+`/gbopmessage` before running it. For a member DM, choose `audience:selected`,
+pick the member, then open the message form. With an image attached you may leave
+the text empty. The image stays attached while editing the caption or recipients.
+Review the image and recipients, then press **Confirm send**. You can also provide
+`text` and `members` directly with the image to use the existing shortcut flow.
+
+PNG, JPEG, GIF, and WebP uploads up to 10 MiB are supported. The upload is read
+once and the same bytes are attached to each DM; it is not just a temporary image
+link. Unsupported, oversized, or unavailable uploads block the preview. Text-only
+messages still work. To replace the image, cancel and start a new command with
+the new upload. This command sends DMs; it does not post to server channels.
+After deploying, restart the Discord bot so its normal command sync registers
+the new `image` option.
+
 Existing explicit command shortcuts remain supported:
 
 - `text:... audience:all` previews all currently eligible GBOP members.

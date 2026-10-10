@@ -1,10 +1,12 @@
-"""Immutable owner-message previews; no storage, credentials, or transport.
+"""Immutable owner-message previews and bounded Discord image uploads.
 
 Only the explicitly previewed IDs may be delivered to. The caller verifies
 current human guild membership for selected/all_server_members recipients and
 GBOP eligibility for all/all_except, before the draft and again before each send.
 """
 from dataclasses import dataclass
+import asyncio
+import io
 import re
 
 
@@ -17,6 +19,46 @@ AUDIENCE_LABELS = {
 PREVIEW_SECONDS = 600
 RECIPIENTS_PER_PAGE = 10
 MESSAGE_HEADER = '📣 **GBOP Message**\n\n'
+MAX_BROADCAST_IMAGE_BYTES = 10 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class BroadcastImage:
+    """Snapshot the upload once so preview and every recipient get identical bytes."""
+    data: bytes
+    filename: str
+    spoiler: bool = False
+
+    def to_file(self):
+        # discord.File is single-use. Give every preview/send its own stream.
+        import discord
+        return discord.File(io.BytesIO(self.data), filename=self.filename, spoiler=self.spoiler)
+
+
+async def read_broadcast_image(attachment):
+    if not 0 < attachment.size <= MAX_BROADCAST_IMAGE_BYTES:
+        raise ValueError('Choose an image up to 10 MiB. Nothing was sent.')
+    try:
+        data = await asyncio.wait_for(attachment.read(), timeout=20)
+    except Exception:
+        raise ValueError('The image could not be downloaded. Upload it again; nothing was sent.') from None
+    if not 0 < len(data) <= MAX_BROADCAST_IMAGE_BYTES:
+        raise ValueError('Choose an image up to 10 MiB. Nothing was sent.')
+    # Do not trust a renamed file or its declared MIME type. Preserve the bytes;
+    # no re-encoding, arbitrary URL fetching, or permanent storage.
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        extension = 'png'
+    elif data.startswith(b'\xff\xd8\xff'):
+        extension = 'jpg'
+    elif data.startswith((b'GIF87a', b'GIF89a')):
+        extension = 'gif'
+    elif data.startswith(b'RIFF') and data[8:12] == b'WEBP':
+        extension = 'webp'
+    else:
+        raise ValueError('Upload a PNG, JPEG, GIF, or WebP image. Nothing was sent.')
+    spoiler = attachment.is_spoiler()
+    filename = ('SPOILER_' if spoiler else '') + f'gbop-image.{extension}'
+    return BroadcastImage(data, filename, spoiler)
 
 
 def parse_selection(audience, raw):
@@ -43,13 +85,13 @@ def parse_selection(audience, raw):
     return tuple(ids)
 
 
-def owner_message(text):
+def owner_message(text, image=None):
     text = text.strip()
-    if not text:
-        raise ValueError('Please provide a message to preview.')
+    if not text and image is None:
+        raise ValueError('Please provide a message or image to preview.')
     if len(text) > 1800:
         raise ValueError('Keep the message within 1,800 characters. Nothing has been shortened or sent.')
-    return MESSAGE_HEADER + text
+    return MESSAGE_HEADER + text if text else MESSAGE_HEADER.rstrip()
 
 
 @dataclass(frozen=True)
@@ -66,6 +108,7 @@ class BroadcastDraft:
     message: str
     recipients: tuple[BroadcastRecipient, ...]
     excluded_count: int = 0
+    image: BroadcastImage | None = None
 
     @property
     def page_count(self):
@@ -78,7 +121,7 @@ class BroadcastDraft:
         return self.recipients[start:start + RECIPIENTS_PER_PAGE]
 
 
-def build_draft(owner_id, guild_id, text, audience, selected_ids, eligible):
+def build_draft(owner_id, guild_id, text, audience, selected_ids, eligible, image=None):
     """Resolve the audience once. Missing selections fail the whole preview."""
     if audience not in AUDIENCE_LABELS:
         raise ValueError('Unknown audience.')
@@ -106,5 +149,5 @@ def build_draft(owner_id, guild_id, text, audience, selected_ids, eligible):
                        for user_id in sorted(recipient_ids))
     if not recipients:
         raise ValueError('No eligible recipients remain in this audience. No messages were sent.')
-    return BroadcastDraft(int(owner_id), int(guild_id), audience, owner_message(text),
-                          recipients, len(selected) if audience == 'all_except' else 0)
+    return BroadcastDraft(int(owner_id), int(guild_id), audience, owner_message(text, image),
+                          recipients, len(selected) if audience == 'all_except' else 0, image)
