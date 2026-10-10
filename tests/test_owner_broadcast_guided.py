@@ -7,6 +7,7 @@ decorators, bound callbacks, components, modals and serializers remain intact.
 """
 import ast
 import asyncio
+import base64
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 import time
@@ -21,10 +22,77 @@ from discord import app_commands
 from gbop_voice_web.member_access import MEMBER_ACCESS_UNAVAILABLE
 from gbop_voice_web.owner_broadcast import (
     AUDIENCE_LABELS, PREVIEW_SECONDS, build_draft, owner_message, parse_selection,
+    read_broadcast_image,
+    MAX_BROADCAST_IMAGE_BYTES,
 )
 
 
 BOT = Path(__file__).resolve().parents[1] / 'bot.py'
+PNG = base64.b64decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aLTsAAAAASUVORK5CYII='
+)
+
+
+def upload(data=PNG, *, size=None, spoiler=False):
+    return NS(size=len(data) if size is None else size, filename='screenshot.png',
+              read=AsyncMock(return_value=data), is_spoiler=lambda: spoiler)
+
+
+class BroadcastImageUploadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bytes_are_frozen_and_every_file_gets_a_fresh_stream(self):
+        attachment = upload()
+        image = await read_broadcast_image(attachment)
+        attachment.read.assert_awaited_once()
+        self.assertEqual(image.data, PNG)
+        with self.assertRaises(FrozenInstanceError):
+            image.data = b'changed'
+        first, second = image.to_file(), image.to_file()
+        try:
+            self.assertIsNot(first.fp, second.fp)
+            self.assertEqual(first.fp.read(), PNG)
+            self.assertEqual(second.fp.read(), PNG)
+        finally:
+            first.close()
+            second.close()
+
+    async def test_size_is_checked_before_and_after_download(self):
+        for size in (0, MAX_BROADCAST_IMAGE_BYTES + 1):
+            attachment = upload(size=size)
+            with self.assertRaisesRegex(ValueError, '10 MiB'):
+                await read_broadcast_image(attachment)
+            attachment.read.assert_not_awaited()
+        for data in (b'', PNG + b'0' * MAX_BROADCAST_IMAGE_BYTES):
+            with self.assertRaisesRegex(ValueError, '10 MiB'):
+                await read_broadcast_image(upload(data, size=len(PNG)))
+
+    async def test_renamed_non_image_and_failed_download_are_rejected(self):
+        for data in (b'<html>not an image</html>', b'%PDF-1.4'):
+            with self.assertRaisesRegex(ValueError, 'PNG, JPEG, GIF, or WebP'):
+                await read_broadcast_image(upload(data))
+        attachment = upload()
+        attachment.read.side_effect = TimeoutError()
+        with self.assertRaisesRegex(ValueError, 'could not be downloaded'):
+            await read_broadcast_image(attachment)
+        attachment.read.assert_awaited_once()
+
+    async def test_spoiler_flag_is_preserved(self):
+        image = await read_broadcast_image(upload(spoiler=True))
+        file = image.to_file()
+        try:
+            self.assertTrue(file.spoiler)
+            self.assertEqual(file.filename, 'SPOILER_gbop-image.png')
+        finally:
+            file.close()
+
+    async def test_empty_caption_requires_image(self):
+        image = await read_broadcast_image(upload())
+        self.assertEqual(owner_message('  ', image), '📣 **GBOP Message**')
+        with self.assertRaises(ValueError):
+            owner_message('  ')
+        with self.assertRaises(ValueError):
+            owner_message('x' * 1801, image)
+
+
 EXTRACTED_NAMES = {
     '_current_owner_message_member', '_resolve_owner_broadcast_draft',
     '_send_owner_broadcast', 'OwnerBroadcastView', 'OwnerBroadcastMemberPicker',
@@ -105,6 +173,7 @@ class GuidedOwnerBroadcastTests(unittest.IsolatedAsyncioTestCase):
             MEMBER_ACCESS_UNAVAILABLE=MEMBER_ACCESS_UNAVAILABLE,
             AUDIENCE_LABELS=AUDIENCE_LABELS, PREVIEW_SECONDS=PREVIEW_SECONDS,
             build_draft=build_draft, owner_message=owner_message, parse_selection=parse_selection,
+            read_broadcast_image=read_broadcast_image,
             _authorized_scheduled_member=AsyncMock(),
         )
         self.ns['is_owner'] = lambda m: m.id == self.ns['GTOP_OWNER_USER_ID']
@@ -193,6 +262,8 @@ class GuidedOwnerBroadcastTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(schema['name'], 'gbopmessage')
         self.assertEqual(options['text']['type'], discord.AppCommandOptionType.string.value)
         self.assertFalse(options['text']['required'])
+        self.assertEqual(options['image']['type'], discord.AppCommandOptionType.attachment.value)
+        self.assertFalse(options['image']['required'])
         self.assertTrue(all(not item['required'] for item in options.values()))
         self.assertEqual({choice['value'] for choice in options['audience']['choices']}, set(AUDIENCE_LABELS))
 
@@ -876,6 +947,102 @@ class GuidedOwnerBroadcastTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sent.args[0], owner_message('Shortcut text'))
             self.assertTrue(sent.kwargs['ephemeral'])
             self.assert_no_mentions(sent.kwargs['allowed_mentions'])
+        self.assert_no_delivery()
+
+    async def test_image_only_guided_member_message_and_caption_edit_keep_upload(self):
+        attachment = upload()
+        interaction = SyntheticInteraction()
+        await self.command.callback(interaction, audience='selected', image=attachment)
+        self.assertEqual(interaction.events, ['defer', 'followup'])
+        sent = interaction.followup.send.await_args.kwargs
+        self.assertTrue(sent['ephemeral'])
+        self.assertEqual(sent['file'].fp.read(), PNG)
+        sent['file'].close()
+        picker = sent['view']
+        compose, _ = await self.choose_members(picker, (2,))
+        modal, _ = await self.open_modal(compose, '')
+        self.assertFalse(modal.message_text.required)
+        submit = SyntheticInteraction()
+        await modal.on_submit(submit)
+        preview = submit.edit_original_response.await_args.kwargs['view']
+        self.assertEqual(preview.draft.message, '📣 **GBOP Message**')
+        self.assertEqual(preview.preview_embed().image.url, 'attachment://gbop-image.png')
+        self.assertNotIn('attachments', submit.edit_original_response.await_args.kwargs)
+        self.assert_no_delivery()
+        await preview.edit_message.callback(SyntheticInteraction())
+        modal, _ = await self.open_modal(preview.wizard.current_view, 'A gem for you')
+        submit = SyntheticInteraction()
+        await modal.on_submit(submit)
+        latest = submit.edit_original_response.await_args.kwargs['view']
+        self.assertIs(latest.draft.image, preview.draft.image)
+        received = []
+        async def receive(text, **kwargs):
+            received.append((text, kwargs['file'].fp.read()))
+            self.assert_no_mentions(kwargs['allowed_mentions'])
+        self.members[2].send.side_effect = receive
+        await latest.confirm_send.callback(SyntheticInteraction())
+        await latest.confirm_send.callback(SyntheticInteraction())
+        self.assertEqual(received, [(owner_message('A gem for you'), PNG)])
+        self.members[1].send.assert_not_awaited()
+        self.members[3].send.assert_not_awaited()
+        attachment.read.assert_awaited_once()
+
+    async def test_image_shortcut_picker_preserves_exact_file_until_confirmation(self):
+        interaction = SyntheticInteraction()
+        await self.command.callback(interaction, text='Caption', audience='selected', image=upload())
+        sent = interaction.followup.send.await_args.kwargs
+        picker = sent['view']
+        sent['file'].close()
+        picker.choose_members._values = [self.members[2]]
+        selected = SyntheticInteraction()
+        await picker.choose_members.callback(selected)
+        preview = selected.edit_original_response.await_args.kwargs['view']
+        self.assertEqual(preview.draft.image.data, PNG)
+        self.assertNotIn('attachments', selected.edit_original_response.await_args.kwargs)
+        self.assert_no_delivery()
+        await preview.cancel_send.callback(SyntheticInteraction())
+        await preview.confirm_send.callback(SyntheticInteraction())
+        self.assert_no_delivery()
+
+    async def test_image_delivery_streams_are_complete_after_partial_failure(self):
+        interaction = SyntheticInteraction()
+        await self.command.callback(interaction, text='Caption', audience='all_server_members', image=upload())
+        sent = interaction.followup.send.await_args.kwargs
+        sent['file'].close()
+        preview = sent['view']
+        received, files = [], []
+        async def receive(text, **kwargs):
+            files.append(kwargs['file'])
+            received.append(kwargs['file'].fp.read())
+            if len(received) == 1:
+                raise PermissionError('Synthetic blocked DM')
+        for recipient in self.members.values():
+            recipient.send.side_effect = receive
+        confirmation = SyntheticInteraction()
+        await preview.confirm_send.callback(confirmation)
+        self.assertEqual(received, [PNG, PNG, PNG])
+        self.assertEqual(len({id(file) for file in files}), 3)
+        self.assertTrue(all(file.fp.closed for file in files))
+        self.assertIn('**2** member(s)', confirmation.followup.send.await_args.args[0])
+        self.assertIn('1 delivery attempt(s)', confirmation.followup.send.await_args.args[0])
+        await preview.confirm_send.callback(SyntheticInteraction())
+        for recipient in self.members.values():
+            recipient.send.assert_awaited_once()
+
+    async def test_invalid_or_unavailable_image_never_creates_preview(self):
+        for attachment in (upload(b'text'), upload(size=MAX_BROADCAST_IMAGE_BYTES + 1)):
+            interaction = SyntheticInteraction()
+            await self.command.callback(interaction, text='Caption', audience='selected', members='2', image=attachment)
+            self.assertEqual(interaction.events, ['defer', 'followup'])
+            self.assertNotIn('view', interaction.followup.send.await_args.kwargs)
+        self.ns['client'].get_guild.assert_not_called()
+        self.assert_no_delivery()
+
+    async def test_unauthorized_owner_image_is_not_downloaded(self):
+        for uid, gid in ((1, 10), (999, 11), (999, None)):
+            attachment = upload()
+            await self.command.callback(SyntheticInteraction(uid, gid), image=attachment)
+            attachment.read.assert_not_awaited()
         self.assert_no_delivery()
 
 

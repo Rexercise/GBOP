@@ -27,6 +27,7 @@ from db_compat import db
 from gbop_voice_web.member_access import MEMBER_ACCESS_UNAVAILABLE, member_access_error
 from gbop_voice_web.owner_broadcast import (
     AUDIENCE_LABELS, PREVIEW_SECONDS, build_draft, owner_message, parse_selection,
+    read_broadcast_image,
 )
 from gbop_voice_web.checkin_routing import save_checkin_reply
 from gbop_voice_web.no_trade_checkins import (
@@ -634,7 +635,7 @@ async def _current_owner_message_member(user_id):
         return None
 
 
-async def _resolve_owner_broadcast_draft(text, audience, selected_ids):
+async def _resolve_owner_broadcast_draft(text, audience, selected_ids, image=None):
     guild = client.get_guild(GTOP_GUILD_ID)
     if guild is None or guild.id != GTOP_GUILD_ID:
         raise ValueError('The G.T.O.P server is unavailable. Please try again later.')
@@ -668,7 +669,7 @@ async def _resolve_owner_broadcast_draft(text, audience, selected_ids):
         except Exception:
             logger.warning('GBOP owner-message recipient list unavailable')
             raise ValueError('The complete current member list could not be verified. Nothing was sent.') from None
-    return build_draft(GTOP_OWNER_USER_ID, GTOP_GUILD_ID, text, audience, selected_ids, eligible)
+    return build_draft(GTOP_OWNER_USER_ID, GTOP_GUILD_ID, text, audience, selected_ids, eligible, image)
 
 
 async def _send_owner_broadcast(draft):
@@ -685,13 +686,20 @@ async def _send_owner_broadcast(draft):
         if member is None:
             skipped += 1
             continue
+        file = None
         try:
-            await member.send(draft.message, allowed_mentions=discord.AllowedMentions.none())
+            file = draft.image.to_file() if draft.image else None
+            await member.send(draft.message, allowed_mentions=discord.AllowedMentions.none(),
+                              **({'file': file} if file else {}))
             sent += 1
         except Exception:
             # Do not retry an ambiguous transport failure and risk a duplicate.
             unconfirmed += 1
             logger.warning('GBOP owner-message delivery unconfirmed user=%s', recipient.user_id)
+        finally:
+            if file is not None:
+                file.close()
+                file.fp.close()
     return sent, unconfirmed, skipped
 
 
@@ -733,6 +741,10 @@ class OwnerBroadcastView(discord.ui.View):
         embed.set_footer(text=(f'Recipients page {self.page_index + 1}/{self.draft.page_count}. '
             'Review every page, then Confirm send. Expires in 10 minutes. '
             f'New members are not added; {skip_notice}'))
+        if self.draft.image:
+            embed.add_field(name='Image included', value=self.draft.image.filename, inline=False)
+            if not self.draft.image.spoiler:
+                embed.set_image(url=f'attachment://{self.draft.image.filename}')
         return embed
 
     async def interaction_check(self, interaction: discord.Interaction):
@@ -839,10 +851,11 @@ class OwnerBroadcastView(discord.ui.View):
 
 class OwnerBroadcastMemberPicker(discord.ui.View):
     """Choose server users without depending on text mention suggestions."""
-    def __init__(self, text, audience):
+    def __init__(self, text, audience, image=None):
         super().__init__(timeout=PREVIEW_SECONDS)
         self.text = text
         self.audience = audience
+        self.image = image
         self.owner_id = GTOP_OWNER_USER_ID
         self.guild_id = GTOP_GUILD_ID
         self.expires_at = time.monotonic() + PREVIEW_SECONDS
@@ -905,7 +918,7 @@ class OwnerBroadcastMemberPicker(discord.ui.View):
             # The resolver verifies humans/current membership and never grants access.
             await interaction.response.defer(ephemeral=True, thinking=False)
             try:
-                draft = await _resolve_owner_broadcast_draft(self.text, self.audience, ids)
+                draft = await _resolve_owner_broadcast_draft(self.text, self.audience, ids, self.image)
             except ValueError as exc:
                 await interaction.followup.send(str(exc), ephemeral=True)
                 return
@@ -956,12 +969,13 @@ class OwnerBroadcastMemberPicker(discord.ui.View):
 
 class OwnerBroadcastWizard:
     """One private, expiring draft. Navigation invalidates all older controls."""
-    def __init__(self, audience='all', selected_ids=(), stage='audience'):
+    def __init__(self, audience='all', selected_ids=(), stage='audience', image=None):
         self.owner_id = GTOP_OWNER_USER_ID
         self.guild_id = GTOP_GUILD_ID
         self.audience = audience
         self.selected_ids = tuple(selected_ids)
         self.text = ''
+        self.image = image
         self.stage = stage
         self.revision = 0
         self.modal_token = 0
@@ -1082,7 +1096,8 @@ class OwnerBroadcastSetupView(discord.ui.View):
         action = 'Edit message' if wizard.text else 'Write message'
         return discord.Embed(title='GBOP Message · write your message', description=(
             f'**{AUDIENCE_LABELS[wizard.audience]}**{selection}\n'
-            f'Press {action} to open the form. Submit it to see the exact message '
+            + ('Image attached. The message text is optional.\n' if wizard.image else '')
+            + f'Press {action} to open the form. Submit it to see the exact message '
             'and every recipient before confirming. If you close the form, reopen it here. '
             'Use Back to change the audience or members. Nothing has been sent.'
         ))
@@ -1164,8 +1179,9 @@ class OwnerBroadcastComposeModal(discord.ui.Modal):
         self.revision = wizard.revision
         self.modal_token = wizard.modal_token
         self.message_text = discord.ui.TextInput(
-            label='Message', style=discord.TextStyle.paragraph, required=True,
-            min_length=1, max_length=1800, default=wizard.text,
+            label='Message (optional)' if wizard.image else 'Message',
+            style=discord.TextStyle.paragraph, required=wizard.image is None,
+            min_length=0 if wizard.image else 1, max_length=1800, default=wizard.text,
             placeholder='Write the message recipients will receive…',
         )
         self.add_item(self.message_text)
@@ -1177,7 +1193,7 @@ class OwnerBroadcastComposeModal(discord.ui.Modal):
                 return
             text = str(self.message_text)
             try:
-                owner_message(text)
+                owner_message(text, wizard.image)
             except ValueError as exc:
                 await wizard.reply(interaction, str(exc))
                 return
@@ -1193,7 +1209,7 @@ class OwnerBroadcastComposeModal(discord.ui.Modal):
                 wizard.stage = 'compose'
                 raise
         try:
-            draft = await _resolve_owner_broadcast_draft(text, audience, ids)
+            draft = await _resolve_owner_broadcast_draft(text, audience, ids, wizard.image)
         except Exception as exc:
             async with wizard.lock:
                 if not await wizard.check(interaction, self.revision, token):
@@ -1285,49 +1301,68 @@ class OwnerBroadcastGuidedPreview(OwnerBroadcastView):
     text="Optional shortcut: exact message up to 1,800 characters. Omit to use the guided message form.",
     audience="Use selected to pick server users; all/all_except use GBOP eligibility; all_server_members uses all.",
     members="Optional exact @user mentions/IDs. Leave blank for the selected/all_except server-user picker.",
+    image="Optional PNG, JPEG, GIF, or WebP up to 10 MiB. Text is optional when an image is attached.",
 )
 async def gbopmessage(
     interaction: discord.Interaction,
     text: str | None = None,
     audience: Literal['all', 'selected', 'all_server_members', 'all_except'] = 'all',
     members: str = '',
+    image: discord.Attachment | None = None,
 ):
     if not is_owner(interaction.user) or interaction.guild_id != GTOP_GUILD_ID:
         await interaction.response.send_message(
             "⛔ Only the GBOP owner can preview a GBOP message in the G.T.O.P server.", ephemeral=True,
         )
         return
+    uploaded_image = None
+    if image is not None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            uploaded_image = await read_broadcast_image(image)
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+    reply = interaction.followup.send if image is not None else interaction.response.send_message
     if text is None:
         try:
             ids = parse_selection(audience, members) if members.strip() or audience not in ('selected', 'all_except') else ()
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await reply(str(exc), ephemeral=True)
             return
         stage = ('audience' if audience == 'all' else
                  'members' if audience in ('selected', 'all_except') and not ids else 'compose')
-        wizard = OwnerBroadcastWizard(audience, ids, stage)
+        wizard = OwnerBroadcastWizard(audience, ids, stage, uploaded_image)
         view = wizard.replace(stage)
-        await interaction.response.send_message(embed=view.setup_embed(), view=view, ephemeral=True,
-                                                allowed_mentions=discord.AllowedMentions.none())
-        wizard.preview_message = await interaction.original_response()
+        if uploaded_image:
+            wizard.preview_message = await reply(
+                embed=view.setup_embed(), view=view, ephemeral=True, wait=True,
+                allowed_mentions=discord.AllowedMentions.none(), file=uploaded_image.to_file(),
+            )
+        else:
+            await reply(embed=view.setup_embed(), view=view, ephemeral=True,
+                        allowed_mentions=discord.AllowedMentions.none())
+            wizard.preview_message = await interaction.original_response()
         return
     try:
-        owner_message(text)
+        owner_message(text, uploaded_image)
         use_picker = audience in ('selected', 'all_except') and not members.strip()
         selected_ids = () if use_picker else parse_selection(audience, members)
     except ValueError as exc:
-        await interaction.response.send_message(str(exc), ephemeral=True)
+        await reply(str(exc), ephemeral=True)
         return
-    await interaction.response.defer(ephemeral=True)
+    if image is None:
+        await interaction.response.defer(ephemeral=True)
     if use_picker:
-        view = OwnerBroadcastMemberPicker(text, audience)
+        view = OwnerBroadcastMemberPicker(text, audience, uploaded_image)
         view.preview_message = await interaction.followup.send(
-            owner_message(text), embed=view.picker_embed(), view=view, ephemeral=True,
+            owner_message(text, uploaded_image), embed=view.picker_embed(), view=view, ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(), wait=True,
+            **({'file': uploaded_image.to_file()} if uploaded_image else {}),
         )
         return
     try:
-        draft = await _resolve_owner_broadcast_draft(text, audience, selected_ids)
+        draft = await _resolve_owner_broadcast_draft(text, audience, selected_ids, uploaded_image)
     except ValueError as exc:
         await interaction.followup.send(str(exc), ephemeral=True)
         return
@@ -1335,6 +1370,7 @@ async def gbopmessage(
     view.preview_message = await interaction.followup.send(
         draft.message, embed=view.preview_embed(), view=view, ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(), wait=True,
+        **({'file': uploaded_image.to_file()} if uploaded_image else {}),
     )
 
 

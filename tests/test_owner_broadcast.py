@@ -134,7 +134,7 @@ class FakeEmbed:
 class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.none_mentions = object()
-        discord = NS(Interaction=object, Message=object, Embed=FakeEmbed, ButtonStyle=NS(secondary=1, danger=2),
+        discord = NS(Interaction=object, Message=object, Attachment=object, Embed=FakeEmbed, ButtonStyle=NS(secondary=1, danger=2),
             AllowedMentions=NS(none=lambda: self.none_mentions),
             utils=NS(escape_markdown=lambda value: re.sub(r'([*_`])', r'\\\1', value)),
             ui=NS(View=FakeView, Button=object, UserSelect=object,
@@ -243,7 +243,7 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_command_selection_is_passed_without_name_guessing(self):
         self.ns['_resolve_owner_broadcast_draft'] = AsyncMock(return_value=draft(audience='selected', selected=(2,)))
         await self.ns['gbopmessage'](self.interaction(), 'test', 'selected', '<@2>')
-        self.ns['_resolve_owner_broadcast_draft'].assert_awaited_once_with('test', 'selected', (2,))
+        self.ns['_resolve_owner_broadcast_draft'].assert_awaited_once_with('test', 'selected', (2,), None)
 
     async def test_no_draft_when_lookup_fails(self):
         self.ns['_resolve_owner_broadcast_draft'] = AsyncMock(side_effect=ValueError('Cannot verify'))
