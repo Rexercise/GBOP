@@ -98,6 +98,7 @@ EXTRACTED_NAMES = {
     '_send_owner_broadcast', 'OwnerBroadcastView', 'OwnerBroadcastMemberPicker',
     'OwnerBroadcastWizard', 'OwnerBroadcastSetupView',
     'OwnerBroadcastComposeModal', 'OwnerBroadcastGuidedPreview', 'gbopmessage',
+    'OwnerBroadcastDMPreview', 'OwnerBroadcastDMCapture', '_consume_owner_message_capture',
 }
 
 
@@ -174,6 +175,7 @@ class GuidedOwnerBroadcastTests(unittest.IsolatedAsyncioTestCase):
             AUDIENCE_LABELS=AUDIENCE_LABELS, PREVIEW_SECONDS=PREVIEW_SECONDS,
             build_draft=build_draft, owner_message=owner_message, parse_selection=parse_selection,
             read_broadcast_image=read_broadcast_image,
+            OWNER_MESSAGE_CAPTURES={},
             _authorized_scheduled_member=AsyncMock(),
         )
         self.ns['is_owner'] = lambda m: m.id == self.ns['GTOP_OWNER_USER_ID']
@@ -1044,6 +1046,161 @@ class GuidedOwnerBroadcastTests(unittest.IsolatedAsyncioTestCase):
             await self.command.callback(SyntheticInteraction(uid, gid), image=attachment)
             attachment.read.assert_not_awaited()
         self.assert_no_delivery()
+
+    async def start_dm_composer(self):
+        wizard, setup = await self.setup_compose('selected', (2,))
+        interaction = SyntheticInteraction()
+        prompt = NS(edit=AsyncMock())
+        channel = NS(id=77, send=AsyncMock(return_value=prompt))
+        interaction.user.create_dm = AsyncMock(return_value=channel)
+        await setup.paste_media.callback(interaction)
+        capture = self.ns['OWNER_MESSAGE_CAPTURES'][999]
+        self.assertTrue(wizard.closed)
+        self.assertEqual(interaction.events, ['defer', 'edit_original'])
+        self.assertIn('/@me/77', interaction.edit_original_response.await_args.kwargs['content'])
+        self.assert_no_delivery()
+        return capture, channel
+
+    def pasted_message(self, text='', attachments=(), uid=999, channel_id=77, guild=None):
+        return NS(author=member(uid), channel=NS(id=channel_id), guild=guild,
+                  content=text, attachments=list(attachments), reply=AsyncMock())
+
+    def dm_interaction(self, uid=999, channel_id=77, guild_id=None):
+        interaction = SyntheticInteraction(uid, guild_id)
+        interaction.channel_id = channel_id
+        return interaction
+
+    async def test_pasted_image_previews_then_sends_identical_bytes_only_on_confirmation(self):
+        capture, channel = await self.start_dm_composer()
+        attachment = upload()
+        message = self.pasted_message('Journal every day', [attachment])
+        self.assertTrue(await self.ns['_consume_owner_message_capture'](message))
+        payload = message.reply.await_args.kwargs
+        preview = payload['view']
+        self.assertEqual(preview.draft.image.data, PNG)
+        self.assertEqual([r.user_id for r in preview.draft.recipients], [2])
+        self.assertEqual(payload['file'].fp.getvalue(), PNG)
+        self.assert_no_delivery()
+        self.assertNotIn(999, self.ns['OWNER_MESSAGE_CAPTURES'])
+        self.assertEqual(capture.state, 'preview')
+        await preview.confirm_send.callback(self.dm_interaction())
+        sent = self.members[2].send.await_args
+        self.assertEqual(sent.args[0], owner_message('Journal every day'))
+        self.assertEqual(sent.kwargs['file'].filename, 'gbop-image.png')
+        attachment.read.assert_awaited_once()
+        self.members[1].send.assert_not_awaited()
+        self.members[3].send.assert_not_awaited()
+        await preview.confirm_send.callback(self.dm_interaction())
+        self.members[2].send.assert_awaited_once()
+
+    async def test_discord_gif_picker_link_and_animated_upload_are_preserved(self):
+        for text, attachments in (
+            ('https://tenor.com/view/keep-a-journal-gif-123456', []),
+            ('', [upload(b'GIF89a' + b'animated-frames')]),
+        ):
+            await self.start_dm_composer()
+            message = self.pasted_message(text, attachments)
+            await self.ns['_consume_owner_message_capture'](message)
+            preview = message.reply.await_args.kwargs['view']
+            self.assertEqual(preview.draft.message, owner_message(text, preview.draft.image))
+            if attachments:
+                self.assertEqual(preview.draft.image.data, b'GIF89a' + b'animated-frames')
+                self.assertEqual(preview.draft.image.filename, 'gbop-image.gif')
+            else:
+                self.assertIsNone(preview.draft.image)
+                self.assertIn(text, preview.draft.message)
+        self.assert_no_delivery()
+
+    async def test_capture_matches_only_explicit_owner_dm_session(self):
+        consume = self.ns['_consume_owner_message_capture']
+        self.assertFalse(await consume(self.pasted_message(attachments=[upload()])))
+        capture, _ = await self.start_dm_composer()
+        for message in (
+            self.pasted_message(uid=2, attachments=[upload()]),
+            self.pasted_message(channel_id=78, attachments=[upload()]),
+            self.pasted_message(guild=NS(id=10), attachments=[upload()]),
+        ):
+            self.assertFalse(await consume(message))
+            message.attachments[0].read.assert_not_awaited()
+        self.assertEqual(capture.state, 'waiting')
+        self.assert_no_delivery()
+
+    async def test_private_preview_rejects_other_users_channels_and_guilds(self):
+        await self.start_dm_composer()
+        message = self.pasted_message(attachments=[upload()])
+        await self.ns['_consume_owner_message_capture'](message)
+        preview = message.reply.await_args.kwargs['view']
+        for interaction in (self.dm_interaction(uid=2), self.dm_interaction(channel_id=78),
+                            self.dm_interaction(guild_id=10)):
+            await preview.confirm_send.callback(interaction)
+            self.assertEqual(preview.state, 'pending')
+        self.assert_no_delivery()
+
+    async def test_paste_validation_retries_without_discarding_caption_or_attachments(self):
+        capture, _ = await self.start_dm_composer()
+        for message in (self.pasted_message('x' * 1801, [upload()]),
+                        self.pasted_message(attachments=[upload(), upload()]),
+                        self.pasted_message(attachments=[upload(b'bad data')])):
+            await self.ns['_consume_owner_message_capture'](message)
+            self.assertNotIn('view', message.reply.await_args.kwargs)
+            self.assertEqual(capture.state, 'waiting')
+        self.assert_no_delivery()
+
+    async def test_cancel_expiry_and_replacement_do_not_send(self):
+        capture, _ = await self.start_dm_composer()
+        await capture.cancel.callback(self.dm_interaction())
+        self.assertEqual(capture.state, 'cancelled')
+        self.assertFalse(await self.ns['_consume_owner_message_capture'](self.pasted_message('hello')))
+        capture, _ = await self.start_dm_composer()
+        await self.ns['_consume_owner_message_capture'](self.pasted_message('cancel'))
+        self.assertEqual(capture.state, 'cancelled')
+        capture, _ = await self.start_dm_composer()
+        capture.expires_at = time.monotonic() - 1
+        message = self.pasted_message(attachments=[upload()])
+        await self.ns['_consume_owner_message_capture'](message)
+        self.assertEqual(capture.state, 'expired')
+        message.attachments[0].read.assert_not_awaited()
+        previous, _ = await self.start_dm_composer()
+        current, _ = await self.start_dm_composer()
+        self.assertEqual(previous.state, 'replaced')
+        await previous.on_timeout()
+        self.assertIs(self.ns['OWNER_MESSAGE_CAPTURES'][999], current)
+        await current.on_timeout()
+        self.assertNotIn(999, self.ns['OWNER_MESSAGE_CAPTURES'])
+        self.assert_no_delivery()
+
+    async def test_blocked_dm_leaves_original_composer_usable(self):
+        wizard, setup = await self.setup_compose('selected', (2,))
+        interaction = SyntheticInteraction()
+        interaction.user.create_dm = AsyncMock(side_effect=RuntimeError('blocked'))
+        await setup.paste_media.callback(interaction)
+        self.assertFalse(wizard.closed)
+        self.assertEqual(wizard.stage, 'compose')
+        self.assertFalse(self.ns['OWNER_MESSAGE_CAPTURES'])
+        self.assertIn('Allow DMs', interaction.followup.send.await_args.args[0])
+
+    async def test_paste_rechecks_departed_recipient_at_send(self):
+        await self.start_dm_composer()
+        message = self.pasted_message(attachments=[upload()])
+        await self.ns['_consume_owner_message_capture'](message)
+        preview = message.reply.await_args.kwargs['view']
+        self.ns['_current_owner_message_member'] = AsyncMock(return_value=None)
+        await preview.confirm_send.callback(self.dm_interaction())
+        self.assert_no_delivery()
+
+    async def test_owner_paste_bypasses_ai_journal_and_checkin_dispatch(self):
+        await self.start_dm_composer()
+        node = next(n for n in ast.parse(BOT.read_text()).body if getattr(n, 'name', '') == 'on_message')
+        node.decorator_list = []
+        self.ns['GBOP_PRIVATE_ROOMS'] = NS(message_seen=Mock())
+        self.ns['ai_resolve_member'] = AsyncMock(side_effect=AssertionError('must not journal'))
+        self.ns['_consume_checkin_reply'] = AsyncMock(side_effect=AssertionError('must not save check-in'))
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(BOT), 'exec'), self.ns)
+        message = self.pasted_message(attachments=[upload()])
+        await self.ns['on_message'](message)
+        self.assertIn('view', message.reply.await_args.kwargs)
+        self.ns['ai_resolve_member'].assert_not_awaited()
+        self.ns['_consume_checkin_reply'].assert_not_awaited()
 
 
 if __name__ == '__main__':
