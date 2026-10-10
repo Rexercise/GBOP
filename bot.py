@@ -849,6 +849,133 @@ class OwnerBroadcastView(discord.ui.View):
                         logger.warning('GBOP owner-message expired preview could not be updated')
 
 
+class OwnerBroadcastDMPreview(OwnerBroadcastView):
+    """The same confirmed delivery, bound to the owner's private composer."""
+    def __init__(self, draft, channel_id, expires_at):
+        super().__init__(draft)
+        self.channel_id = channel_id
+        self.expires_at = expires_at
+        self.timeout = max(0.01, expires_at - time.monotonic())
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if (not is_owner(interaction.user) or interaction.user.id != self.draft.owner_id
+                or self.draft.guild_id != GTOP_GUILD_ID or interaction.guild_id is not None
+                or interaction.channel_id != self.channel_id):
+            await interaction.response.send_message('Only the owner can use this private preview.', ephemeral=True)
+            return False
+        return True
+
+
+OWNER_MESSAGE_CAPTURES = {}
+
+
+class OwnerBroadcastDMCapture(discord.ui.View):
+    """Consume one ordinary DM only after the owner explicitly opens a composer."""
+    def __init__(self, wizard, channel_id):
+        super().__init__(timeout=max(0.01, wizard.expires_at - time.monotonic()))
+        self.owner_id = wizard.owner_id
+        self.channel_id = channel_id
+        self.audience = wizard.audience
+        self.selected_ids = wizard.selected_ids
+        self.image = wizard.image
+        self.expires_at = wizard.expires_at
+        self.lock = asyncio.Lock()
+        self.state = 'waiting'
+        self.prompt = None
+
+    def finish(self, state):
+        self.state = state
+        if OWNER_MESSAGE_CAPTURES.get(self.owner_id) is self:
+            OWNER_MESSAGE_CAPTURES.pop(self.owner_id)
+        self.stop()
+
+    async def update_prompt(self, text):
+        if self.prompt is not None:
+            try:
+                await self.prompt.edit(content=text, view=None)
+            except Exception:
+                logger.warning('GBOP private message composer could not be updated')
+
+    @discord.ui.button(label='Cancel message', style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.lock:
+            if (not is_owner(interaction.user) or interaction.user.id != self.owner_id
+                    or interaction.guild_id is not None or interaction.channel_id != self.channel_id):
+                await interaction.response.send_message('Only the owner can cancel this composer.', ephemeral=True)
+                return
+            if self.state != 'waiting':
+                await interaction.response.send_message('This composer is already closed.', ephemeral=True)
+                return
+            self.finish('cancelled')
+            await interaction.response.edit_message(content='GBOP message cancelled. Nothing was sent.', view=None)
+
+    async def consume(self, message):
+        async with self.lock:
+            # A second message already routed here must not become a journal entry.
+            if self.state != 'waiting':
+                await message.reply('Use the latest preview, or start a new /gbopmessage.',
+                                    allowed_mentions=discord.AllowedMentions.none())
+                return
+            if time.monotonic() >= self.expires_at:
+                self.finish('expired')
+                await message.reply('This composer expired. Run /gbopmessage again. Nothing was sent.')
+                return
+            if not message.attachments and message.content.strip().lower() in ('cancel', 'never mind', 'nevermind'):
+                self.finish('cancelled')
+                await self.update_prompt('GBOP message cancelled. Nothing was sent.')
+                return
+            try:
+                if len(message.attachments) > 1:
+                    raise ValueError('Paste one image or GIF at a time, with an optional caption. Nothing was sent.')
+                image = await read_broadcast_image(message.attachments[0]) if message.attachments else self.image
+                # Discord's GIF picker posts a URL. Preserve it verbatim for Discord
+                # to render; do not fetch arbitrary URLs or flatten animated uploads.
+                text = message.content or ''
+                owner_message(text, image)
+                draft = await _resolve_owner_broadcast_draft(text, self.audience, self.selected_ids, image)
+                if self.state != 'waiting' or OWNER_MESSAGE_CAPTURES.get(self.owner_id) is not self:
+                    await message.reply('This composer was replaced. Use the latest private composer. Nothing was sent.')
+                    return
+                if time.monotonic() >= self.expires_at:
+                    self.finish('expired')
+                    raise ValueError('This composer expired. Run /gbopmessage again. Nothing was sent.')
+                preview = OwnerBroadcastDMPreview(draft, self.channel_id, self.expires_at)
+                try:
+                    preview.preview_message = await message.reply(
+                        draft.message, embed=preview.preview_embed(), view=preview,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                        **({'file': image.to_file()} if image else {}),
+                    )
+                except Exception:
+                    # A failed acknowledgement might still have reached Discord.
+                    preview.state = 'closed'
+                    preview.stop()
+                    self.finish('closed')
+                    raise
+            except Exception as exc:
+                error = str(exc) if isinstance(exc, ValueError) else 'The preview could not be prepared. Run /gbopmessage again. Nothing was sent.'
+                await message.reply(error, allowed_mentions=discord.AllowedMentions.none())
+                return
+            self.finish('preview')
+            await self.update_prompt('Your message is ready below. Review the recipients, then press Confirm send.')
+
+    async def on_timeout(self):
+        async with self.lock:
+            if self.state == 'waiting':
+                self.finish('expired')
+                await self.update_prompt('This composer expired. Run /gbopmessage again. Nothing was sent.')
+
+
+async def _consume_owner_message_capture(message):
+    if message.guild is not None or not is_owner(message.author):
+        return False
+    capture = OWNER_MESSAGE_CAPTURES.get(message.author.id)
+    if capture is None or message.channel.id != capture.channel_id:
+        return False
+    await capture.consume(message)
+    return True
+
+
 class OwnerBroadcastMemberPicker(discord.ui.View):
     """Choose server users without depending on text mention suggestions."""
     def __init__(self, text, audience, image=None):
@@ -1067,6 +1194,7 @@ class OwnerBroadcastSetupView(discord.ui.View):
             self.remove_item(self.choose_members)
         if stage != 'compose':
             self.remove_item(self.compose)
+            self.remove_item(self.paste_media)
         if stage == 'audience':
             self.remove_item(self.back)
         if stage == 'compose' and wizard.text:
@@ -1098,7 +1226,9 @@ class OwnerBroadcastSetupView(discord.ui.View):
             f'**{AUDIENCE_LABELS[wizard.audience]}**{selection}\n'
             + ('Image attached. The message text is optional.\n' if wizard.image else '')
             + f'Press {action} to open the form. Submit it to see the exact message '
-            'and every recipient before confirming. If you close the form, reopen it here. '
+            'and every recipient before confirming. Or press Paste image / GIF to compose '
+            'in a private DM using normal paste or the Discord GIF picker; no saved file needed. '
+            'If you close the form, reopen it here. '
             'Use Back to change the audience or members. Nothing has been sent.'
         ))
 
@@ -1152,6 +1282,44 @@ class OwnerBroadcastSetupView(discord.ui.View):
             self.wizard.modal_token += 1
             # Opening a modal must be the initial acknowledgement: no defer or membership lookup first.
             await interaction.response.send_modal(OwnerBroadcastComposeModal(self.wizard))
+
+    @discord.ui.button(label='Paste image / GIF', style=discord.ButtonStyle.primary, row=2)
+    async def paste_media(self, interaction: discord.Interaction, button: discord.ui.Button):
+        wizard = self.wizard
+        async with wizard.lock:
+            if not await self.interaction_check(interaction):
+                return
+            if wizard.stage != 'compose':
+                await wizard.reply(interaction, 'Use Back or wait for the current preview.')
+                return
+            await interaction.response.defer(ephemeral=True, thinking=False)
+            capture = None
+            try:
+                channel = await interaction.user.create_dm()
+                capture = OwnerBroadcastDMCapture(wizard, channel.id)
+                capture.prompt = await channel.send(
+                    'Paste your image here, pick a GIF with Discord’s GIF button, or type your message. '
+                    'A caption is optional. Your next message becomes a private preview for '
+                    f'**{AUDIENCE_LABELS[wizard.audience]}**'
+                    + (f' ({len(wizard.selected_ids)} selected).' if wizard.selected_ids else '.')
+                    + '\nNothing goes to members until you review the recipients and press Confirm send. '
+                    'Use Cancel message or type cancel to return to normal chat. This draft lasts 10 minutes from when you started it.',
+                    view=capture, allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                if capture is not None:
+                    capture.finish('closed')
+                await wizard.reply(interaction, 'I could not open your private composer. Allow DMs from this server, then try again.')
+                return
+            old_capture = OWNER_MESSAGE_CAPTURES.get(wizard.owner_id)
+            if old_capture is not None:
+                old_capture.finish('replaced')
+            OWNER_MESSAGE_CAPTURES[wizard.owner_id] = capture
+            if old_capture is not None:
+                await old_capture.update_prompt('Replaced by your new message composer below. Nothing was sent.')
+            await wizard.close(interaction,
+                f'[Open your private composer](https://discord.com/channels/@me/{channel.id}). '
+                'Paste your image or choose a GIF there, then review and confirm.')
 
     @discord.ui.button(label='Back', style=discord.ButtonStyle.secondary, row=2)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6268,6 +6436,10 @@ AI_TEXT_LOCKS = {}
 async def on_message(message: discord.Message):
     GBOP_PRIVATE_ROOMS.message_seen(message.channel.id)
     if message.author.bot:
+        return
+
+    # An explicit owner composer takes precedence over journaling and check-ins.
+    if await _consume_owner_message_capture(message):
         return
 
     # Natural conversation works in DMs, or by @mentioning GBOP in G.T.O.P.

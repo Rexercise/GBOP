@@ -650,6 +650,7 @@ class OwnerBroadcastTransportTests(unittest.IsolatedAsyncioTestCase):
         node.decorator_list = []
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(BOT), 'exec'), self.ns)
         self.ns['GBOP_PRIVATE_ROOMS'] = Mock()
+        self.ns['_consume_owner_message_capture'] = AsyncMock(return_value=False)
         self.ns['client'].user = None
         self.ns['ai_generate_reply'] = Mock(side_effect=AssertionError('Unauthorized reply'))
         for role, record, denial in (

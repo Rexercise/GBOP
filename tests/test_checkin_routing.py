@@ -415,6 +415,7 @@ class CheckinMessageDispatchTests(unittest.IsolatedAsyncioTestCase):
             get_member_record=Mock(return_value={'revoked': revoked, 'activated': activated}),
             has_member_role=Mock(return_value=role), is_owner=Mock(return_value=False),
             _consume_checkin_reply=AsyncMock(return_value=consumes),
+            _consume_owner_message_capture=AsyncMock(return_value=False),
             AI_TEXT_LOCKS={}, ai_run_turn=Mock(return_value='Watch request reached normal dispatch.'),
             ai_save_message=Mock(), GTOP_GUILD_ID=1,
             db=Mock(), GTOP_OWNER_USER_ID=999, member_access_error=Mock(return_value=None),
