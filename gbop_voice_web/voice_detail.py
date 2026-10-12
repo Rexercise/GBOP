@@ -37,7 +37,7 @@ def _outcome_first(review):
         primary = manner.get('primary_code')
         if primary:
             primary_labels = [label for label in labels if label.get('code') == primary]
-            timing = [label for label in labels if label.get('code') == 'V3' and primary != 'V3']
+            timing = [label for label in labels if label.get('code') == 'V3' and primary not in ('V3', 'V6')]
             if primary_labels:
                 labels = primary_labels
         else:

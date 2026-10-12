@@ -524,7 +524,7 @@ def _sentence(fact, *, young=False, compact=False):
             variant = {**variant, 'labels': sorted(variant['labels'],
                        key=lambda v: v['code'] != variant['primary_code'])}
         timing = [v for v in variant['labels'] if v['code'] == 'V3'
-                  and variant.get('primary_code') not in (None, 'V3')]
+                  and variant.get('primary_code') not in (None, 'V3', 'V6')]
         if timing:
             variant = {**variant, 'labels': [v for v in variant['labels'] if v not in timing]}
             name = variant_clause({'labels': variant['labels']})

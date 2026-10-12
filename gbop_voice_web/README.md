@@ -398,6 +398,9 @@ unique completion variant. A forming reference is not a valid range.
 
 The established classifier and selected-range transition rules are unchanged.
 V4/V5 inside-bar and V6 re-soup structures can be known before full delivery.
+The October 11 V6 correction is exclusive: an evidenced second purge leaves
+only V6 eligible, pending its own-timeframe inside close. See
+`V6_EXCLUSIVE_CORRECTION.md`; earlier objective milestones stay frozen.
 Delivery time, structural confirmation, later invalidation, and member execution
 remain separate facts. V1/V2/V3 still require the classifier's complete H1 evidence;
 partial targets never become completed variants. Compact voice keeps the same

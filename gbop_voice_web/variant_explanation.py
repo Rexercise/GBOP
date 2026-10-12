@@ -158,7 +158,7 @@ def variant_explanation(row, bars, end, step, *, candle_timeframe=None):
             candidate('V3', ('Ordered opposing delivery' if man_inside else 'Inside manipulation close, then opposing delivery') + f' after candle 3 with complete {tf} evidence.')
     # Do not offer hypothetical future re-soups without the actual extreme sweep.
     if pending_resoup:
-        result['candidates'].append(pending_resoup)
+        result['candidates'] = [pending_resoup]
         result['reason'] += '; ' + pending_resoup['requires'].split(f' {tf} must')[0] + f" swept {man_name}'s extreme"
     if not result['candidates']:
         result.update(status='unverified', reason='Available candles do not establish a unique supported variant path.')
@@ -178,6 +178,8 @@ def variant_clause(variant, *, include_known=False):
     """One brief explanatory clause; candidates are explicitly conditional."""
     detail = variant.get('explanation', {})
     labels = variant.get('labels', [])
+    if any(v['code'] == 'V6' for v in labels):
+        labels = [v for v in labels if v['code'] == 'V6']
     reason = detail.get('reason')
     if labels:
         text = '/'.join(_display_name(v) for v in labels)

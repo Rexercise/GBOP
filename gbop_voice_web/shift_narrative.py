@@ -253,10 +253,20 @@ def _classify_structure(row, bars, end, step, *, candle_timeframe=None):
             break
         later = summarize(bars, t, stop, step)
         if not later['complete']:
+            # A proven second purge leaves only V6 eligible, even while its
+            # own candle is forming. Missing source coverage is not proof.
+            partial = summarize(bars, t, end, step) if t < end < stop else {}
+            swept = (partial.get('high', manipulation['high']) > manipulation['high'] if bearish
+                     else partial.get('low', manipulation['low']) < manipulation['low'])
+            if (partial.get('complete') and swept and not full_touch
+                    and not row.get('invalidated_at_ny')):
+                result.update(labels=[], status='developing', eligible_codes=['V6'],
+                              pending_resoup_hour_ny=partial['start_ny'])
             break
         resoup = later['high'] > manipulation['high'] if bearish else later['low'] < manipulation['low']
         if (resoup and stop <= min(distribution_start, invalid_at, end)
                 and anchor['low'] <= later['close'] <= anchor['high']):
+            result['labels'] = []
             label('V6', 're-soup', f'A later completed {tf} swept the first manipulation extreme and returned inside before full opposing-liquidity delivery.')
             result['resoup_hour_ny'] = later['start_ny']
             break
@@ -345,7 +355,7 @@ def _delivery_milestones(row, bars, end, step, *, candle_timeframe=None):
             timing = 'V2' if count == 2 else 'V1' if count == 3 else 'V3'
         else:
             timing = None
-        if timing and timing not in codes:
+        if timing and timing not in codes and 'V6' not in codes:
             codes.insert(0,timing)
         if codes:
             manner.update(status='observed', primary_code='V6' if 'V6' in codes else codes[0],
