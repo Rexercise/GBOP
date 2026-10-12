@@ -76,7 +76,7 @@ class ShiftNarrativeTests(unittest.TestCase):
         data[24]['high'] = 113
         data[37]['low'] = 89
         r = self.review(data)['ranges'][0]['variant_evidence']
-        self.assertIn('V6', [x['code'] for x in r['labels']])
+        self.assertEqual([x['code'] for x in r['labels']], ['V6'])
         self.assertIn('10:00', r['resoup_hour_ny'])
         data[24]['high'] = 111  # original boundary again, not the first soup extreme
         r = self.review(data)['ranges'][0]['variant_evidence']

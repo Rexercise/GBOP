@@ -69,7 +69,7 @@ class PostShiftVariantTests(unittest.TestCase):
         full = variant['delivery_milestones']['opposing_liquidity']
         self.assertEqual(full['manner']['primary_code'], 'V6')
         self.assertEqual(full['known_at_ny'], ny('13:16'))
-        self.assertEqual({v['code'] for v in variant['labels']}, {'V3', 'V6'})
+        self.assertEqual([v['code'] for v in variant['labels']], ['V6'])
         self.assertIn('Full delivery: V6 re-soup.', result['spoken_summary'])
         change(rows, '14:05', low=50)
         change(rows, '14:59', low=50, close=50)

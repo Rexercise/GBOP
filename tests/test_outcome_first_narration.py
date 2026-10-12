@@ -167,7 +167,8 @@ class OutcomeFirstNarrationTests(unittest.TestCase):
         wire = crt_voice_detail(raw)
         page = expanded(wire, wire)
         lead = page['review']['directional_outcome']['spoken_summary']
-        self.assertLess(lead.index('V6 re-soup'), lead.index('V3 extended distribution'))
+        self.assertIn('V6 re-soup', lead)
+        self.assertNotIn('V3 extended distribution', lead)
         self.assertEqual(page['review']['variant_evidence']['delivery_milestones'],
                          variant['delivery_milestones'])
         raw['synthetic_transport_metadata'] = 'x' * 50000

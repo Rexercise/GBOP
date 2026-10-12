@@ -1250,7 +1250,7 @@ INTELLIGENCE_TOOLS = [
     ),
     schema(
         "get_ss_review",
-        "Read the member's SS answers. Pass asset/week/report_version for exact-version completion; omit version only for the explicitly labeled latest asset/week view.",
+        "Read the member's SS answers, not market facts. Missing reflection does not mean missing market data. For SS use get_weekly_structure_study FIRST, then pass its returned asset/week_start/report_version. Omit version only for an explicitly requested latest reflection view.",
         {"week_start": TEXT_NULL, "asset": TEXT_NULL, "report_version": TEXT_NULL},
     ),
     schema(

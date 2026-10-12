@@ -153,7 +153,7 @@ class VariantExplanationTests(unittest.TestCase):
     def test_resoup_candidate_needs_observed_extreme_sweep_and_later_close(self):
         data = base(); data[12]['high'] = 112; data[24]['high'] = 113
         row = review(data, '10:30')
-        self.assertIn('V6', candidates(row))
+        self.assertEqual(candidates(row), ['V6'])
         self.assertIn("10:00 AM swept 9:00 AM's extreme", detail(row)['reason'])
         candidate = next(c for c in detail(row).get('candidates', []) if c['code'] == 'V6')
         self.assertIn('close inside before full opposing-liquidity delivery', candidate['requires'])
@@ -240,8 +240,8 @@ class VariantExplanationTests(unittest.TestCase):
             self.assertIn('Opposing liquidity delivered', detail(partial)['remaining'])
             self.assertEqual(detail(partial)['known_at_ny'], ny('11:00'))
             completed = review(data)
-            # V6 now coexists with V3, which needs the later distribution H1.
-            self.assertEqual(detail(completed)['known_at_ny'], ny('11:00' if code == 'V4' else '12:00'))
+            # Structural identity is known at its own close; delivery is separate.
+            self.assertEqual(detail(completed)['known_at_ny'], ny('11:00'))
             self.assertEqual(detail(completed)['status'], 'completed')
 
     def test_same_source_exact_boundary_touch_cannot_be_repaired_by_later_touches(self):
@@ -253,10 +253,10 @@ class VariantExplanationTests(unittest.TestCase):
             self.assertEqual(candidates(row), [])
             self.assertEqual(detail(row)['status'], 'unverified')
 
-    def test_observed_v4_can_also_offer_pending_v6_on_actual_partial_resoup(self):
+    def test_second_purge_replaces_v4_eligibility_with_pending_v6(self):
         data = base(); data[24]['high'] = 112; data[36]['high'] = 113
         row = review(data, '11:30')
-        self.assertEqual([v['code'] for v in row['variant_evidence']['labels']], ['V4'])
+        self.assertEqual(row['variant_evidence']['labels'], [])
         self.assertEqual(candidates(row), ['V6'])
         self.assertIn('V6 re-soup pending', variant_clause(row['variant_evidence']))
 

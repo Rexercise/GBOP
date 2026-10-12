@@ -86,7 +86,7 @@ class DeliveryMilestoneTests(unittest.TestCase):
         self.assertEqual(full['known_at_ny'],ny('11:10'))
         self.assertEqual(full['manner']['primary_code'],'V6')
         self.assertNotEqual(row['variant_evidence']['status'],'distribution_observed')
-        self.assertEqual(review(sample())['variant_evidence']['explanation']['known_at_ny'],ny('12:00'))
+        self.assertEqual(review(sample())['variant_evidence']['explanation']['known_at_ny'],ny('11:00'))
 
     def test_one_or_many_resoups_keep_first_valid_structure_and_final_v6(self):
         row=review(sample(repeated=True),'13:00')

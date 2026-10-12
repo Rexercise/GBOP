@@ -82,12 +82,13 @@ class ChronologicalMainRecapTests(unittest.TestCase):
         self.assertEqual(young['opposing_liquidity']['source_interval']['bar_open_ny'], ny('11:13'))
         self.assertNotEqual(lead['opposing_liquidity']['level'], young['opposing_liquidity']['level'])
         self.assertEqual(young['midpoint']['delivery_manner']['primary_code'], 'V2')
-        self.assertEqual(young['variant']['primary_code'], 'V6')
+        self.assertEqual([v['code'] for v in young['variant']['labels']], ['V6'])
         text = synopsis['spoken_summary']
         self.assertTrue(text.startswith('Young Lefty (7:00 AM'))
         self.assertLess(text.index('11:13 AM'), text.index('9ate8 (8:00 AM'))
         self.assertLess(text.index('9ate8 (8:00 AM'), text.index('shared the 9:35 AM M5'))
-        self.assertIn('V6 re-soup (V3 extended distribution timing)', text)
+        self.assertIn('V6 re-soup', text)
+        self.assertNotIn('V3 extended distribution timing', text)
         self.assertIn('each parent keeps its own targets and delivery', text)
         self.assertEqual(review, before)
 
