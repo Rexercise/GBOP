@@ -180,11 +180,13 @@ class SSReportReflectionTests(unittest.TestCase):
         self.assertEqual(report['member_contributions'], [])
         self.assertIsNone(self.reflect(report)['review'])
 
-    def test_missing_asset_returns_choices_without_inventing_a_personal_review(self):
+    def test_missing_asset_defaults_to_nas_without_substituting_gold(self):
+        with self.db() as conn:
+            conn.execute('CREATE TABLE gbop_watch_runtime(id TEXT PRIMARY KEY,owner TEXT,lease_until INT,last_tick INT,state TEXT)')
         result = self.call('get_weekly_structure_study', dict(asset=None, week_start=None, report_version=None))
-        gold = next(row for row in result['assets'] if row['asset'] == 'XAUUSD')
-        self.assertEqual(gold['status'], 'prepared')
-        self.assertIn('Which asset', result['next_step'])
+        self.assertEqual(result['asset'], 'NAS100')
+        self.assertEqual(result['status'], 'report_not_prepared')
+        self.assertNotIn('XAUUSD', json.dumps(result))
         self.assertNotIn('review', result)
 
 

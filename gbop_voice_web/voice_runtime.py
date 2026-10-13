@@ -13,7 +13,7 @@ import time
 READ_ONLY_RECOVERY_NAMES = frozenset({
     'prepare_journal_discard', 'review_post_shift_followthrough', 'get_journal_story', 'review_market_contexts', 'select_market_context', 'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_midpoint_preference', 'get_member_plan',
     'get_member_dashboard', 'get_shift_plans', 'get_performance_review',
-    'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_weekly_structure_study', 'get_trade_assist',
+    'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_weekly_structure_study', 'get_ss_symbols', 'get_trade_assist',
     'list_trade_photos', 'get_market_price', 'list_market_shifts', 'review_market_session',
     'review_market_crt', 'inspect_market_candles', 'review_market_smt', 'get_prepared_market_brief',
     'review_market_fractal', 'inspect_market_fractal_node',

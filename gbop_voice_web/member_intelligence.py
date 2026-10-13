@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from gbop_voice_web.trade_photos import schema, STR
 from gbop_voice_web.risk_profiles import get_profile
 from gbop_voice_web.adherence import adherence_bucket as _adherence_bucket
+from gbop_voice_web.ss_preferences import TOOLS as SS_SYMBOL_TOOLS, SS_SYMBOLS_PROMPT
 
 EASTERN = ZoneInfo("America/New_York")
 HALF_LIFE_DAYS = 14.0
@@ -921,6 +922,8 @@ def get_member_plan(db, guild, user, args=None):
                     datetime.min.time(), EASTERN).replace(
                     hour=20 if args.get('shift') == 'night' else 8, minute=55).timestamp()
     weekly = pre_shift_structure(db, guild, user, now=as_of)
+    if ss and ss.get('asset') not in weekly['symbol_selection']['symbols']:
+        ss = None
     profile = coaching_profile(db, guild, user)
     shift_plan = _latest_shift_plan(
         db, guild, user,
@@ -1183,7 +1186,8 @@ def build_pre_shift_message(db, guild, user, shift, session_date=None):
     return (
         f"⏱️ **{label} begins in 5 minutes** ({clock} Eastern).\n\n"
         f"**SS structure:** {structural}\n"
-        f"**Your execution focus:** {execution}"
+        f"**Your execution focus:** {execution}\n"
+        'Change SS symbols by saying "add a symbol to SS" or "remove a symbol from SS".'
     )
 
 
@@ -1202,7 +1206,7 @@ When a member says "tell me SS", "let's do SS", or "do SS":
    Bitcoin/BTC is BTCUSD; Ethereum/ETH is ETHUSD. Only pass an exact week/version
    when the member selected it or it came from a retrieved report. Preserve an
    explicit selection on a miss; do not substitute another week or version.
-   If asset is missing, offer the returned asset choices. Never silently reuse a
+   If asset is missing, use the saved symbol selection (NAS100 by default). Never silently reuse a
    different asset/week or claim incomplete observed extremes are definitive.
    SS combines quantitative facts and the member's human launchpad/PDA/structural
    analysis in ONE report. A missing report is not permission to invent candles.
@@ -1241,7 +1245,7 @@ A member can correct a stale theme by saying it is no longer an issue; use
 set_coaching_theme with active=false. This retires prior evidence, but genuinely
 new future evidence may bring the theme back. Use active=true if the member asks
 to restore a theme. Do not permanently label or diagnose a member.
-""".strip()
+""".strip() + '\n\n' + SS_SYMBOLS_PROMPT
 
 
 INTELLIGENCE_TOOLS = [
@@ -1249,7 +1253,8 @@ INTELLIGENCE_TOOLS = [
         "get_weekly_structure_study",
         "Read the versioned completed SS quantitative report and this member's optional contributions. For latest completed, pass week_start=null and report_version=null. Never invent a week or version.",
         {"week_start": {**TEXT_NULL, "description": "Exact Monday reporting key YYYY-MM-DD only when selected; null for latest completed. This label is not the broker W1 opening date."},
-         "asset": {**TEXT_NULL, "description": "Requested asset; Bitcoin/BTC maps to BTCUSD and Ethereum/ETH maps to ETHUSD. Null lists available assets."},
+         "asset": {**TEXT_NULL, "description": "Explicitly requested asset; Bitcoin/BTC maps to BTCUSD and Ethereum/ETH maps to ETHUSD. Null uses saved symbols (NAS100 by default), without changing preferences."},
+         "all_symbols": {**BOOL_NULL, "description": "True only for an explicit request to review all symbols. False/null uses the saved selection when asset is null. Never use proactively."},
          "report_version": {**TEXT_NULL, "description": "Exact version returned by a report or explicitly selected; null for the latest revision. Never use the string latest."}},
     ),
     schema(
@@ -1307,12 +1312,16 @@ INTELLIGENCE_TOOLS = [
     ),
 ]
 
+INTELLIGENCE_TOOLS.extend(SS_SYMBOL_TOOLS)
 INTELLIGENCE_NAMES = {tool["name"] for tool in INTELLIGENCE_TOOLS}
 
 
 def intelligence_tool(db, guild, user, name, args):
     from gbop_voice_web.weekly_structure import get_weekly_structure_study
+    from gbop_voice_web.ss_preferences import get_ss_symbols, update_ss_symbols
     handlers = {
+        "get_ss_symbols": get_ss_symbols,
+        "update_ss_symbols": update_ss_symbols,
         "get_weekly_structure_study": get_weekly_structure_study,
         "get_ss_review": get_ss_review,
         "save_ss_review": save_ss_review,

@@ -138,11 +138,11 @@ class WeeklyLookupTests(unittest.TestCase):
         self.assertNotIn('source_weekly_boundary_unavailable', json.dumps(result))
 
     def test_catalogue_keeps_crypto_unknown_and_explicit_version_exact(self):
-        result = self.lookup(asset=None, week_start=None, report_version=None)
+        result = self.lookup(asset=None, week_start=None, report_version=None, all_symbols=True)
         by_asset = {r['asset']: r for r in result['assets']}
         self.assertEqual(by_asset['BTCUSD']['report_version'], self.fixture['report_version'])
         self.assertEqual(by_asset['ETHUSD']['status'], 'not_prepared')
-        exact = self.lookup(asset=None, week_start='2026-09-28', report_version='not-a-saved-version')
+        exact = self.lookup(asset=None, week_start='2026-09-28', report_version='not-a-saved-version', all_symbols=True)
         self.assertTrue(all(r['report_version'] is None for r in exact['assets']))
         self.assertEqual(next(r for r in exact['assets'] if r['asset'] == 'BTCUSD')['status'], 'report_version_not_found')
 
