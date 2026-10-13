@@ -400,11 +400,19 @@ class IntelligenceTests(unittest.TestCase):
         self.assertNotIn("boredom", {item["theme"] for item in refreshed["issues"]})
 
     def test_pre_shift_message_combines_ss_and_personal_focus(self):
+        from gbop_voice_web import weekly_structure as ss
+        from unittest.mock import patch
+        start = ss.week_window('2026-09-21')['start_epoch']
+        with patch('gbop_voice_web.market_data.read_feed', return_value={'ok': True}), \
+                patch('gbop_voice_web.market_data._history_sets', return_value={300: [
+                    dict(time=start, open=100, high=110, low=90, close=105)]}):
+            report = ss.persist_report(self.db, ss.build_report(
+                self.db, 'XAUUSD', '2026-09-21', now=start+7*86400))
         intel.save_ss_review(
             self.db,
             self.guild,
             self.user,
-            self.complete_ss_args(week_start=intel.default_ss_week_start()),
+            self.complete_ss_args(week_start='2026-09-21', report_version=report['report_version']),
         )
         msg = intel.build_pre_shift_message(
             self.db,

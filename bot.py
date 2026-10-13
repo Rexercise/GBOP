@@ -4398,6 +4398,8 @@ async def _broadcast_gbop_dm(
                         personalized_shift,
                         shift_date,
                     )
+                    logger.info('GBOP pre-shift SS context built source=weekly_reports shift=%s date=%s',
+                                personalized_shift, shift_date)
                 except Exception:
                     logger.exception(
                         "GBOP personalized pre-shift build failed user=%s shift=%s",
