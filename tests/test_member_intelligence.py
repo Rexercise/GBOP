@@ -11,6 +11,7 @@ class IntelligenceTests(unittest.TestCase):
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript("""
+        CREATE TABLE gbop_watch_runtime(id TEXT PRIMARY KEY,owner TEXT,lease_until INTEGER,last_tick INTEGER,state TEXT);
         CREATE TABLE gbop_ss_reports(asset TEXT,week_start TEXT,report_version TEXT,revision INTEGER,generated_at TEXT,payload TEXT,
             PRIMARY KEY(asset,week_start,report_version));
         INSERT INTO gbop_ss_reports VALUES ('XAUUSD','2026-09-28','fixture-v1',1,'2026-10-02T22:00:00Z','{"ok":true}');
@@ -401,6 +402,8 @@ class IntelligenceTests(unittest.TestCase):
 
     def test_pre_shift_message_combines_ss_and_personal_focus(self):
         from gbop_voice_web import weekly_structure as ss
+        from gbop_voice_web.ss_preferences import update_ss_symbols
+        update_ss_symbols(self.db, self.guild, self.user, {'operation': 'replace', 'symbols': ['gold'], 'confirmed': True})
         from unittest.mock import patch
         start = ss.week_window('2026-09-21')['start_epoch']
         with patch('gbop_voice_web.market_data.read_feed', return_value={'ok': True}), \

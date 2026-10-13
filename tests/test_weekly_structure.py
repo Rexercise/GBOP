@@ -244,7 +244,7 @@ class WeeklyContributionTests(IntelligenceTests):
         with self.db() as conn:
             stored = ss.read_report(conn,'XAUUSD','2026-09-28',self.report['report_version'])
         self.assertIsNone(stored['high'])
-        index = ss.get_weekly_structure_study(self.db,10,20,{'week_start':'2026-09-28'})
+        index = ss.get_weekly_structure_study(self.db,10,20,{'week_start':'2026-09-28','all_symbols':True})
         self.assertEqual(len(index['assets']),9)
         self.assertEqual(sum(x['status']=='not_prepared' for x in index['assets']),8)
 

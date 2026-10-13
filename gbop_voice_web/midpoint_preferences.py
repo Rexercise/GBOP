@@ -106,24 +106,25 @@ class PreferenceBinding:
             if (self.owner[:2] != (guild, user) or tuple(self.context.owner or ()) != self.owner
                     or self.context.session_id != self.session_id
                     or not self.context.current(self.generation)):
-                raise ValueError('This midpoint request no longer belongs to the current authenticated conversation.')
+                raise ValueError('This preference request no longer belongs to the current authenticated conversation.')
             yield
 
 
 def bind_preference_args(context, name, args, generation):
-    if name not in NAMES:
+    ss_preference = name in {'get_ss_symbols', 'update_ss_symbols'}
+    if name not in NAMES and not ss_preference:
         return args
     # Call this inside the authenticated transport dispatcher, after model
     # arguments have passed through MarketConversation.run, not before it.
     return {**{k: v for k, v in args.items() if not k.startswith('_')},
-            '_midpoint_binding': PreferenceBinding(context, generation)}
+            ('_ss_binding' if ss_preference else '_midpoint_binding'): PreferenceBinding(context, generation)}
 
 
 @contextmanager
 def _transaction(db, guild, user, owner_id, binding=None):
     _key(guild, user)
     if binding is not None and not isinstance(binding, PreferenceBinding):
-        raise ValueError('Midpoint identity must come from the authenticated conversation.')
+        raise ValueError('Preference identity must come from the authenticated conversation.')
     with ExitStack() as transaction:
         conn = transaction.enter_context(db())
         _authorize(conn, guild, user, owner_id)

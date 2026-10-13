@@ -233,14 +233,15 @@ def pre_shift_structure(db, guild, user, *, now=None):
     No preparation or member writes occur here. A new week/version cannot
     inherit a previous week's hypothesis or another member's reflection.
     """
-    from gbop_voice_web.market_data import ASSETS
+    from gbop_voice_web.ss_preferences import read_selection
     now = int(clock.time() if now is None else now)
     target = week_window(now=now)['week_start']
     reports, unavailable = [], []
     fields = ('high_launchpad', 'low_launchpad', 'structural_summary',
               'next_week_hypothesis', 'hypothesis_invalidation')
     with db() as conn:
-        for asset in sorted(ASSETS):
+        selection = read_selection(conn, guild, user)
+        for asset in selection['symbols']:
             if asset in CRYPTO:
                 # Crypto uses the observed W1 boundaries. Inspect the latest
                 # revision of each recent week, never a guessed Sunday cutoff.
@@ -287,6 +288,7 @@ def pre_shift_structure(db, guild, user, *, now=None):
                 'member_structure': member,
             })
     return {'week_start': target, 'reports': reports, 'unavailable_assets': unavailable,
+            'symbol_selection': selection,
             'basis': 'Saved completed-week observations, not current-week direction or an entry signal. '
                      'Full broker-week completeness is unverified. Private synthesis is exact-version, member-reported only.'}
 
@@ -294,8 +296,12 @@ def pre_shift_structure(db, guild, user, *, now=None):
 def format_pre_shift_structure(state):
     """Bounded reminder, with market evidence and personal hypotheses separate."""
     reports = state.get('reports', [])
+    selected = state.get('symbol_selection', {}).get('symbols')
+    if selected == []:
+        return 'No SS symbols selected. Say "add NAS to my SS report" to include one.'
     if not reports:
-        return 'Completed-week SS market facts are unavailable for this reminder. Ask GBOP to check SS for your asset.'
+        scope = ', '.join(selected) if selected else 'this reminder'
+        return f'Completed-week SS market facts are unavailable for {scope}. Ask GBOP to check SS for your asset.'
     weeks = sorted({r['week_start'] for r in reports})
     lines = ['Completed-week observations (' + ', '.join(weeks) + '):']
     for report in reports:
@@ -336,10 +342,19 @@ def format_pre_shift_structure(state):
 
 def get_weekly_structure_study(db, guild, user, args=None):
     from gbop_voice_web.market_data import ASSETS, asset_name
+    from gbop_voice_web.ss_preferences import read_selection
     args = args or {}
     asset = asset_name(args['asset']) if args.get('asset') else None
     window = week_window(args.get('week_start'))
     with db() as conn:
+        if args.get('all_symbols') is not None and type(args['all_symbols']) is not bool:
+            raise ValueError('all_symbols must be true only for an explicit all-symbol request.')
+        if asset and args.get('all_symbols'):
+            raise ValueError('Choose one explicit asset or all symbols, not both.')
+        selected = ([asset] if asset else sorted(ASSETS) if args.get('all_symbols') is True
+                    else read_selection(conn, guild, user)['symbols'])
+        if len(selected) == 1:
+            asset = selected[0]
         if asset:
             if asset in CRYPTO and not args.get('week_start'):
                 latest = conn.execute('SELECT week_start FROM gbop_ss_reports WHERE asset=? ORDER BY week_start DESC,revision DESC LIMIT 1', (asset,)).fetchone()
@@ -357,7 +372,7 @@ def get_weekly_structure_study(db, guild, user, args=None):
                 (guild, user, asset, window['week_start'], (report or {}).get('report_version', ''))).fetchall()
         else:
             reports = []
-            for name in sorted(ASSETS):
+            for name in selected:
                 target = window['week_start']
                 if name in CRYPTO and not args.get('week_start'):
                     latest = conn.execute('SELECT week_start FROM gbop_ss_reports WHERE asset=? ORDER BY week_start DESC,revision DESC LIMIT 1', (name,)).fetchone()
@@ -370,7 +385,9 @@ def get_weekly_structure_study(db, guild, user, args=None):
                                 'coverage': {k: row['coverage'][k] for k in ('status', 'source_timeframe', 'unobserved_interval_count', 'nominal_final_bar_present', 'full_broker_week_verified')} if row else None,
                                 'status': 'prepared' if row else 'report_version_not_found' if missing_version else 'not_prepared'})
             return {'ok': True, 'kind': 'Weekly Structure Study', 'week_start': window['week_start'],
-                    'assets': reports, 'next_step': 'Which asset would you like to review?'}
+                    'assets': reports, 'selected_symbols': selected,
+                    'next_step': ('Review these selected symbols by fetching each asset report; do not expand to other symbols.'
+                                  if selected else 'No SS symbols selected. Add a symbol when the member requests it.')}
     if not report:
         return {'ok': False, 'asset': asset, 'week_start': window['week_start'],
                 'status': 'report_version_not_found' if saved_week else 'report_not_prepared',

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from gbop_voice_web import member_intelligence as intel
 from gbop_voice_web import weekly_structure as ss
 from gbop_voice_web.market_data import ASSETS
+from gbop_voice_web.ss_preferences import update_ss_symbols
 from tests import test_member_intelligence as _fixture
 
 
@@ -20,7 +21,7 @@ class PreShiftStructureTests(unittest.TestCase):
     tearDown = _fixture.IntelligenceTests.tearDown
     NOW = epoch('2026-10-13T08:55:00-04:00')
 
-    def report(self, asset='XAUUSD', week='2026-10-05', version='test-v1'):
+    def report(self, asset='NAS100', week='2026-10-05', version='test-v1'):
         window = ss.week_window(week)
         report = dict(ok=True, asset=asset, week_start=week, report_version=version,
             facts_hash=asset+week+version, generated_at_utc='2026-10-10T22:00:00Z',
@@ -41,9 +42,9 @@ class PreShiftStructureTests(unittest.TestCase):
         self.report()
         plan = intel.get_member_plan(self.db, 10, 20, {'session_date': '2026-10-13', 'shift': 'day'})
         self.assertIsNone(plan['current_ss'])
-        self.assertEqual(plan['weekly_structure']['reports'][0]['asset'], 'XAUUSD')
+        self.assertEqual(plan['weekly_structure']['reports'][0]['asset'], 'NAS100')
         message = intel.build_pre_shift_message(self.db, 10, 20, 'day', '2026-10-13')
-        self.assertIn('XAUUSD: bullish; last close above prior', message)
+        self.assertIn('NAS100: bullish; last close above prior', message)
         self.assertIn('2026-10-05', message)
         self.assertIn('hypothesis is not saved', message)
         self.assertIn('Launchpad/structure review pending', message)
@@ -54,7 +55,7 @@ class PreShiftStructureTests(unittest.TestCase):
         self.report()
         with patch.object(ss.clock, 'time', return_value=self.NOW):
             context = intel.intelligence_context(self.db, 10, 20)
-        self.assertIn('XAUUSD: bullish', context)
+        self.assertIn('NAS100: bullish', context)
         self.assertIn('this does not mean the market study is missing', context)
         self.assertNotIn('Latest SS: none', context)
 
@@ -62,7 +63,7 @@ class PreShiftStructureTests(unittest.TestCase):
         r = self.report()
         self.save(r, next_week_hypothesis='Hold the recorded launchpad', hypothesis_invalidation='Close below it')
         text = ss.format_pre_shift_structure(self.read())
-        self.assertIn('Your saved XAUUSD hypothesis: Hold the recorded launchpad', text)
+        self.assertIn('Your saved NAS100 hypothesis: Hold the recorded launchpad', text)
         self.assertIn('Condition/invalidation: Close below it', text)
         for guild, user in ((10, 21), (11, 20)):
             other = ss.pre_shift_structure(self.db, guild, user, now=self.NOW)
@@ -90,10 +91,11 @@ class PreShiftStructureTests(unittest.TestCase):
         ss.persist_report(self.db, dict(r, facts_hash='empty', report_version='empty', observed_ohlc=None))
         state = self.read()
         self.assertEqual(state['reports'], [])
-        self.assertIn('XAUUSD', state['unavailable_assets'])
+        self.assertIn('NAS100', state['unavailable_assets'])
         self.assertIn('market facts are unavailable', ss.format_pre_shift_structure(state))
 
     def test_crypto_uses_actual_closed_interval_and_rejects_stale_or_future(self):
+        update_ss_symbols(self.db,10,20,{'operation':'replace','symbols':['BTCUSD'],'confirmed':True})
         r = self.report('BTCUSD')
         r['window'] = dict(r['window'], end_epoch=self.NOW-60, source_boundary_verified=True)
         r.update(facts_hash='source-window', report_version='source-window')
@@ -111,10 +113,10 @@ class PreShiftStructureTests(unittest.TestCase):
         r = ss.persist_report(self.db, dict(r, facts_hash='empty', report_version='empty', observed_ohlc=None))
         self.save(r, structural_summary='Member chart review', next_week_hypothesis='Member conditional hypothesis')
         state = self.read()
-        self.assertIn('XAUUSD', state['unavailable_assets'])
+        self.assertIn('NAS100', state['unavailable_assets'])
         text = ss.format_pre_shift_structure(state)
         self.assertIn('market candles unavailable', text)
-        self.assertIn('Your saved XAUUSD hypothesis: Member conditional hypothesis', text)
+        self.assertIn('Your saved NAS100 hypothesis: Member conditional hypothesis', text)
 
     def test_prior_comparison_unknown_and_coverage_limits_are_preserved(self):
         r = self.report()
@@ -128,6 +130,7 @@ class PreShiftStructureTests(unittest.TestCase):
         self.assertIn('full-week coverage unverified', text)
 
     def test_all_assets_and_long_hypotheses_fit_discord_with_news_room(self):
+        update_ss_symbols(self.db,10,20,{'operation':'replace','symbols':sorted(ASSETS),'confirmed':True})
         for asset in ASSETS:
             r = self.report(asset)
             self.save(r, next_week_hypothesis='x'*12000, hypothesis_invalidation='y'*12000)
