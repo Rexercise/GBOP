@@ -2,7 +2,7 @@
 import copy
 import json
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from gbop_voice_web import member_intelligence as intel
@@ -28,7 +28,9 @@ class PreShiftStructureTests(unittest.TestCase):
             window=window, observed_ohlc=dict(open=100, high=110, low=90, close=105, body_direction='bullish'),
             coverage=dict(status='unverified_intervals', source_timeframe='M5', unobserved_interval_count=2,
                           full_broker_week_verified=False, nominal_final_bar_present=True),
-            closure_vs_previous=dict(relationship='above'))
+            closure_vs_previous=dict(relationship='above',
+                previous_week_start=(datetime.fromisoformat(week) - timedelta(days=7)).date().isoformat(),
+                previous_observed_ohlc=dict(open=95, high=100, low=85, close=95)))
         return ss.persist_report(self.db, report)
 
     def read(self):
@@ -44,8 +46,9 @@ class PreShiftStructureTests(unittest.TestCase):
         self.assertIsNone(plan['current_ss'])
         self.assertEqual(plan['weekly_structure']['reports'][0]['asset'], 'NAS100')
         message = intel.build_pre_shift_message(self.db, 10, 20, 'day', '2026-10-13')
-        self.assertIn('NAS100: bullish; last close above prior', message)
-        self.assertIn('2026-10-05', message)
+        self.assertIn('NAS100: Close above → Higher pricing', message)
+        self.assertIn('Week 1 of October (Oct 5–Oct 9, 2026)', message)
+        self.assertIn('Week 4 of September (Sep 28–Oct 2, 2026)', message)
         self.assertIn('hypothesis is not saved', message)
         self.assertIn('Launchpad/structure review pending', message)
         self.assertNotIn('No saved SS weekly structure', message)
@@ -55,7 +58,7 @@ class PreShiftStructureTests(unittest.TestCase):
         self.report()
         with patch.object(ss.clock, 'time', return_value=self.NOW):
             context = intel.intelligence_context(self.db, 10, 20)
-        self.assertIn('NAS100: bullish', context)
+        self.assertIn('NAS100: Close above → Higher pricing', context)
         self.assertIn('this does not mean the market study is missing', context)
         self.assertNotIn('Latest SS: none', context)
 
@@ -125,7 +128,7 @@ class PreShiftStructureTests(unittest.TestCase):
         state = self.read()
         self.assertFalse(state['reports'][0]['coverage']['full_broker_week_verified'])
         text = ss.format_pre_shift_structure(state)
-        self.assertIn('prior close unavailable', text)
+        self.assertIn('prior OHLC unavailable', text)
         self.assertIn('not a current-week bias', text)
         self.assertIn('full-week coverage unverified', text)
 

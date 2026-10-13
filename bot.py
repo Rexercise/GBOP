@@ -43,6 +43,7 @@ from gbop_voice_web.member_intelligence import (
     init_intelligence,
     intelligence_context,
     build_pre_shift_message,
+    append_shift_news,
     ingest_checkin_by_id,
     get_member_plan,
 )
@@ -4388,6 +4389,7 @@ async def _broadcast_gbop_dm(
                 except Exception:
                     logger.exception("GBOP shift review unavailable user=%s shift=%s", member.id, checkin_shift)
                     member_text += "\n\nYour recorded-data review is unavailable right now; no performance or adherence conclusion was made."
+            remaining_news = news_summary
             if personalized_shift:
                 try:
                     member_text = await asyncio.to_thread(
@@ -4397,7 +4399,9 @@ async def _broadcast_gbop_dm(
                         member.id,
                         personalized_shift,
                         shift_date,
+                        news_summary=news_summary,
                     )
+                    remaining_news = ""
                     logger.info('GBOP pre-shift SS context built source=weekly_reports shift=%s date=%s',
                                 personalized_shift, shift_date)
                 except Exception:
@@ -4407,8 +4411,8 @@ async def _broadcast_gbop_dm(
                         personalized_shift,
                     )
 
-            if news_summary:
-                member_text = (member_text + "\n\n" + news_summary)[:1900]
+            if remaining_news:
+                member_text = append_shift_news(member_text, remaining_news)
 
             member = await _authorized_scheduled_member(member.id)
             if member is None:
