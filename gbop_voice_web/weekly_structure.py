@@ -13,7 +13,7 @@ import json
 import time as clock
 
 NY = ZoneInfo('America/New_York')
-VERSION = 'ss-weekly-v1'
+VERSION = 'ss-weekly-v2-gtop-closure'
 CRYPTO = {'BTCUSD', 'ETHUSD'}
 QUESTIONS = [
     ('over_leverage', 'Did you over-leverage?'),
@@ -164,6 +164,7 @@ def build_report(db, asset, week_start=None, *, now=None):
         close_comparison = {'relationship': 'above' if c > p else 'below' if c < p else 'equal',
                             'observed_close': c, 'previous_observed_close': p,
                             'previous_week_start': previous['week_start'],
+                             'previous_observed_ohlc': prior_ohlc,
                             'previous_coverage': prior['coverage'],
                             'limit': 'Observed last closes only; no invented SS closure taxonomy or certified weekly close.'}
     report = {'ok': True, 'kind': 'Weekly Structure Study', 'algorithm_version': VERSION,
@@ -283,6 +284,8 @@ def pre_shift_structure(db, guild, user, *, now=None):
                     for key in ('price', 'occurrences', 'tie_count', 'time_precision')}
                     for side in ('high', 'low')},
                 'close_vs_previous': comparison.get('relationship'),
+                 'previous_week_start': comparison.get('previous_week_start'),
+                 'previous_observed_ohlc': comparison.get('previous_observed_ohlc'),
                 'coverage': {key: coverage.get(key) for key in ('status', 'source_timeframe',
                     'unobserved_interval_count', 'nominal_final_bar_present', 'full_broker_week_verified')},
                 'member_structure': member,
@@ -291,6 +294,37 @@ def pre_shift_structure(db, guild, user, *, now=None):
             'symbol_selection': selection,
             'basis': 'Saved completed-week observations, not current-week direction or an entry signal. '
                      'Full broker-week completeness is unverified. Private synthesis is exact-version, member-reported only.'}
+
+
+def _gtop_week_label(monday):
+    d = date.fromisoformat(monday)
+    return f"Week {(d.day - 1) // 7 + 1} of {d.strftime('%B')}"
+
+
+def _gtop_week_dates(monday):
+    d = date.fromisoformat(monday)
+    e = d + timedelta(days=4)
+    return f"{d.strftime('%b')} {d.day}–{e.strftime('%b')} {e.day}, {d.year}"
+
+
+def _gtop_closure(current, previous):
+    """GTOP candle science: compare the full prior range, never just prior close."""
+    if not current or not previous:
+        return "Weekly closure unverified (prior OHLC unavailable)"
+    c = current['close']
+    wick_above = current['high'] > previous['high'] and c <= previous['high']
+    wick_below = current['low'] < previous['low'] and c >= previous['low']
+    if wick_above and wick_below:
+        return "Both sides swept; closure sequence unverified"
+    if wick_above:
+        return "Wick above → Lower pricing"
+    if wick_below:
+        return "Wick below → Higher pricing"
+    if c > previous['high']:
+        return "Close above → Higher pricing"
+    if c < previous['low']:
+        return "Close below → Lower pricing"
+    return "Inside prior range; no confirmed four-way closure"
 
 
 def format_pre_shift_structure(state):
@@ -303,17 +337,18 @@ def format_pre_shift_structure(state):
         scope = ', '.join(selected) if selected else 'this reminder'
         return f'Completed-week SS market facts are unavailable for {scope}. Ask GBOP to check SS for your asset.'
     weeks = sorted({r['week_start'] for r in reports})
-    lines = ['Completed-week observations (' + ', '.join(weeks) + '):']
+    lines = ['SS weekly closure | GTOP candle science:']
     for report in reports:
         ohlc = report['observed_ohlc']
         if not ohlc:
             lines.append(f"{report['asset']}: member analysis saved; market candles unavailable.")
             continue
-        direction = ohlc['body_direction']
-        relation = report.get('close_vs_previous')
-        comparison = f'; last close {relation} prior' if relation else '; prior close unavailable'
-        scope = f" [{report['week_start']}]" if len(weeks) > 1 else ''
-        lines.append(f"{report['asset']}{scope}: {direction}{comparison}.")
+        current_week = report['week_start']
+        previous_week = report.get('previous_week_start')
+        title = f"{report['asset']}: {_gtop_week_label(current_week)} ({_gtop_week_dates(current_week)})"
+        if previous_week:
+            title += f" vs {_gtop_week_label(previous_week)} ({_gtop_week_dates(previous_week)})"
+        lines.append(title + ": " + _gtop_closure(ohlc, report.get('previous_observed_ohlc')) + ".")
     lines.append('Based on retained candles; full-week coverage unverified. This is not a current-week bias.')
     hypotheses = [r for r in reports if r.get('member_structure', {}).get('next_week_hypothesis')]
     if hypotheses:
