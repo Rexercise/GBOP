@@ -6448,7 +6448,7 @@ async def on_message(message: discord.Message):
     if await _consume_owner_message_capture(message):
         return
 
-    # Natural conversation works in DMs, or by @mentioning GBOP in G.T.O.P.
+    # Private conversation works in DMs; server mentions offer routing help.
     # This deliberately avoids reading unrelated server messages.
     is_dm = message.guild is None
     is_mentioned = (
@@ -6511,6 +6511,17 @@ async def on_message(message: discord.Message):
                             "Use `/gbop action:help` for hands-free trading examples.")
         return
 
+    # Every AI conversation can recall the member's private history. Never run
+    # it in a guild channel, even when the current question looks impersonal.
+    # Route before reading attachments, calling tools, or saving a conversation.
+    if not is_dm:
+        await message.reply(
+            "Send me a direct message to talk or journal privately. "
+            "You can start with `Journal this trade`, then tell me what happened. "
+            "Use `/gbop` in your voice channel for voice help."
+        )
+        return
+
     if not content and not message.attachments:
         await message.reply(
             "I'm here. Talk to me normally about your GTOP trade, "
@@ -6549,12 +6560,8 @@ async def on_message(message: discord.Message):
             return
         # Deterministic member-facing SS cleanup: never publish prior-close comparisons.
         # Apply only to SS report responses, before saving and Discord delivery.
-        if re.search(r'(?im)^\\s*(?:#{1,4}\\s*)?(?:\\d+[.)]\\s*)?\\*{0,2}SS Report\\b', answer):
-            answer = re.sub(
-                r'(?im)^\\s*(?:[-*]\\s*)?(?:\\*{1,2})?Compared with the prior observed close(?:\\*{1,2})?\\s*:\\s*[^\\n]*(?:\\n|$)',
-                '', answer,
-            )
-            answer = re.sub(r'\\n{3,}', '\\n\\n', answer)
+        from gbop_voice_web.text_presentation import clean_ss_report
+        answer = clean_ss_report(answer)
         # Save after the turn: the current user message must not appear twice.
         ai_save_message(member.id, "user", content + (
             "\nSaved photo IDs: " + ", ".join(p["photo_id"] for p in photos) if photos else ""))
