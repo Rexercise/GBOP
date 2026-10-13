@@ -327,7 +327,16 @@ def _gtop_closure(current, previous):
     return "Inside prior range; no confirmed four-way closure"
 
 
-def format_pre_shift_structure(state):
+def _ss_preview(value, limit):
+    text = ' '.join(value.split())
+    if not limit:
+        return 'preview omitted; ask for the full SS plan'
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1].rstrip() + '…'
+
+
+def format_pre_shift_structure(state, *, preview_chars=240, compact_dates=False):
     """Bounded reminder, with market evidence and personal hypotheses separate."""
     reports = state.get('reports', [])
     selected = state.get('symbol_selection', {}).get('symbols')
@@ -336,28 +345,40 @@ def format_pre_shift_structure(state):
     if not reports:
         scope = ', '.join(selected) if selected else 'this reminder'
         return f'Completed-week SS market facts are unavailable for {scope}. Ask GBOP to check SS for your asset.'
-    weeks = sorted({r['week_start'] for r in reports})
     lines = ['SS weekly closure | GTOP candle science:']
+    groups = {}
     for report in reports:
-        ohlc = report['observed_ohlc']
-        if not ohlc:
-            lines.append(f"{report['asset']}: member analysis saved; market candles unavailable.")
-            continue
-        current_week = report['week_start']
-        previous_week = report.get('previous_week_start')
-        title = f"{report['asset']}: {_gtop_week_label(current_week)} ({_gtop_week_dates(current_week)})"
+        key = (report['week_start'], report.get('previous_week_start'))
+        groups.setdefault(key, []).append(report)
+    for (current_week, previous_week), grouped in groups.items():
+        def dated_week(week):
+            if compact_dates:
+                end = date.fromisoformat(week) + timedelta(days=4)
+                return f"{week}–{end.isoformat()}"
+            return f"{_gtop_week_label(week)} ({_gtop_week_dates(week)})"
+        title = dated_week(current_week)
         if previous_week:
-            title += f" vs {_gtop_week_label(previous_week)} ({_gtop_week_dates(previous_week)})"
-        lines.append(title + ": " + _gtop_closure(ohlc, report.get('previous_observed_ohlc')) + ".")
+            title += ' vs ' + dated_week(previous_week)
+        lines.append(title + ':')
+        for report in grouped:
+            ohlc = report['observed_ohlc']
+            if not ohlc:
+                lines.append(f"{report['asset']}: member analysis saved; market candles unavailable.")
+                continue
+            lines.append(f"{report['asset']}: " + _gtop_closure(ohlc, report.get('previous_observed_ohlc')) + '.')
     lines.append('Based on retained candles; full-week coverage unverified. This is not a current-week bias.')
     hypotheses = [r for r in reports if r.get('member_structure', {}).get('next_week_hypothesis')]
     if hypotheses:
         # Keep the reminder small; all scoped hypotheses remain in the tool.
         r = hypotheses[0]
         member = r['member_structure']
-        lines.append(f"Your saved {r['asset']} hypothesis: " + member['next_week_hypothesis'][:240])
-        if member.get('hypothesis_invalidation'):
-            lines.append('Condition/invalidation: ' + member['hypothesis_invalidation'][:160])
+        if not preview_chars:
+            label = 'hypothesis and condition/invalidation' if member.get('hypothesis_invalidation') else 'hypothesis'
+            lines.append(f"Your saved {r['asset']} {label}: previews omitted; ask for the full SS plan.")
+        else:
+            lines.append(f"Your saved {r['asset']} hypothesis: " + _ss_preview(member['next_week_hypothesis'], preview_chars))
+            if member.get('hypothesis_invalidation'):
+                lines.append('Condition/invalidation: ' + _ss_preview(member['hypothesis_invalidation'], min(160, preview_chars)))
         if len(hypotheses) > 1:
             lines.append(f'{len(hypotheses)-1} other asset hypotheses saved; ask for the full SS plan.')
     else:
@@ -365,7 +386,7 @@ def format_pre_shift_structure(state):
         summaries = [r for r in reports if r['member_structure'].get('structural_summary')]
         if summaries:
             r = summaries[0]
-            lines.append(f"Your saved {r['asset']} structure: " + r['member_structure']['structural_summary'][:240])
+            lines.append(f"Your saved {r['asset']} structure: " + _ss_preview(r['member_structure']['structural_summary'], preview_chars))
     pending = [r['asset'] for r in reports if not all(r['member_structure'].get(k)
                for k in ('high_launchpad', 'low_launchpad', 'structural_summary'))]
     if pending:

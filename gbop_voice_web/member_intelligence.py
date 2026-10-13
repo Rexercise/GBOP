@@ -1164,7 +1164,52 @@ def intelligence_context(db, guild, user):
     return "\n".join(lines)
 
 
-def build_pre_shift_message(db, guild, user, shift, session_date=None):
+def append_shift_news(message, news_summary, *, limit=1900):
+    """Keep the base intact and retain event details when a news excerpt is needed."""
+    if not news_summary:
+        return message
+    if len(message) + 2 + len(news_summary) <= limit:
+        return message + "\n\n" + news_summary
+    import re
+    lines = news_summary.splitlines()
+    events = [line for line in lines if line.startswith('• ') and not line.startswith('• +')]
+    already_omitted = sum(int(match.group(1)) for line in lines
+        if (match := re.match(r'• \+(\d+) more', line)))
+    earlier = any(line.startswith('No additional red-folder') for line in lines)
+    header = ['🔴 Red-folder news today:']
+    if earlier:
+        header.append('No upcoming releases. Earlier:')
+    footer = 'Keep news inside your personal trading and risk plan.'
+    calendar = '<https://www.forexfactory.com/calendar>'
+    budget = limit - len(message) - 2
+
+    def ending(shown, *, shortened=False):
+        omitted = len(events) - shown + already_omitted
+        notice = f'• +{omitted} more event(s); ' if omitted else ''
+        notice += ('title shortened; ' if shortened else '') + 'full calendar: ' + calendar
+        return [notice, footer]
+
+    # Keep complete events in chronological order. Count omissions rather than
+    # chopping release times, currencies, or the member's execution instructions.
+    for count in range(len(events), 0, -1):
+        compact = '\n'.join(header + events[:count] + ending(count))
+        if len(compact) <= budget:
+            return message + "\n\n" + compact
+    if events:
+        # An unusually long title may consume the entire budget. Strip paired
+        # Markdown before shortening it, preserving the time/currency prefix.
+        tail = ending(1, shortened=True)
+        room = budget - len('\n'.join(header + [''] + tail))
+        if room >= 45:
+            event = _clip(events[0].replace('**', ''), room)
+            return message + "\n\n" + '\n'.join(header + [event] + tail)
+    notice = 'News summary shortened; check the full calendar: ' + calendar
+    if len(notice) > budget:
+        raise ValueError('Pre-shift message leaves no room for the news disclosure.')
+    return message + "\n\n" + notice
+
+
+def build_pre_shift_message(db, guild, user, shift, session_date=None, *, news_summary=""):
     shift = (shift or "").lower()
     label = "Day Shift" if shift == "day" else "Night Shift"
     clock = "9:00 AM" if shift == "day" else "9:00 PM"
@@ -1176,19 +1221,33 @@ def build_pre_shift_message(db, guild, user, shift, session_date=None):
     focus = profile.get("current_focus")
 
     from gbop_voice_web.weekly_structure import format_pre_shift_structure
-    structural = format_pre_shift_structure(state['weekly_structure'])
-
     if focus:
         execution = focus["reminder"]
     else:
         execution = "Protect your own A+ criteria, follow your written plan, and keep risk inside your saved protocol."
 
-    return (
-        f"⏱️ **{label} begins in 5 minutes** ({clock} Eastern).\n\n"
-        f"**SS structure:** {structural}\n"
-        f"**Your execution focus:** {execution}\n"
-        'Change SS symbols by saying "add a symbol to SS" or "remove a symbol from SS".'
-    )
+    # Keep news in the same deduplicated DM. Shrink only optional previews;
+    # every selected asset, dated comparison, coverage limit and focus survives.
+    news_reserve = min(len(news_summary), 650) + 2 if news_summary else 0
+    maximum_base = 1650 if news_summary else 1749
+    target = min(maximum_base, 1900 - news_reserve)
+    for preview_chars, compact_dates, include_help in (
+            (240, False, True), (240, False, False), (120, False, False),
+            (60, False, False), (0, False, False), (0, True, False)):
+        structural = format_pre_shift_structure(state['weekly_structure'],
+            preview_chars=preview_chars, compact_dates=compact_dates)
+        message = (
+            f"⏱️ **{label} begins in 5 minutes** ({clock} Eastern).\n\n"
+            f"**SS structure:** {structural}\n"
+            f"**Your execution focus:** {execution}"
+        )
+        if include_help:
+            message += '\nChange SS symbols by saying "add a symbol to SS" or "remove a symbol from SS".'
+        if len(message) <= target:
+            break
+    if len(message) > maximum_base:
+        raise ValueError('Pre-shift SS summary exceeds its safe message budget.')
+    return append_shift_news(message, news_summary)
 
 
 INTELLIGENCE_PROMPT = """
