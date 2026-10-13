@@ -227,6 +227,113 @@ def _saved_week_exists(conn, asset, week_start):
                         (asset, week_start)).fetchone() is not None
 
 
+def pre_shift_structure(db, guild, user, *, now=None):
+    """Read saved market facts independently of optional private SS answers.
+
+    No preparation or member writes occur here. A new week/version cannot
+    inherit a previous week's hypothesis or another member's reflection.
+    """
+    from gbop_voice_web.market_data import ASSETS
+    now = int(clock.time() if now is None else now)
+    target = week_window(now=now)['week_start']
+    reports, unavailable = [], []
+    fields = ('high_launchpad', 'low_launchpad', 'structural_summary',
+              'next_week_hypothesis', 'hypothesis_invalidation')
+    with db() as conn:
+        for asset in sorted(ASSETS):
+            if asset in CRYPTO:
+                # Crypto uses the observed W1 boundaries. Inspect the latest
+                # revision of each recent week, never a guessed Sunday cutoff.
+                rows = conn.execute('''SELECT r.payload FROM gbop_ss_reports r
+                    WHERE r.asset=? AND r.revision=(SELECT MAX(s.revision)
+                        FROM gbop_ss_reports s WHERE s.asset=r.asset AND s.week_start=r.week_start)
+                    ORDER BY r.week_start DESC LIMIT 2''', (asset,)).fetchall()
+                candidates = [json.loads(row['payload']) for row in rows]
+                candidates = [r for r in candidates
+                              if 0 <= now - r.get('window', {}).get('end_epoch', now+1) < 7*86400]
+                report = max(candidates, key=lambda r: r['window']['end_epoch']) if candidates else None
+            else:
+                report = read_report(conn, asset, target)
+            if not report:
+                unavailable.append(asset)
+                continue
+            window = report.get('window', {})
+            if not window.get('end_epoch') or window['end_epoch'] > now:
+                unavailable.append(asset)
+                continue
+            version, week = report['report_version'], report['week_start']
+            row = conn.execute('''SELECT answers FROM gbop_ss_contributions
+                WHERE guild_id=? AND user_id=? AND asset=? AND week_start=? AND report_version=?
+                ORDER BY revision DESC LIMIT 1''', (guild, user, asset, week, version)).fetchone()
+            answers = json.loads(row['answers']).get('answers', {}) if row else {}
+            member = {key: answers[key][:1200] for key in fields
+                      if isinstance(answers.get(key), str) and answers[key].strip()}
+            if not report.get('observed_ohlc'):
+                unavailable.append(asset)
+                if not member:
+                    continue
+            coverage = report.get('coverage', {})
+            comparison = report.get('closure_vs_previous') or {}
+            reports.append({
+                'asset': asset, 'week_start': week, 'report_version': version,
+                'window': {key: window.get(key) for key in ('start_ny', 'end_ny', 'source_boundary_verified')},
+                'observed_ohlc': report.get('observed_ohlc'),
+                'extremes': {side: {key: (report.get(side) or {}).get(key)
+                    for key in ('price', 'occurrences', 'tie_count', 'time_precision')}
+                    for side in ('high', 'low')},
+                'close_vs_previous': comparison.get('relationship'),
+                'coverage': {key: coverage.get(key) for key in ('status', 'source_timeframe',
+                    'unobserved_interval_count', 'nominal_final_bar_present', 'full_broker_week_verified')},
+                'member_structure': member,
+            })
+    return {'week_start': target, 'reports': reports, 'unavailable_assets': unavailable,
+            'basis': 'Saved completed-week observations, not current-week direction or an entry signal. '
+                     'Full broker-week completeness is unverified. Private synthesis is exact-version, member-reported only.'}
+
+
+def format_pre_shift_structure(state):
+    """Bounded reminder, with market evidence and personal hypotheses separate."""
+    reports = state.get('reports', [])
+    if not reports:
+        return 'Completed-week SS market facts are unavailable for this reminder. Ask GBOP to check SS for your asset.'
+    weeks = sorted({r['week_start'] for r in reports})
+    lines = ['Completed-week observations (' + ', '.join(weeks) + '):']
+    for report in reports:
+        ohlc = report['observed_ohlc']
+        if not ohlc:
+            lines.append(f"{report['asset']}: member analysis saved; market candles unavailable.")
+            continue
+        direction = ohlc['body_direction']
+        relation = report.get('close_vs_previous')
+        comparison = f'; last close {relation} prior' if relation else '; prior close unavailable'
+        scope = f" [{report['week_start']}]" if len(weeks) > 1 else ''
+        lines.append(f"{report['asset']}{scope}: {direction}{comparison}.")
+    lines.append('Based on retained candles; full-week coverage unverified. This is not a current-week bias.')
+    hypotheses = [r for r in reports if r.get('member_structure', {}).get('next_week_hypothesis')]
+    if hypotheses:
+        # Keep the reminder small; all scoped hypotheses remain in the tool.
+        r = hypotheses[0]
+        member = r['member_structure']
+        lines.append(f"Your saved {r['asset']} hypothesis: " + member['next_week_hypothesis'][:240])
+        if member.get('hypothesis_invalidation'):
+            lines.append('Condition/invalidation: ' + member['hypothesis_invalidation'][:160])
+        if len(hypotheses) > 1:
+            lines.append(f'{len(hypotheses)-1} other asset hypotheses saved; ask for the full SS plan.')
+    else:
+        lines.append('Your next-week hypothesis is not saved yet.')
+        summaries = [r for r in reports if r['member_structure'].get('structural_summary')]
+        if summaries:
+            r = summaries[0]
+            lines.append(f"Your saved {r['asset']} structure: " + r['member_structure']['structural_summary'][:240])
+    pending = [r['asset'] for r in reports if not all(r['member_structure'].get(k)
+               for k in ('high_launchpad', 'low_launchpad', 'structural_summary'))]
+    if pending:
+        lines.append('Launchpad/structure review pending: ' + ', '.join(pending) + '.')
+    if state.get('unavailable_assets'):
+        lines.append('Market facts unavailable: ' + ', '.join(state['unavailable_assets']) + '.')
+    return '\n'.join(lines)
+
+
 def get_weekly_structure_study(db, guild, user, args=None):
     from gbop_voice_web.market_data import ASSETS, asset_name
     args = args or {}

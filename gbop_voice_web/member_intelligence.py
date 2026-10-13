@@ -912,6 +912,15 @@ def _latest_shift_plan(db, guild, user, session_date=None, shift=None):
 def get_member_plan(db, guild, user, args=None):
     args = args or {}
     ss = get_ss_review(db, guild, user, {})["review"]
+    from gbop_voice_web.weekly_structure import pre_shift_structure
+    as_of = None
+    if args.get('session_date'):
+        # Resolve the completed week as of this reminder, including Friday's
+        # day/night boundary, instead of using the server's current date.
+        as_of = datetime.combine(date.fromisoformat(str(args['session_date'])),
+                    datetime.min.time(), EASTERN).replace(
+                    hour=20 if args.get('shift') == 'night' else 8, minute=55).timestamp()
+    weekly = pre_shift_structure(db, guild, user, now=as_of)
     profile = coaching_profile(db, guild, user)
     shift_plan = _latest_shift_plan(
         db, guild, user,
@@ -930,6 +939,7 @@ def get_member_plan(db, guild, user, args=None):
     return {
         "ok": True,
         "current_ss": ss,
+        "weekly_structure": weekly,
         "coaching_profile": profile,
         "saved_shift_plan": shift_plan,
         "last_checkin": _rowdict(last_checkin),
@@ -1112,21 +1122,19 @@ def intelligence_context(db, guild, user):
         return f"MEMBER INTELLIGENCE: unavailable ({type(exc).__name__})."
 
     lines = ["MEMBER INTELLIGENCE — VERIFIED PERSISTENT CONTEXT"]
+    from gbop_voice_web.weekly_structure import format_pre_shift_structure
+    lines.append('SS market context: ' + format_pre_shift_structure(state['weekly_structure']))
     ss = state.get("current_ss")
     if ss:
         lines.append(
-            f"Latest SS: week {ss['week_start']} | asset {ss['asset']} | "
+            f"Latest member SS reflection (may span report versions): week {ss['week_start']} | asset {ss['asset']} | "
             f"structure_complete={bool(ss['structure_complete'])} | "
             f"execution_review_complete={bool(ss['execution_review_complete'])}."
         )
-        if ss.get("structural_summary"):
-            lines.append("SS observed structure: " + _clip(ss["structural_summary"], 600))
-        if ss.get("next_week_hypothesis"):
-            lines.append("SS conditional hypothesis: " + _clip(ss["next_week_hypothesis"], 600))
-        if ss.get("hypothesis_invalidation"):
-            lines.append("SS invalidation/condition: " + _clip(ss["hypothesis_invalidation"], 400))
+        lines.append('Use the exact-version weekly_structure member answers for current hypotheses; '
+                     'the legacy reflection completion flags do not establish completion for a newer report.')
     else:
-        lines.append("Latest SS: none saved yet.")
+        lines.append("Member SS reflection: none saved yet; this does not mean the market study is missing.")
 
     profile = state["coaching_profile"]
     focus = profile.get("current_focus")
@@ -1161,18 +1169,11 @@ def build_pre_shift_message(db, guild, user, shift, session_date=None):
         db, guild, user,
         {"shift": shift, "session_date": session_date},
     )
-    ss = state.get("current_ss")
     profile = state["coaching_profile"]
     focus = profile.get("current_focus")
 
-    if ss and ss.get("next_week_hypothesis"):
-        structural = _clip(ss["next_week_hypothesis"], 480)
-        if ss.get("hypothesis_invalidation"):
-            structural += " | Condition/invalidation: " + _clip(ss["hypothesis_invalidation"], 220)
-    elif ss and ss.get("structural_summary"):
-        structural = _clip(ss["structural_summary"], 560)
-    else:
-        structural = "No saved SS weekly structure plan yet. Use the chart and your saved shift plan; do not invent structure."
+    from gbop_voice_web.weekly_structure import format_pre_shift_structure
+    structural = format_pre_shift_structure(state['weekly_structure'])
 
     if focus:
         execution = focus["reminder"]
@@ -1225,6 +1226,9 @@ When a member says "tell me SS", "let's do SS", or "do SS":
 For "what's my plan?", "what do I need to remember?", or "what did we conclude
 in SS?", use get_member_plan. Combine the saved SS structure with the member's
 current coaching focus; do not substitute generic advice.
+Read weekly_structure for prepared market facts and exact-version hypotheses.
+Missing personal answers do not mean SS market facts are missing. Name unfinished
+launchpad/synthesis/hypothesis work without calling a partial study complete.
 
 For "what do you know about me as a trader?", "show my trader profile/dashboard",
 "what are my strongest setups?", or similar member-profile questions, use
@@ -1284,7 +1288,7 @@ INTELLIGENCE_TOOLS = [
     ),
     schema(
         "get_member_plan",
-        "Read the member's saved SS structure, living coaching focus, latest shift plan, and latest post-shift reflection.",
+        "Read completed-week market facts in weekly_structure independently of optional private SS reflection. Its member_structure answers match each report version. current_ss is a legacy member view that may span versions, not evidence of missing market facts. Also returns coaching focus, shift plan and post-shift reflection.",
         {"session_date": TEXT_NULL, "shift": TEXT_NULL},
     ),
     schema(
