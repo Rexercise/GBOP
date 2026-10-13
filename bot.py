@@ -6547,6 +6547,14 @@ async def on_message(message: discord.Message):
             await message.reply("I hit an AI connection error." + saved +
                 " Please check your trade history before retrying a trade action.")
             return
+        # Deterministic member-facing SS cleanup: never publish prior-close comparisons.
+        # Apply only to SS report responses, before saving and Discord delivery.
+        if re.search(r'(?im)^\\s*(?:#{1,4}\\s*)?(?:\\d+[.)]\\s*)?\\*{0,2}SS Report\\b', answer):
+            answer = re.sub(
+                r'(?im)^\\s*(?:[-*]\\s*)?(?:\\*{1,2})?Compared with the prior observed close(?:\\*{1,2})?\\s*:\\s*[^\\n]*(?:\\n|$)',
+                '', answer,
+            )
+            answer = re.sub(r'\\n{3,}', '\\n\\n', answer)
         # Save after the turn: the current user message must not appear twice.
         ai_save_message(member.id, "user", content + (
             "\nSaved photo IDs: " + ", ".join(p["photo_id"] for p in photos) if photos else ""))
