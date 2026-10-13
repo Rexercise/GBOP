@@ -475,6 +475,35 @@ class CheckinMessageDispatchTests(unittest.IsolatedAsyncioTestCase):
         ns['_consume_checkin_reply'].assert_awaited_once_with(message)
         ns['ai_run_turn'].assert_not_called()
 
+    async def test_server_mentions_never_read_or_publish_private_history(self):
+        for content in ('show my latest journal', 'what is the market doing?', ''):
+            with self.subTest(content=content):
+                message, ns, _ = self.fixture()
+                message.guild = NS(id=1)
+                message.mentions = [ns['client'].user]
+                message.content = '<@999> ' + content
+                attachment = NS(read=AsyncMock())
+                message.attachments = [attachment]
+                ns['summon_requested'] = Mock(return_value=False)
+                ns['save_upload'] = Mock()
+                await ns['on_message'](message)
+                ns['ai_run_turn'].assert_not_called()
+                ns['ai_save_message'].assert_not_called()
+                ns['save_upload'].assert_not_called()
+                attachment.read.assert_not_awaited()
+                self.assertFalse(ns['AI_TEXT_LOCKS'])
+                message.reply.assert_awaited_once()
+                self.assertIn('direct message', message.reply.call_args.args[0])
+
+    async def test_server_voice_summon_still_explains_voice_command(self):
+        message, ns, _ = self.fixture()
+        message.guild = NS(id=1)
+        message.mentions = [ns['client'].user]
+        ns['summon_requested'] = Mock(return_value=True)
+        await ns['on_message'](message)
+        ns['ai_run_turn'].assert_not_called()
+        self.assertIn('Join your voice channel', message.reply.call_args.args[0])
+
 
 class CheckinConsumerTests(unittest.IsolatedAsyncioTestCase):
     """The Discord adapter must preserve routing and save-success boundaries."""

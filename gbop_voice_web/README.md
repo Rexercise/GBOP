@@ -2,6 +2,32 @@
 
 This is the low-latency voice front end for GBOP.
 
+## Start journaling as a member
+
+1. In G.T.O.P, use `/activate agree:true` after reading the acknowledgement.
+   Your Discord account must have the configured member role. Already activated
+   members can go straight to step 2.
+2. Open a direct message with GBOP and say **“Journal this trade”**, followed by
+   what happened. Include the instrument, approximate date/session, setup, entry,
+   management, result and reflection when known. Photos are optional.
+3. Answer any useful follow-up, or say **“Save this journal with R unknown.”**
+   Missing risk or R does not block a journal. GBOP must not treat unknown R as 0R.
+4. Wait for a saved receipt, then ask **“Show my latest journal.”** Review the
+   instrument, outcome and reflection. Correct errors conversationally; supply R
+   later if you learn it. A draft is not a finalized journal or a performance result.
+
+Drafts survive reconnects. Explicit save finalizes; repeating the same finalized
+draft does not create another trade. Journal-only entries do not invent executions
+or assign a risk budget. If a response fails after an action, check history before
+retrying. Never paste someone else's journal into your own conversation.
+
+Journals belong to the authenticated member; other members cannot recall them.
+The configured owner retains authorized review access. Server @mentions direct
+members to DMs before any private AI conversation or attachment processing.
+Use `/gbop` from your voice channel for voice controls; shared voice does not
+provide private journal data. If DMs are blocked, enable messages from this server
+in your Discord privacy settings.
+
 ## Owner messages
 
 Run **`/gbopmessage`** with no options to open the private guided flow:
@@ -98,11 +124,10 @@ A quick development option is Cloudflare Tunnel:
 Open the HTTPS URL Cloudflare prints on the phone.
 
 ## Current authentication
-Owner-preview mode uses GBOP_VOICE_PIN from ../.env and the Discord owner user ID
-(GTOP_OWNER_USER_ID by default). The API key never goes to the browser.
-
-For multi-member production use, add Discord OAuth and map each signed-in Discord user
-to their own GBOP user_id. The backend code is already user-id scoped.
+Member browser sessions use Discord OAuth and the signed-in Discord user's own
+GBOP identity. Current membership, activation, acknowledgement and revocation are
+checked before private access. Never share an owner session or PIN with members.
+The legacy owner preview remains owner-scoped; API keys stay on the backend.
 
 
 ## Handwritten journals and coaching
