@@ -9,6 +9,7 @@ from datetime import date, datetime
 from hashlib import sha256
 import json
 import re
+import zlib
 
 from gbop_voice_web.candle_evidence import next_boundary, parse_time, stamp, timeframe
 from gbop_voice_web.shift_availability import shift_bounds
@@ -18,6 +19,7 @@ MAX_REQUESTS = 4
 MAX_SNAPSHOTS = 12
 MAX_BANK_BYTES = 1024 * 1024
 MAX_SNAPSHOT_BYTES = 512 * 1024
+MAX_EXPANDED_SNAPSHOT_BYTES = 4 * 1024 * 1024
 MAX_OUTPUT_BYTES = 28000
 CONTRACT = ('Keep every requested context separately named by asset, NY date, timeframe, anchor and cutoff. '
     'Latest day and night are independently completed and may have different dates. '
@@ -39,6 +41,19 @@ def _size(value):
     return len(json.dumps(value, separators=(',', ':'), default=str).encode())
 
 
+def _pack_record(record):
+    """Retain full evidence losslessly; repeated range facts are highly redundant."""
+    metadata = {k: deepcopy(v) for k, v in record.items() if k != 'result'}
+    metadata['_result_zlib'] = zlib.compress(json.dumps(
+        record['result'], separators=(',', ':'), default=str).encode())
+    return metadata
+
+
+def _stored_size(record):
+    packed = record if '_result_zlib' in record else _pack_record(record)
+    return len(packed['_result_zlib']) + _size({k: v for k, v in packed.items() if k != '_result_zlib'})
+
+
 def tools():
     nullable = {'type': ['string', 'null']}
     props = {key: dict(nullable) for key in ('asset', 'date_ny', 'anchor_start_ny',
@@ -49,6 +64,7 @@ def tools():
         {'type': 'function', 'name': 'review_market_contexts', 'strict': True,
          'description': 'Review/compare/recall 1–4 independent contexts together. REQUIRED for both latest day and '
             'night: two latest_completed selectors, one per shift, same asset. Each resolves its own date. '
+            'For a night shift that just finished after midnight, latest_completed/night resolves its prior NY start date. '
             'crt requires exact asset, anchor_start_ny, anchor_timeframe and through_ny. shift requires asset/date/shift. '
             'recall requires only a returned context_id and preserves its frozen evidence. Other fields null; '
             'unsupported or ambiguous selectors are reported, never guessed. This does not change selected focus. ' + CONTRACT,
@@ -100,7 +116,12 @@ class ContextBank:
         self.entries.clear()
 
     def get(self, key):
-        return deepcopy(self.entries.get(key))
+        packed = self.entries.get(key)
+        if packed is None:
+            return None
+        record = deepcopy(packed)
+        record['result'] = json.loads(zlib.decompress(record.pop('_result_zlib')))
+        return record
 
     def index(self):
         return [{key: deepcopy(row[key]) for key in ('context_id', 'range_id', 'evidence_id', 'scope', 'source_tool')}
@@ -109,8 +130,8 @@ class ContextBank:
     def store(self, record):
         key = record['context_id']
         self.entries.pop(key, None)
-        self.entries[key] = deepcopy(record)
-        while len(self.entries) > MAX_SNAPSHOTS or _size(list(self.entries.values())) > MAX_BANK_BYTES:
+        self.entries[key] = _pack_record(record)
+        while len(self.entries) > MAX_SNAPSHOTS or sum(map(_stored_size, self.entries.values())) > MAX_BANK_BYTES:
             self.entries.popitem(last=False)
 
     def record(self, tool, scope, result):
@@ -122,7 +143,9 @@ class ContextBank:
             result = {**deepcopy(nested), 'saved_preparation': True,
                       **{k: result[k] for k in ('prepared_at_epoch', 'age_seconds') if k in result}}
             tool = 'review_market_session'
-        if not result.get('ok') or _size(result) > MAX_SNAPSHOT_BYTES:
+        if not result.get('ok') or _size(result) > MAX_EXPANDED_SNAPSHOT_BYTES:
+            return None
+        if len(zlib.compress(json.dumps(result, separators=(',', ':'), default=str).encode())) > MAX_SNAPSHOT_BYTES:
             return None
         for key in ('symbol', 'broker_id'):
             if result.get(key) is not None and (not isinstance(result[key], str) or len(result[key]) > 128):
@@ -186,8 +209,18 @@ def _summary(record):
         if review.get('post_shift_outcomes'):
             out['evidence']['spoken_summary']=(out['evidence']['spoken_summary'] or '')+' '+review['post_shift_outcomes'].get('summary','')
         out['evidence_note'] = 'Detailed outcomes exceeded this comparison summary; retrieve this exact context before asserting them.'
+    if _size(out) > 5500 and 'anchor_coverage' in out['evidence']:
+        # Per-anchor diagnostics are available in the retained snapshot. Do not
+        # let those repeat the coverage already stated in the full spoken recap
+        # and force an otherwise usable recap to disappear from the comparison.
+        out['evidence'].pop('anchor_coverage')
+        out['evidence']['anchor_coverage_detail_omitted'] = True
     if _size(out) > 5500:
         out['evidence'] = {'status': review.get('status'), 'evidence_omitted': True}
+        availability = review.get('availability') or result.get('availability') or {}
+        out['evidence']['coverage'] = {k: availability[k] for k in
+            ('review_scope', 'temporal_status', 'shift_complete', 'observed_through_ny',
+             'missing_closed_bar_count', 'source_resolution_seconds') if k in availability}
         appendix=review.get('post_shift_outcomes') or {}
         if appendix.get('summary'):
             out['evidence']['post_shift_summary']=appendix['summary']
@@ -308,9 +341,12 @@ def read_batch(bank, requests, runner, now, current):
                         raise ValueError('Returned CRT cutoff does not match the requested context.')
                 record = bank.record(tool, scope, result)
                 if record is None:
-                    raise ValueError('This context exceeds the bounded recall budget; request a narrower exact range.')
+                    members.append({'ok': False, 'request_index': index, 'scope': deepcopy(scope),
+                        'status': 'context_snapshot_unavailable',
+                        'error': 'Evidence was retrieved but could not be retained within the snapshot limits. Request one exact range; this is not missing market data.'})
+                    continue
             retained = {**reserved, record['context_id']: record}
-            if _size(list(retained.values())) > MAX_BANK_BYTES:
+            if sum(map(_stored_size, retained.values())) > MAX_BANK_BYTES:
                 members.append({'ok': False, 'request_index': index, 'status': 'context_retention_budget_exceeded',
                     'error': 'This context cannot be retained alongside this batch. Request fewer or narrower ranges.'})
                 continue

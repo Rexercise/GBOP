@@ -228,7 +228,7 @@ class ShiftSynopsisCompactionTests(unittest.TestCase):
         self.assertLessEqual(size(wire), 12000)
         self.assertEqual(expand_facts(wire)['review']['shift_synopsis']['ranges'],
                          build_shift_synopsis(source['review'], 'NAS100')['ranges'])
-        self.assertEqual(next(iter(context.context_bank.entries.values()))['result']['review'],
+        self.assertEqual(context.context_bank.get(next(iter(context.context_bank.entries)))['result']['review'],
                          source['review'])
         self.assertTrue(context._detail_index)
 

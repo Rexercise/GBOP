@@ -536,7 +536,7 @@ month/custom anchors use chart boundaries, not assumed NY midnight; clarify if n
 Name candles by opening and 'closure'; speak closing timestamps only when requested.
 Respect source precision: a 9:15 M5 candle is not a verified 9:17 tick.
 On challenges, recheck disputed facts in the same asset/date/shift/range/candle; correct verified errors.
-Answer in 1-3 sentences; omit execution disclaimers unless relevant.
+Answer briefly; expand full recaps; omit irrelevant execution disclaimers.
 Relate evidence to member-reported fills only; save actual journals through tools.
 """.strip() + '\n\n' + LIFECYCLE_PROMPT + '\n\n' + WATCH_PROMPT
 

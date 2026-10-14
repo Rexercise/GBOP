@@ -169,6 +169,13 @@ snapshot freshness and forming references; it never substitutes a completed
 historical shift or infers instantaneous tick action. Explicit chart anchors can
 use the existing supported timeframe mappings. Default shift recaps are short,
 with independent relevant Young Lefty context and named-range details on request.
+Requested full recaps cover each range through the shift cutoff. A completed
+clock window can still have missing candles: recaps retain the actual observed
+cutoff and count missing closed bars. Restoring the Windows market bridge is
+required to backfill an interrupted feed. Detailed comparison snapshots are
+stored with lossless compression, preserving the full evidence for selection
+and recall within bounded memory; a storage limit is reported separately from
+missing market data or an invalid selector.
 
 “Other relevant plays/ranges” uses `review_other_market_ranges`, retaining the
 verified asset, date, shift and cutoff. It includes unbranded hourly CRTs and
