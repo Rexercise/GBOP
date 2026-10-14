@@ -103,6 +103,11 @@ def market_scope_log(name, args, result, voice=None):
         for member in members[:4] if isinstance(members, list) else []:
             member = _dict(member)
             row = {'ok': member.get('ok') is True, 'resolved': _scope(member.get('scope'))}
+            status = member.get('status')
+            if isinstance(status, str) and status in {'retrieved', 'no_completed_shift', 'context_read_unavailable',
+                    'context_snapshot_unavailable', 'context_retention_budget_exceeded',
+                    'context_selector_or_evidence_invalid', 'context_read_failed'}:
+                row['status'] = status
             for key in ('context_id', 'evidence_id'):
                 value = member.get(key)
                 if isinstance(value, str) and re.fullmatch(key.split('_id')[0] + r'_[a-f0-9]{24}', value):

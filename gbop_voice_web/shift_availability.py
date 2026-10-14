@@ -35,6 +35,9 @@ def assess_shift(bars, day, shift, step, now, native_h1=None):
         from gbop_voice_web.candle_evidence import h1_anchor
         anchor = h1_anchor(bars, start - 3600, step, native_h1, now)['complete']
     observed = sorted(t for t in times if start <= t < end)
+    observed_through = observed[-1] + step if observed else None
+    elapsed_end = max(start, min(end, now) // step * step)
+    missing_closed = (elapsed_end - start) // step - len(observed)
     complete_hours = [t for t in range(start, end, 3600)
                       if set(range(t, t + 3600, step)) <= times]
     useful = any(set(range(t, t + 300, step)) <= times for t in range(start, end, 300))
@@ -65,6 +68,10 @@ def assess_shift(bars, day, shift, step, now, native_h1=None):
                    f'The {label} review for {day} has a closed native H1 anchor and complete shift source candles; anchor-minute gaps remain separate.')
     else:
         message = f'Only a limited {label} candle review is available for {day}; full anchor/shift coverage is incomplete.'
+        if missing_closed:
+            message += f' {missing_closed * step // 60} minutes of the completed shift are missing.'
+            if observed_through < end:
+                message += f' The last received shift candle closes at {_stamp(observed_through)}; the shift ends at {_stamp(end)}.'
     return {'date_ny': day, 'shift': shift, 'status': status, 'reviewable': useful,
             'review_scope': 'full' if full else 'partial' if useful else 'none',
             'temporal_status': temporal, 'market_closure': 'unverified',
@@ -73,6 +80,8 @@ def assess_shift(bars, day, shift, step, now, native_h1=None):
             **({'anchor_source_coverage_complete': source_anchor} if native_h1 else {}),
             'shift_complete': len(complete_hours) == 3,
             'source_resolution_seconds': step, 'closed_bar_count': len(observed),
+            'observed_through_ny': _stamp(observed_through) if observed_through else None,
+            'missing_closed_bar_count': missing_closed,
             'expected_bar_count': (end - start) // step,
             'complete_hours_ny': [_stamp(t) for t in complete_hours],
             'observed_windows_ny': [{'start_ny': _stamp(a), 'end_ny': _stamp(b)} for a, b in spans],

@@ -6,6 +6,8 @@ import json
 import threading
 import unittest
 import sqlite3
+import random
+from unittest.mock import patch
 
 from gbop_voice_web.market_conversation import MarketConversation, contextual_tools
 from gbop_voice_web.market_data import MARKET_TOOLS
@@ -383,14 +385,68 @@ class MultipleContextTests(unittest.TestCase):
         self.assertEqual(len(self.provider.calls), before)
 
     def test_retention_budget_never_returns_immediately_evicted_success(self):
-        self.provider.extra = 400000
-        result = self.batch([crt(7), crt(8), crt(9), crt(10)])
+        # Budget the stored bytes, using evidence that does not collapse to a
+        # tiny repeated string after lossless compression.
+        padding = random.Random(7).randbytes(400000).hex()
+        def runner(name, args):
+            return {**self.provider(name, args), 'test_padding': padding}
+        result = self.context.run('review_market_contexts',
+            {'requests': [crt(7), crt(8), crt(9), crt(10)]}, runner)
         self.assertEqual(result['status'], 'partial')
         for row in result['contexts']:
             if row['ok']:
                 self.assertIn(row['context_id'], self.context.context_bank.entries)
             else:
                 self.assertEqual(row['status'], 'context_retention_budget_exceeded')
+
+    def test_large_redundant_shift_evidence_retains_every_fact_for_selection(self):
+        self.provider.extra = 650000
+        result = self.batch([latest('night')])
+        self.assertTrue(result['ok'], result)
+        identity = result['contexts'][0]['context_id']
+        saved = self.context.context_bank.get(identity)
+        self.assertEqual(saved['result']['test_padding'], 'x' * 650000)
+        self.assertNotIn('result', self.context.context_bank.entries[identity])
+        # Recall is a fresh decoded copy, with the original evidence identity.
+        saved['result']['review']['shift'] = 'day'
+        self.context.begin_turn(now=NOW)
+        selected = self.context.run('select_market_context', {'context_id': identity}, self.provider)
+        self.assertTrue(selected['ok'], selected)
+        self.assertEqual(selected['review']['shift'], 'night')
+        self.assertEqual(selected['test_padding'], 'x' * 650000)
+        self.assertEqual(result['contexts'][0]['evidence_id'], self.context.context_bank.get(identity)['evidence_id'])
+
+    def test_expanded_snapshot_limit_is_explicit_not_invalid_selector(self):
+        self.provider.extra = 650000
+        with patch('gbop_voice_web.multi_market_context.MAX_EXPANDED_SNAPSHOT_BYTES', 600000):
+            result = self.batch([latest('night')])
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['contexts'][0]['status'], 'context_snapshot_unavailable')
+        self.assertEqual(result['contexts'][0]['scope']['shift'], 'night')
+        self.assertFalse(self.context.context_bank.entries)
+
+    def test_detailed_comparison_keeps_full_summary_and_missing_tail(self):
+        self.provider.partial = True
+        summary = 'Verified range delivery remains separate from later invalidation. ' * 51
+        def runner(name, args):
+            result = self.provider(name, args)
+            if name == 'review_market_session':
+                review = result['review']
+                review['shift_synopsis'].update(spoken_summary=summary, detail='x' * 6000)
+                review['shift_story']['ranges'] *= 6
+                review['availability'].update(observed_through_ny='2026-10-04T23:10:00-04:00',
+                    missing_closed_bar_count=50, source_resolution_seconds=60, shift_complete=False)
+            return result
+        result = self.context.run('review_market_contexts', {'requests': [latest('night')]}, runner)
+        member = result['contexts'][0]
+        self.assertTrue(member['ok'], member)
+        self.assertEqual(member['evidence']['spoken_summary'], summary)
+        self.assertEqual(member['evidence']['availability']['missing_closed_bar_count'], 50)
+        self.assertTrue(member['evidence']['anchor_coverage_detail_omitted'])
+        self.assertIn('negative_claim_guard', member)
+        self.assertLessEqual(len(json.dumps(member, separators=(',', ':')).encode()), 5500)
+        saved = self.context.context_bank.get(member['context_id'])
+        self.assertEqual(len(saved['result']['review']['shift_story']['ranges']), 6)
 
     def test_context_ids_eviction_and_output_budget(self):
         first = self.batch([crt(8)])['contexts'][0]['context_id']
@@ -490,6 +546,11 @@ class MultipleContextTests(unittest.TestCase):
         self.assertEqual(len(log['contexts']), 2)
         self.assertNotIn('private', json.dumps(log))
         self.assertEqual(log['contexts'][1]['resolved']['date_ny'], '2026-10-04')
+        failed = {'ok': False, 'contexts': [{'ok': False, 'status': 'context_snapshot_unavailable',
+            'error': 'private exception details'}]}
+        log = market_scope_log('review_market_contexts', {}, failed)
+        self.assertEqual(log['contexts'][0]['status'], 'context_snapshot_unavailable')
+        self.assertNotIn('private', json.dumps(log))
 
 
 if __name__ == '__main__':

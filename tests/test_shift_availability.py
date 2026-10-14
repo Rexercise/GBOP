@@ -23,6 +23,22 @@ def candles(day=DAY, shift='day', step=300, anchor=True):
 
 
 class AvailabilityFactsTests(unittest.TestCase):
+    def test_completed_night_reports_missing_tail_after_feed_stops(self):
+        start, end = shift_bounds('2026-10-13', 'night')
+        for step in (60, 300):
+            bars = [dict(time=t) for t in range(start - 3600, end - 50 * 60, step)]
+            result = assess_shift(bars, '2026-10-13', 'night', step, end + 8640)
+            self.assertEqual(result['temporal_status'], 'completed')
+            self.assertEqual(result['review_scope'], 'partial')
+            self.assertEqual(result['observed_through_ny'], '2026-10-13T23:10:00-04:00')
+            self.assertEqual(result['missing_closed_bar_count'] * step, 50 * 60)
+            self.assertIn('50 minutes of the completed shift are missing', result['message'])
+            # A recovered upload makes the very same completed date fully usable.
+            recovered = bars + [dict(time=t) for t in range(end - 50 * 60, end, step)]
+            complete = assess_shift(recovered, '2026-10-13', 'night', step, end + 8640)
+            self.assertEqual(complete['review_scope'], 'full')
+            self.assertEqual(complete['missing_closed_bar_count'], 0)
+
     def test_full_requires_eight_anchor_but_not_seven_context(self):
         result = assess_shift(candles(), DAY, 'day', 300, NOW)
         self.assertEqual(result['review_scope'], 'full')
