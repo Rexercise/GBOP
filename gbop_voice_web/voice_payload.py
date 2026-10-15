@@ -77,6 +77,8 @@ def _factor_review(out, root='review'):
 
     def factor(value, path, key=None):
         nonlocal changed
+        if isinstance(value, dict) and set(value) == {'same_evidence_as'}:
+            return value
         if isinstance(value, (dict, list, str)):
             encoded = json.dumps(value, sort_keys=True, separators=(',', ':'))
             if len(encoded) > 180:
@@ -764,6 +766,15 @@ def _budget_overview(out):
         _compact_shift_envelope(out)
     if size() > VOICE_COMPACTION_TARGET_CHARS:
         _compact_interval_tables(out)
+    if size() > VOICE_COMPACTION_TARGET_CHARS:
+        ranges = out['review']['shift_story']['ranges']
+        identities = [identity for row in ranges for identity in row['model1'].get('candles', [])]
+        if identities and all(set(identity) == set(identities[0]) for identity in identities):
+            columns = list(identities[0])
+            out['voice_view']['model1_identity_columns'] = columns
+            for row in ranges:
+                model = row['model1']
+                model['identity_rows'] = [[identity[key] for key in columns] for identity in model.pop('candles', [])]
     if size() > SHIFT_OVERVIEW_TARGET_CHARS:
         # Fail explicitly rather than serialize an unbounded request or pretend
         # to include a complete overview. Scope and provenance stay pinned.

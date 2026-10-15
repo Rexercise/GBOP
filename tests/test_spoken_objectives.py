@@ -112,15 +112,18 @@ class SpokenObjectiveTests(unittest.TestCase):
     def test_midpoint_before_invalidation_and_full_delivery_after_remain_distinct(self):
         result = review([MODEL, CLEAN, (102, 103, 100, 102), INVALID, LOCAL_TARGET], authoritative=True)
         text = result['candle_lifecycle']['performance_summary']
-        self.assertIn('Super Soup reached sell-side of the 10:00 AM M5 Model 1 candle', text)
-        self.assertIn('Before invalidation, it had reached 50% (midpoint) of the 10:00 AM M5 Model 1 candle', text)
-        self.assertLess(text.index('Before invalidation'), text.index('Separately,'))
+        self.assertIn('Degraded · Parent objective pending', text)
+        self.assertIn('sell-side of the 9:00 AM H1 range', text)
+        self.assertNotIn('invalidated the Super Soup', text)
+        structure = result['candle_lifecycle']['purge_candles'][0]['super_soup_structure']
+        self.assertEqual(structure['local_function_objectives']['opposing_liquidity']['status'], 'observed_after_purge')
+        self.assertEqual(structure['local_crt_objectives']['midpoint']['status'], 'observed_after_purge')
 
     def test_clean_structure_without_delivery_is_not_a_success(self):
         result = review([MODEL, CLEAN], authoritative=True)
         text = result['candle_lifecycle']['performance_summary']
-        self.assertIn('sell-side of the 10:00 AM M5 Model 1 candle', text)
-        self.assertIn('not reached by the review cutoff', text)
+        self.assertIn('Clean · Parent objective pending', text)
+        self.assertIn('sell-side of the 9:00 AM H1 range', text)
         self.assertNotIn('win', text)
 
     def test_recognized_aliases_resolve_directly_without_broad_guessing(self):

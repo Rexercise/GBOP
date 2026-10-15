@@ -1,19 +1,20 @@
 // Public-safe browser regression harness. No real DOM, media, network, or provider calls.
 const fs=require('fs'),vm=require('vm'),path=require('path'),assert=require('node:assert/strict');
 const source=fs.readFileSync(process.argv[2] || path.join(__dirname,'../gbop_voice_web/static/app.js'),'utf8');
-function environment({failSession=false,deferDelivered=false,manualReceiptTimeout=false}={}) {
- const requests=[],channels=[],connections=[],receiptResolvers=[];let seq=0,receiptTimeout;
+function environment({failSession=false,deferDelivered=false,manualReceiptTimeout=false,deferChart=false}={}) {
+ const requests=[],channels=[],connections=[],receiptResolvers=[];let seq=0,receiptTimeout,chartResolver;
  const el=()=>({textContent:'',disabled:false,dataset:{},classList:{add(){},remove(){}},addEventListener(){},querySelector(){return null},appendChild(){},append(){},play(){return Promise.resolve()}});
  const els=new Map();
  const context={console:{...console,error(){}},setTimeout:(callback,ms)=>manualReceiptTimeout&&ms===5000?(receiptTimeout=callback,undefined):setTimeout(callback,ms),clearTimeout,Date,location:{hostname:'localhost'},window:{isSecureContext:true},document:{getElementById(id){if(!els.has(id))els.set(id,el());return els.get(id)},createElement:el},navigator:{mediaDevices:{getUserMedia:async()=>({getAudioTracks:()=>[],getTracks:()=>[]})}},fetch:async(url,opts)=>{
   requests.push({url,body:opts?.body?JSON.parse(url==='/api/live/session'?'{}':opts.body):null});
+  if(url==='/api/market/chart-context/read')return deferChart?new Promise(resolve=>{chartResolver=resolve}):{ok:true,json:async()=>({ok:true,spoken_summary:'TradingView capture',discrepancies:[]})};
   if(url==='/api/me')return{json:async()=>({authenticated:false})};
   if(url==='/api/live/context/delivered')return deferDelivered?new Promise(resolve=>receiptResolvers.push(resolve)):{ok:true,json:async()=>({ok:true})};
   if(url==='/api/live/session')return failSession?{ok:false,text:async()=> 'mock session failure'}:{ok:true,json:async()=>({session_id:'s'+(++seq),sdp:'answer'})};
   return {ok:true,json:async()=>({result:'stub'})};
  },RTCPeerConnection:class{constructor(){this.iceGatheringState='complete';this.localDescription={sdp:'sdp'};this.closed=false;connections.push(this)}addTrack(){}createDataChannel(){let c={readyState:'open',events:{},sent:[],addEventListener(n,f){this.events[n]=f},send(v){this.sent.push(JSON.parse(v))}};channels.push(c);return c}async createOffer(){return{}}async setLocalDescription(){}async setRemoteDescription(){}close(){this.closed=true}}};
  vm.createContext(context);vm.runInContext(source,context);
- return{context,requests,channels,connections,els,expireReceipt:()=>receiptTimeout(),finishReceipt:(ok=true)=>receiptResolvers.shift()({ok,json:async()=>({ok})}),run:code=>vm.runInContext(code,context),event:async(i,data)=>await channels[i].events.message({data:JSON.stringify(data)})};
+ return{context,requests,channels,connections,els,finishChart:()=>chartResolver({ok:true,json:async()=>({ok:true,spoken_summary:'TradingView capture',discrepancies:[]})}),expireReceipt:()=>receiptTimeout(),finishReceipt:(ok=true)=>receiptResolvers.shift()({ok,json:async()=>({ok})}),run:code=>vm.runInContext(code,context),event:async(i,data)=>await channels[i].events.message({data:JSON.stringify(data)})};
 }
 (async()=>{
  const e=environment();await e.run('startVoice()');await e.event(0,{type:'session.started',session:{id:'s1'}});e.run('cleanup()');await e.run('startVoice()');await e.event(1,{type:'session.started',session:{id:'s2'}});e.requests.length=0;
@@ -110,4 +111,17 @@ function environment({failSession=false,deferDelivered=false,manualReceiptTimeou
  const failed=environment({failSession:true});await failed.run('startVoice()');
  assert.equal(failed.els.get('orb').disabled,false,'Failed connection must re-enable retry button');
  console.log('PASS: session failure leaves retry button usable');
+ const chart=environment({deferChart:true});await new Promise(resolve=>setImmediate(resolve));
+ chart.els.get('chartSnapshot').value='first chart';
+ const pendingChart=chart.run('compareButterflyContext()');chart.run('clearChartCapture()');chart.finishChart();await pendingChart;
+ assert.equal(chart.run('selectedChartCapture'),null,'Late import cannot restore a cleared/logged-out chart');
+ chart.els.get('chartSnapshot').value='actual chart capture';
+ const selected=chart.run('compareButterflyContext()');chart.finishChart();await selected;
+ assert.equal(chart.run('selectedChartCapture'),'actual chart capture');
+ await chart.run('startVoice()');await chart.event(0,{type:'session.started',session:{id:'s1'}});
+ await chart.event(0,{type:'session.delegation.created',delegation:{id:'chart-read',target:'client'}});
+ assert.equal(chart.requests.filter(r=>r.url==='/api/delegate').at(-1).body.chart_capture,'actual chart capture','Voice uses exactly the reviewed capture');
+ chart.run('clearChartCapture()');await chart.event(0,{type:'session.delegation.created',delegation:{id:'broker-read',target:'client'}});
+ assert.equal(chart.requests.filter(r=>r.url==='/api/delegate').at(-1).body.chart_capture,null,'Clear ends chart selection');
+ console.log('PASS: chart imports are fenced and voice receives the selected capture only');
 })().catch(e=>{console.error(e);process.exit(1)});

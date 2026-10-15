@@ -1,0 +1,1215 @@
+//@version=6
+indicator("GTOP Shared Rules QA", overlay=true)
+// Generated. Uses the actual Butterfly lifecycle functions and shared cases.
+int historyKeep = 24
+int autoLookback = 120
+// BEGIN GENERATED GTOP RULES
+// Generated from rules/gtop_rules.json. Do not edit this block.
+string GTOP_RULESET_VERSION = "1.3.0"
+string GTOP_RULESET_SHA256 = "2a9f4ec9b85b58f1c8103d8782ac4e696cee4277237195578148bc59a0af9980"
+
+// GTOP-EVIDENCE-005; caller establishes confirmed timeframe and coverage.
+f_gtop_chart_contiguous(int expected, int starts, int previous_close, int projected_open) =>
+    (((starts == expected)) or (((previous_close == expected)) and ((projected_open == starts)) and ((starts > previous_close))))
+
+// GTOP-RANGE-002; caller establishes confirmed timeframe and coverage.
+f_gtop_inside(float c, float hi, float lo) =>
+    ((lo < c) and (c < hi))
+
+// GTOP-RANGE-003; caller establishes confirmed timeframe and coverage.
+f_gtop_outside(float c, float hi, float lo) =>
+    (((c > hi)) or ((c < lo)))
+
+// GTOP-RANGE-002; caller establishes confirmed timeframe and coverage.
+f_gtop_at_boundary(float c, float hi, float lo) =>
+    (((c == hi)) or ((c == lo)))
+
+// GTOP-RANGE-001; caller establishes confirmed timeframe and coverage.
+f_gtop_purged(float h, float l, float level, bool buy_side) =>
+    (buy_side ? ((h > level)) : ((l < level)))
+
+// GTOP-MODEL1-001; caller establishes confirmed timeframe and coverage.
+f_gtop_body_purge(float o, float h, float l, float c, float level, bool buy_side) =>
+    (buy_side ? (((o <= level) and (level < c)) or ((l < level) and (level < o) and (o < c))) : (((c < level) and (level <= o)) or ((c < o) and (o < level) and (level < h))))
+
+// GTOP-CISD-001; caller establishes confirmed timeframe and coverage.
+f_gtop_cisd(float c, float model_hi, float model_lo, bool bearish) =>
+    (bearish ? ((c < model_lo)) : ((c > model_hi)))
+
+// GTOP-VARIANT-004; caller establishes confirmed timeframe and coverage.
+f_gtop_inside_bar(float h, float l, float hi, float lo) =>
+    (((h <= hi)) and ((l >= lo)))
+
+// GTOP-VARIANT-V6-EXCLUSIVE; caller establishes confirmed timeframe and coverage.
+f_gtop_v6_before_full(bool initial_return, bool swept_extreme, bool full_before, bool full_same_bar) =>
+    (initial_return and swept_extreme and (not full_before) and (not full_same_bar))
+
+// GTOP-SOUP-001; caller establishes confirmed timeframe and coverage.
+f_gtop_soup_confirmation(float o, float h, float l, float c, float hi, float lo, bool bearish) =>
+    (bearish ? (((h > hi)) and ((((lo < c) and (c < hi)) and ((l >= lo))) or (((lo < o) and (o < hi)) and ((c < lo))))) : (((l < lo)) and ((((lo < c) and (c < hi)) and ((h <= hi))) or (((lo < o) and (o < hi)) and ((c > hi))))))
+
+// GTOP-SOUP-003; caller establishes confirmed timeframe and coverage.
+f_gtop_adverse_extension(float h, float l, float hi, float lo, bool bearish) =>
+    (bearish ? (((h > hi)) ? (h - hi) : 0.0) : (((l < lo)) ? (lo - l) : 0.0))
+
+// GTOP-SOUP-003; caller establishes confirmed timeframe and coverage.
+f_gtop_extension_percent(float points, float hi, float lo) =>
+    (((hi > lo)) ? ((100.0 * points) / (hi - lo)) : 0.0)
+
+f_gtop_assigned_tf(string sourceTF) =>
+    switch sourceTF
+        "1M" => "1D"
+        "1W" => "240"
+        "1D" => "60"
+        "240" => "15"
+        "60" => "5"
+        => ""
+// END GENERATED GTOP RULES
+
+type ActiveRange
+    float hi
+    float lo
+    int begins
+    int ends
+    int born
+    string title
+    bool highTaken = false
+    bool lowTaken = false
+    bool upperPurged = false
+    bool lowerPurged = false
+    bool closedBackInside = false
+    string sourceTF = ""
+    int retiredReason = 0
+    int retiredAt = na
+    bool objectiveAtRetirement = false
+    bool outsideCloseAtRetirement = false
+    int observedCandles = 1
+    int insideBefore = 0
+    int manipulationNumber = 0
+    float manipulationHigh = na
+    float manipulationLow = na
+    bool manipulationInside = false
+    bool midpointTaken = false
+    bool resoup = false
+    bool resoupPending = false
+    bool deliverySourceClosed = true
+    bool sameCandleV2 = false
+    int doublePurgeAt = na
+    bool oppositePurgePending = false
+    int returnObjectiveAt = na
+    bool followStopped = false
+    bool h1Delivery = false
+    bool forming = false
+    int purgeOpen = na
+    int purgeClose = na
+    int returnOpen = na
+    int returnClose = na
+    float returnPrice = na
+    int lastSourceOpen = na
+    int lastSourceClose = na
+    float lastSourcePrice = na
+    int objectiveObservedAt = na
+    string objectiveEvidenceTF = ""
+    int invalidOpen = na
+    int invalidAt = na
+
+f_copy_range(ActiveRange r) =>
+    // ActiveRange contains only scalar fields. Native copy preserves every
+    // value in a new independent object; no nested reference can be shared.
+    r.copy()
+
+// Candle-ordered CRT structure. This never changes box eligibility. It does
+// not infer intrabar event order, Model1/CSD, a Super Soup, or an entry.
+f_variant_observe(ActiveRange r, float h, float l, float c) =>
+    r.observedCandles += 1
+    bool firstPurge = not r.upperPurged and not r.lowerPurged and (h > r.hi or l < r.lo)
+    bool insideClose = f_gtop_inside(c, r.hi, r.lo)
+    float middle = math.avg(r.hi, r.lo)
+    if firstPurge
+        r.manipulationNumber := r.observedCandles
+        r.manipulationHigh := h
+        r.manipulationLow := l
+        r.manipulationInside := insideClose
+        r.midpointTaken := h > r.hi ? l <= middle : h >= middle
+    else if r.manipulationNumber == 0
+        if f_gtop_inside_bar(h, l, r.hi, r.lo)
+            r.insideBefore += 1
+    else
+        bool midNow = r.upperPurged ? l <= middle : h >= middle
+        bool sweptManipulation = r.upperPurged ? h > r.manipulationHigh : l < r.manipulationLow
+        bool objectiveTaken = r.upperPurged ? r.lowTaken : r.highTaken
+        bool objectiveNow = r.upperPurged ? l <= r.lo : h >= r.hi
+        // Midpoint is not the full objective. Same-bar re-purge + full objective
+        // has unknown order, so it cannot newly qualify V6.
+        if not r.resoup and f_gtop_v6_before_full(r.manipulationInside, sweptManipulation, objectiveTaken, objectiveNow)
+            r.resoupPending := true
+        if r.resoupPending and insideClose and not objectiveTaken and not objectiveNow
+            r.resoup := true
+            r.resoupPending := false
+        r.midpointTaken := r.midpointTaken or midNow
+    0
+
+f_variant_codes(ActiveRange r, bool completed, bool firstFormingPurge = false) =>
+    string codes = ""
+    int observed = r.observedCandles + (firstFormingPurge ? 1 : 0)
+    int manipulation = firstFormingPurge ? observed : r.manipulationNumber
+    if r.sameCandleV2 and completed
+        codes := "V2"
+    else if r.manipulationInside or firstFormingPurge
+        if r.insideBefore == 1
+            codes := "V4"
+        else if r.insideBefore >= 2
+            codes := "V5"
+        else if manipulation == 2
+            codes := completed ? (observed == 3 ? "V1" : observed > 3 ? "V3" : "") : observed < 3 ? "V1/V3" : "V3"
+        if r.resoup or r.resoupPending
+            // An evidenced second purge makes only V6 eligible.
+            codes := "V6"
+    completed and r.resoupPending ? "" : codes
+
+// Narrow OHLC proof for V2: candle 2 OPENS strictly inside, purges one edge,
+// and CLOSES beyond the opposing target. The purge necessarily precedes that
+// closing delivery. Gap opens and inside-closing two-sided bars stay unknown.
+// V2 is completed history only; it never fabricates an active inside-close box.
+f_v2_delivery(ActiveRange r, float o, float h, float l, float c) =>
+    bool startsInside = o > r.lo and o < r.hi
+    bool early = r.observedCandles == 1 and r.manipulationNumber == 0
+    early and startsInside and ((h > r.hi and c < r.lo) or (l < r.lo and c > r.hi))
+
+// 0 = remains (waiting or relevant), 1 = source-close invalidation,
+// 2 = objective delivered or both sides reached in the activation candle.
+// Objective tracking starts at the first strict purge, not before it.
+// Equal-edge touches alone do not activate relevance. Same-bar two-sided
+// action has no provably pending DOL; suppress it without inferring event order.
+f_active_reason(ActiveRange r, float h, float l, float c) =>
+    int reason = 0
+    bool objectiveReached = r.closedBackInside and ((r.upperPurged and l <= r.lo) or (r.lowerPurged and h >= r.hi))
+    if objectiveReached
+        r.lowTaken := r.lowTaken or r.upperPurged
+        r.highTaken := r.highTaken or r.lowerPurged
+        reason := 2
+    else if f_gtop_outside(c, r.hi, r.lo)
+        reason := 1
+    else if r.upperPurged
+        r.lowTaken := r.lowTaken or l <= r.lo
+        reason := r.lowTaken ? 2 : 0
+    else if r.lowerPurged
+        r.highTaken := r.highTaken or h >= r.hi
+        reason := r.highTaken ? 2 : 0
+    else if h > r.hi
+        r.upperPurged := true
+        r.highTaken := true
+        r.lowTaken := l <= r.lo
+        r.lowerPurged := l < r.lo
+        reason := r.lowTaken ? 2 : 0
+    else if l < r.lo
+        r.lowerPurged := true
+        r.lowTaken := true
+        r.highTaken := h >= r.hi
+        reason := r.highTaken ? 2 : 0
+    if reason == 0 and (r.upperPurged or r.lowerPurged) and f_gtop_inside(c, r.hi, r.lo)
+        r.closedBackInside := true
+    reason
+
+f_relevant(ActiveRange r) =>
+    r.closedBackInside and ((r.upperPurged and not r.lowerPurged and not r.lowTaken) or (r.lowerPurged and not r.upperPurged and not r.highTaken))
+
+// Observation only: latest traded price is inside; the source close is pending.
+// Existing closed candidates alone supply identity/coverage. Equality never
+// starts a purge, and a touch at the opposite edge removes a pending objective.
+f_forming(ActiveRange r, float h, float l, float c) =>
+    bool upper = r.upperPurged or h > r.hi
+    bool lower = r.lowerPurged or l < r.lo
+    not r.closedBackInside and r.retiredReason == 0 and f_gtop_inside(c, r.hi, r.lo) and ((upper and not lower and not r.lowTaken and l > r.lo) or (lower and not upper and not r.highTaken and h < r.hi))
+
+f_archive(array<ActiveRange> retired, ActiveRange r, int reason, int closedAt, float h, float l, float c) =>
+    if not na(retired)
+        ActiveRange record = f_copy_range(r)
+        record.retiredReason := reason
+        record.retiredAt := closedAt
+        record.objectiveAtRetirement := r.upperPurged ? l <= r.lo : h >= r.hi
+        record.outsideCloseAtRetirement := not r.h1Delivery and f_gtop_outside(c, r.hi, r.lo)
+        record.deliverySourceClosed := not r.h1Delivery
+        if reason == 2
+            record.objectiveObservedAt := closedAt
+            record.objectiveEvidenceTF := r.h1Delivery ? "60" : r.sourceTF
+        // Prior first purge is known; a strict opposite purge can be in the
+        // delivery candle itself. Only this range's own close confirms it.
+        if reason == 2 and not r.h1Delivery and r.closedBackInside and f_gtop_inside(c, r.hi, r.lo) and (r.upperPurged ? l < r.lo : h > r.hi)
+            record.doublePurgeAt := closedAt
+        if reason == 2 and not r.h1Delivery and r.closedBackInside and (r.upperPurged ? l < r.lo : h > r.hi)
+            record.oppositePurgePending := true
+        array.push(retired, record)
+        if array.size(retired) > historyKeep
+            array.shift(retired)
+    0
+
+// Follow completed ranges independently of active pending-DOL selection.
+// A second, opposing STRICT breach is a distinct purge; merely touching the
+// opposite objective completes delivery but is not yet a double purge.
+f_follow_retired(array<ActiveRange> retired, float h, float l, float c, int tc, bool h1Evidence=false, int sourceStart=na) =>
+    if not na(retired)
+        for r in retired
+            if r.retiredReason == 2 and not r.followStopped and tc >= r.retiredAt and not h1Evidence
+                r.deliverySourceClosed := true
+                r.lastSourceOpen := sourceStart
+                r.lastSourceClose := tc
+                r.lastSourcePrice := c
+                bool inside = f_gtop_inside(c, r.hi, r.lo)
+                if na(r.doublePurgeAt)
+                    r.oppositePurgePending := r.oppositePurgePending or (r.upperPurged ? l < r.lo : h > r.hi)
+                    if inside and r.oppositePurgePending
+                        r.doublePurgeAt := tc
+                else if tc > r.doublePurgeAt and (r.upperPurged ? h >= r.hi : l <= r.lo)
+                    r.returnObjectiveAt := tc
+                    r.followStopped := true
+                if f_gtop_outside(c, r.hi, r.lo)
+                    r.invalidOpen := sourceStart
+                    r.invalidAt := tc
+                    r.followStopped := true
+    0
+
+f_shift_observe(ActiveRange r, float o, float h, float l, float c, int tc, array<ActiveRange> retired, int sourceStart=na) =>
+    r.lastSourceOpen := sourceStart
+    r.lastSourceClose := tc
+    r.lastSourcePrice := c
+    if na(r.purgeClose) and (h > r.hi or l < r.lo)
+        r.purgeOpen := sourceStart
+        r.purgeClose := tc
+    if not na(r.purgeClose) and na(r.returnClose) and f_gtop_inside(c, r.hi, r.lo)
+        r.returnOpen := sourceStart
+        r.returnClose := tc
+        r.returnPrice := c
+    if f_gtop_outside(c, r.hi, r.lo)
+        r.invalidOpen := sourceStart
+        r.invalidAt := tc
+    bool wasQualified = f_relevant(r)
+    bool v2Delivered = f_v2_delivery(r, o, h, l, c)
+    // An unqualified, non-V2 candidate closing outside is discarded by every
+    // caller. It cannot produce an archive; avoid updating its unused variant fields.
+    int reason = 1
+    if wasQualified or v2Delivered or not (f_gtop_outside(c, r.hi, r.lo))
+        f_variant_observe(r, h, l, c)
+        reason := f_active_reason(r, h, l, c)
+        if v2Delivered
+            r.sameCandleV2 := true
+            r.upperPurged := c < r.lo
+            r.lowerPurged := c > r.hi
+            r.highTaken := true
+            r.lowTaken := true
+            reason := 2
+        if reason != 0 and (wasQualified or v2Delivered)
+            f_archive(retired, r, reason, tc, h, l, c)
+    reason
+
+f_active_step(array<ActiveRange> pool, float h, float l, float c, int s, int e, int seq, string title, array<ActiveRange> retired=na, string sourceTF="", float o=na) =>
+    int i = array.size(pool) - 1
+    while i >= 0
+        ActiveRange r = array.get(pool, i)
+        int reason = f_shift_observe(r, o, h, l, c, e, retired, s)
+        if reason != 0 or seq - r.born >= autoLookback
+            array.remove(pool, i)
+        i -= 1
+    f_follow_retired(retired, h, l, c, e, false, s)
+    if h > l and s < e
+        ActiveRange candidate = ActiveRange.new(h, l, s, e, seq, title, sourceTF=sourceTF)
+        array.push(pool, candidate)
+    0
+
+
+f_case_edge_pending_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    int reason = f_shift_observe(r, 106, 112, 104, 110, 2, history)
+    f_relevant(r) == false and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_edge_pending_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    int reason = f_shift_observe(r, 94, 96, 88, 90, 2, history)
+    f_relevant(r) == false and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_edge_then_inside_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 110, 2, history)
+    int reason = f_shift_observe(r, 106, 109, 104, 106, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_edge_then_inside_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 94, 96, 88, 90, 2, history)
+    int reason = f_shift_observe(r, 94, 96, 91, 94, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_edge_then_outside_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 110, 2, history)
+    int reason = f_shift_observe(r, 106, 111, 104, 110.25, 3, history)
+    f_relevant(r) == false and (reason == 1) == true and r.resoup == false and r.resoupPending == false
+
+f_case_edge_then_outside_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 94, 96, 88, 90, 2, history)
+    int reason = f_shift_observe(r, 94, 96, 89, 89.75, 3, history)
+    f_relevant(r) == false and (reason == 1) == true and r.resoup == false and r.resoupPending == false
+
+f_case_prior_return_survives_edge_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 106, 2, history)
+    int reason = f_shift_observe(r, 106, 111, 104, 110, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_prior_return_survives_edge_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 94, 96, 88, 94, 2, history)
+    int reason = f_shift_observe(r, 94, 96, 89, 90, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_v6_edge_pending_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 106, 2, history)
+    int reason = f_shift_observe(r, 106, 113, 104, 110, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == true
+
+f_case_v6_edge_pending_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 94, 96, 88, 94, 2, history)
+    int reason = f_shift_observe(r, 94, 96, 87, 90, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == true
+
+f_case_v6_edge_then_inside_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 106, 2, history)
+    f_shift_observe(r, 106, 113, 104, 110, 3, history)
+    int reason = f_shift_observe(r, 106, 109, 104, 106, 4, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == true and r.resoupPending == false
+
+f_case_v6_edge_then_inside_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 94, 96, 88, 94, 2, history)
+    f_shift_observe(r, 94, 96, 87, 90, 3, history)
+    int reason = f_shift_observe(r, 94, 96, 91, 94, 4, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == true and r.resoupPending == false
+
+f_case_v6_samebar_confirm_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 106, 2, history)
+    int reason = f_shift_observe(r, 106, 113, 104, 106, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == true and r.resoupPending == false
+
+f_case_v6_samebar_confirm_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 94, 96, 88, 94, 2, history)
+    int reason = f_shift_observe(r, 94, 96, 87, 94, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == true and r.resoupPending == false
+
+f_case_v6_equal_extreme_not_purge_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 106, 2, history)
+    int reason = f_shift_observe(r, 106, 112, 104, 106, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_v6_equal_extreme_not_purge_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 94, 96, 88, 94, 2, history)
+    int reason = f_shift_observe(r, 94, 96, 88, 94, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_v6_original_edge_not_extreme_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 106, 2, history)
+    int reason = f_shift_observe(r, 106, 111, 104, 106, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_v6_original_edge_not_extreme_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 94, 96, 88, 94, 2, history)
+    int reason = f_shift_observe(r, 94, 96, 89, 94, 3, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == false and r.resoupPending == false
+
+f_case_v6_keeps_confirmed_identity_bearish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 106, 2, history)
+    f_shift_observe(r, 106, 113, 104, 106, 3, history)
+    int reason = f_shift_observe(r, 106, 114, 104, 110, 4, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == true and r.resoupPending == false
+
+f_case_v6_keeps_confirmed_identity_bullish() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "QA")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 94, 96, 88, 94, 2, history)
+    f_shift_observe(r, 94, 96, 87, 94, 3, history)
+    int reason = f_shift_observe(r, 94, 96, 86, 90, 4, history)
+    f_relevant(r) == true and (reason == 1) == false and r.resoup == true and r.resoupPending == false
+
+f_case_own_timeframe() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "H4", upperPurged=true, highTaken=true, closedBackInside=true, retiredReason=2, retiredAt=2, h1Delivery=true, deliverySourceClosed=false)
+    array<ActiveRange> history = array.from(r)
+    f_follow_retired(history, 109, 89, 106, 3, true)
+    bool h1Ignored = na(r.doublePurgeAt) and not r.deliverySourceClosed
+    f_follow_retired(history, 112, 88, 111, 4, true)
+    bool h1CannotInvalidate = not r.followStopped
+    f_follow_retired(history, 112, 88, 90, 5)
+    bool edgePending = na(r.doublePurgeAt) and not r.followStopped
+    f_follow_retired(history, 109, 94, 100, 6)
+    h1Ignored and h1CannotInvalidate and edgePending and r.doublePurgeAt == 6 and r.deliverySourceClosed
+
+f_case_delivery_candle_double_purge() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 1, 0, "H1")
+    array<ActiveRange> history = array.new<ActiveRange>()
+    f_shift_observe(r, 106, 112, 104, 106, 2, history)
+    f_shift_observe(r, 106, 109, 89, 100, 3, history)
+    array.size(history) == 1 and array.get(history, 0).doublePurgeAt == 3
+
+string evidenceTF = "240"
+int evidenceAnchor = 0
+bool evidenceHistory = false
+bool historyOn = false
+string evidenceFocus = "Explicit parent layer"
+string highestEvidenceTF = "240"
+f_evidence_visible(ActiveRange r) =>
+    r.retiredReason == 0 and (f_relevant(r) or r.forming)
+
+
+f_evidence_range(array<ActiveRange> rows) =>
+    ActiveRange chosen = na
+    int bestRank = 100
+    if not na(rows)
+        for r in rows
+            if r.sourceTF == evidenceTF and (evidenceFocus == "Explicit parent layer" or highestEvidenceTF != "" or evidenceHistory or evidenceAnchor != 0) and (evidenceAnchor == 0 or r.begins == evidenceAnchor) and (r.retiredReason == 0 or (historyOn and evidenceHistory))
+                int rank = r.retiredReason == 0 and f_relevant(r) ? 0 : r.retiredReason == 0 and (r.upperPurged or r.lowerPurged) ? 1 : r.retiredReason != 0 ? 2 : 3
+                if na(chosen) or rank < bestRank or rank == bestRank and (rank == 0 ? r.begins < chosen.begins : r.begins > chosen.begins)
+                    chosen := r
+                    bestRank := rank
+    chosen
+
+// Keep all available active parents in oldest-first order, up to the same
+// existing per-layer limit (maximum eight). Explicit opening remains singular.
+f_evidence_ranges(array<ActiveRange> rows) =>
+    array<ActiveRange> selected = array.new<ActiveRange>()
+    if not na(rows) and evidenceAnchor == 0
+        for r in rows
+            if r.sourceTF == evidenceTF and f_evidence_visible(r)
+                int at = 0
+                while at < array.size(selected)
+                    if r.begins < array.get(selected, at).begins
+                        break
+                    at += 1
+                array.insert(selected, at, r)
+    if array.size(selected) == 0
+        ActiveRange fallback = f_evidence_range(rows)
+        if not na(fallback)
+            array.push(selected, fallback)
+    selected
+
+
+f_case_active_before_history() =>
+    ActiveRange old = ActiveRange.new(110, 90, 1, 2, 0, "Old", upperPurged=true, closedBackInside=true, sourceTF="240", retiredReason=1)
+    ActiveRange active = ActiveRange.new(110, 90, 3, 4, 0, "Active", lowerPurged=true, closedBackInside=true, sourceTF="240")
+    array<ActiveRange> rows = array.from(old, active)
+    ActiveRange chosen = f_evidence_range(rows)
+    chosen.begins == 3 and chosen.retiredReason == 0
+
+type EvidenceCandle
+    int s
+    int e
+    float o
+    float h
+    float l
+    float c
+    int previousClose = na
+    int projectedOpen = na
+    int tradingDay = na
+
+
+f_assigned_evidence(ActiveRange r, array<EvidenceCandle> bars, int cutoff) =>
+    EvidenceCandle model = na
+    EvidenceCandle csd = na
+    EvidenceCandle modelInvalid = na
+    EvidenceCandle soup = na
+    bool soupEligible = true
+    bool continuous = true
+    bool modelContinuous = true
+    bool primaryCertain = false
+    bool coveredStart = false
+    bool bearish = r.upperPurged
+    int expected = r.ends
+    int observedThrough = na
+    if not na(bars)
+        for bar in bars
+            if bar.s >= r.ends and bar.e <= cutoff and (na(r.invalidAt) or bar.e <= r.invalidAt)
+                bool connected = f_gtop_chart_contiguous(expected, bar.s, bar.previousClose, bar.projectedOpen)
+                coveredStart := coveredStart or (na(observedThrough) and connected)
+                continuous := continuous and connected
+                expected := bar.e
+                observedThrough := bar.e
+                if na(model) and (r.upperPurged != r.lowerPurged) and f_gtop_body_purge(bar.o, bar.h, bar.l, bar.c, bearish ? r.hi : r.lo, bearish)
+                    model := bar
+                    primaryCertain := coveredStart and continuous
+                else if not na(model)
+                    // A missing prefix limits first identity, not a witnessed
+                    // CISD against this retained candle. A later gap still blocks.
+                    modelContinuous := modelContinuous and connected
+                    if continuous and na(soup) and na(csd) and na(modelInvalid) and soupEligible and f_gtop_soup_confirmation(bar.o, bar.h, bar.l, bar.c, model.h, model.l, bearish)
+                        soup := bar
+                    soupEligible := soupEligible and not (bearish ? bar.l < model.l : bar.h > model.h)
+                    if modelContinuous and na(csd) and f_gtop_cisd(bar.c, model.h, model.l, bearish)
+                        csd := bar
+                    if modelContinuous and na(modelInvalid) and f_gtop_outside(bar.c, model.h, model.l)
+                        modelInvalid := bar
+    bool complete = coveredStart and continuous and not na(observedThrough) and observedThrough >= math.min(cutoff, nz(r.invalidAt, cutoff))
+    [model, csd, modelInvalid, soup, primaryCertain, complete, observedThrough]
+
+// Post-confirmation Soup condition is independent of Model 1 own-CRT validity.
+// Fixed Soup extreme supplies the distance origin; original Model 1 height
+// supplies the percentage scale. No tolerance or trade execution is inferred.
+type SoupFollow
+    string cleanliness = "clean"
+    string functionStatus = "pending"
+    float points = 0.0
+    float percent = 0.0
+    float modelPoints = 0.0
+    float modelPercent = 0.0
+    float closePoints = 0.0
+    int outsideCloses = 0
+    int degradedAt = na
+    int repurgeOpen = na
+    int equalTouchAt = na
+    int targetOpen = na
+    int targetAt = na
+    int windowEnd = na
+    bool complete = false
+    bool terminalBound = false
+
+f_soup_follow(ActiveRange r, EvidenceCandle model, EvidenceCandle soup, array<EvidenceCandle> bars, int cutoff, bool verified) =>
+    SoupFollow q = SoupFollow.new()
+    bool bearish = r.upperPurged
+    float target = bearish ? r.lo : r.hi
+    int stop = math.min(cutoff, nz(r.invalidAt, cutoff))
+    if na(soup) or na(model) or not verified or model.h <= model.l or stop < soup.e
+        q.cleanliness := "unverified"
+        q.functionStatus := "unverified"
+        q.points := na
+        q.percent := na
+        q.modelPoints := na
+        q.modelPercent := na
+        q.closePoints := na
+        q.outsideCloses := na
+    else
+        q.windowEnd := soup.e
+        bool earlierTarget = false
+        for bar in bars
+            if bar.s >= r.ends and bar.e <= soup.s and (bearish ? bar.l <= target : bar.h >= target)
+                earlierTarget := true
+        bool sameTarget = bearish ? soup.l <= target : soup.h >= target
+        if earlierTarget
+            q.functionStatus := "parent_objective_already_reached"
+            q.complete := true
+        else if sameTarget
+            bool ordered = bearish ? soup.c <= target : soup.c >= target
+            q.functionStatus := ordered ? "parent_objective_delivered" : "same_candle_order_unresolved"
+            q.targetOpen := soup.s
+            q.targetAt := soup.e
+            q.complete := true
+            q.terminalBound := not ordered
+        else
+            bool gap = false
+            for bar in bars
+                if bar.s >= soup.e and bar.e <= stop
+                    if not f_gtop_chart_contiguous(q.windowEnd, bar.s, bar.previousClose, bar.projectedOpen)
+                        gap := true
+                        break
+                    q.windowEnd := bar.e
+                    float points = f_gtop_adverse_extension(bar.h, bar.l, soup.h, soup.l, bearish)
+                    float modelPoints = f_gtop_adverse_extension(bar.h, bar.l, model.h, model.l, bearish)
+                    bool hit = bearish ? bar.l <= target : bar.h >= target
+                    if hit
+                        q.targetOpen := bar.s
+                        q.targetAt := bar.e
+                        q.terminalBound := points > q.points or modelPoints > q.modelPoints
+                    else
+                        if points > 0 and na(q.degradedAt)
+                            q.degradedAt := bar.e
+                            q.repurgeOpen := bar.s
+                        if (bearish ? bar.h == soup.h : bar.l == soup.l) and na(q.equalTouchAt)
+                            q.equalTouchAt := bar.e
+                        float closePoints = f_gtop_adverse_extension(bar.c, bar.c, model.h, model.l, bearish)
+                        if closePoints > 0
+                            q.outsideCloses += 1
+                            q.closePoints := math.max(q.closePoints, closePoints)
+                    q.points := math.max(q.points, points)
+                    q.modelPoints := math.max(q.modelPoints, modelPoints)
+                    if hit
+                        break
+            q.complete := not gap and (not na(q.targetAt) or q.windowEnd >= stop)
+            q.functionStatus := not na(q.targetAt) ? "parent_objective_delivered" : not q.complete ? "unverified" : not na(r.invalidAt) and stop == r.invalidAt ? "parent_invalidated_before_delivery" : "pending"
+            q.cleanliness := not na(q.degradedAt) ? "degraded" : q.complete and not q.terminalBound ? "clean" : "unverified"
+            q.percent := f_gtop_extension_percent(q.points, model.h, model.l)
+            q.modelPercent := f_gtop_extension_percent(q.modelPoints, model.h, model.l)
+    q
+
+
+f_case_child_failure_preserves_parent() =>
+    ActiveRange parent = ActiveRange.new(110, 90, 0, 10, 0, "H4", upperPurged=true, closedBackInside=true, sourceTF="240")
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(10, 11, 109, 113, 108, 112), EvidenceCandle.new(11, 12, 112, 112, 107, 107))
+    [model, csd, failed, soup, primary, complete, through] = f_assigned_evidence(parent, bars, 12)
+    not na(model) and not na(csd) and not na(failed) and model.s == 10 and failed.e == 12 and primary and complete and na(parent.invalidAt) and parent.retiredReason == 0 and f_relevant(parent)
+
+f_case_shared_model_independent_parents() =>
+    ActiveRange a = ActiveRange.new(110, 90, 0, 10, 0, "A", lowerPurged=true, closedBackInside=true, sourceTF="240")
+    ActiveRange b = ActiveRange.new(108, 92, 1, 10, 0, "B", lowerPurged=true, closedBackInside=true, sourceTF="240")
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(10, 11, 95, 96, 88, 89), EvidenceCandle.new(11, 12, 89, 100, 89, 98))
+    [ma, ca, sa, soupA, pa, fa, ta] = f_assigned_evidence(a, bars, 12)
+    [mb, cb, sb, soupB, pb, fb, tb] = f_assigned_evidence(b, bars, 12)
+    array<ActiveRange> both = f_evidence_ranges(array.from(b, a))
+    not na(ma) and not na(mb) and ma.s == mb.s and ca.s == cb.s and sa.s == sb.s and a.hi != b.hi and f_relevant(a) and f_relevant(b) and na(a.invalidAt) and na(b.invalidAt) and array.size(both) == 2 and array.first(both).begins == 0
+
+f_case_calendar_closure_and_missing_row() =>
+    ActiveRange parent = ActiveRange.new(110, 90, 0, 10, 0, "Monthly", upperPurged=true, forming=true, sourceTF="1M")
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 109, 113, 108, 112, 10, 12), EvidenceCandle.new(15, 16, 112, 112, 107, 107, 13, 15))
+    [model, csd, failed, soup, primary, complete, through] = f_assigned_evidence(parent, bars, 16)
+    bool closureOK = not na(model) and not na(csd) and not na(failed) and primary and complete and csd.s == 15 and failed.e == 16 and parent.forming and not parent.closedBackInside and na(parent.invalidAt)
+    array<EvidenceCandle> brokenBars = array.copy(bars)
+    EvidenceCandle broken = array.get(bars, 1).copy()
+    broken.previousClose := 14
+    array.set(brokenBars, 1, broken)
+    [m2, c2, s2, soup2, p2, f2, t2] = f_assigned_evidence(parent, brokenBars, 16)
+    closureOK and not na(m2) and p2 and not f2 and na(c2) and na(s2)
+
+f_case_retained_model_cisd(bool bearish) =>
+    ActiveRange parent = ActiveRange.new(110, 90, 0, 10, 0, "Daily", upperPurged=bearish, lowerPurged=not bearish, forming=true, sourceTF="1D")
+    EvidenceCandle model = bearish ? EvidenceCandle.new(12, 13, 109, 113, 108, 112) : EvidenceCandle.new(12, 13, 91, 92, 87, 88)
+    EvidenceCandle confirm = bearish ? EvidenceCandle.new(13, 14, 112, 112, 106, 107) : EvidenceCandle.new(13, 14, 88, 94, 88, 93)
+    array<EvidenceCandle> bars = array.from(model, confirm)
+    [m, c, failed, soup, primary, complete, through] = f_assigned_evidence(parent, bars, 14)
+    bool observed = not na(c) and not na(failed) and c.s == 13 and not primary and not complete and na(soup) and na(parent.invalidAt)
+    [m0, c0, f0, s0, p0, full0, t0] = f_assigned_evidence(parent, bars, 13)
+    bool closedOnly = not na(m0) and na(c0) and na(f0)
+    EvidenceCandle equal = confirm.copy()
+    equal.c := bearish ? model.l : model.h
+    array<EvidenceCandle> equalBars = array.from(model.copy(), equal)
+    [m1, c1, f1, s1, p1, full1, t1] = f_assigned_evidence(parent, equalBars, 14)
+    bool equalityPending = na(c1) and na(f1)
+    EvidenceCandle gap = confirm.copy()
+    gap.s := 14
+    gap.e := 15
+    array<EvidenceCandle> gapBars = array.from(model.copy(), gap)
+    [m2, c2, f2, s2, p2, full2, t2] = f_assigned_evidence(parent, gapBars, 15)
+    observed and closedOnly and equalityPending and na(c2) and na(f2)
+
+f_case_soup_close_above_model_below_soup_wick_bear() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=true, lowerPurged=false, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 109, 113, 108, 112)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 112, 120, 109, 111)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 114, 119, 110, 116))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 13, true)
+    q.cleanliness == "clean" and q.functionStatus == "pending" and q.points == 0 and q.modelPoints == 6 and q.outsideCloses == 1 and q.complete == true
+
+f_case_soup_close_above_model_below_soup_wick_bull() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=false, lowerPurged=true, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 91, 92, 87, 88)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 88, 91, 80, 89)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 86, 90, 81, 84))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 13, true)
+    q.cleanliness == "clean" and q.functionStatus == "pending" and q.points == 0 and q.modelPoints == 6 and q.outsideCloses == 1 and q.complete == true
+
+f_case_soup_wick_repurge_without_outside_close_bear() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=true, lowerPurged=false, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 109, 113, 108, 112)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 112, 120, 109, 111)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 112, 121, 110, 112))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 13, true)
+    q.cleanliness == "degraded" and q.degradedAt == 13 and q.points == 1 and q.percent == 20 and q.outsideCloses == 0
+
+f_case_soup_wick_repurge_without_outside_close_bull() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=false, lowerPurged=true, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 91, 92, 87, 88)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 88, 91, 80, 89)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 88, 90, 79, 88))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 13, true)
+    q.cleanliness == "degraded" and q.degradedAt == 13 and q.points == 1 and q.percent == 20 and q.outsideCloses == 0
+
+f_case_soup_equal_touch_stays_clean_bear() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=true, lowerPurged=false, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 109, 113, 108, 112)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 112, 120, 109, 111)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 112, 120, 110, 112))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 13, true)
+    q.cleanliness == "clean" and q.equalTouchAt == 13 and q.points == 0
+
+f_case_soup_equal_touch_stays_clean_bull() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=false, lowerPurged=true, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 91, 92, 87, 88)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 88, 91, 80, 89)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 88, 90, 80, 88))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 13, true)
+    q.cleanliness == "clean" and q.equalTouchAt == 13 and q.points == 0
+
+f_case_soup_degraded_then_parent_delivers_and_freezes_bear() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=true, lowerPurged=false, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 109, 113, 108, 112)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 112, 120, 109, 111)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 112, 121, 110, 112), EvidenceCandle.new(13, 14, 112, 112, 89, 100), EvidenceCandle.new(14, 15, 100, 999, 80, 150))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 15, true)
+    q.cleanliness == "degraded" and q.functionStatus == "parent_objective_delivered" and q.targetOpen == 13 and q.windowEnd == 14 and q.points == 1 and q.percent == 20 and q.terminalBound == false
+
+f_case_soup_degraded_then_parent_delivers_and_freezes_bull() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=false, lowerPurged=true, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 91, 92, 87, 88)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 88, 91, 80, 89)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 88, 90, 79, 88), EvidenceCandle.new(13, 14, 88, 111, 88, 100), EvidenceCandle.new(14, 15, 100, 120, -799, 50))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 15, true)
+    q.cleanliness == "degraded" and q.functionStatus == "parent_objective_delivered" and q.targetOpen == 13 and q.windowEnd == 14 and q.points == 1 and q.percent == 20 and q.terminalBound == false
+
+f_case_soup_terminal_new_extreme_is_bound_bear() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=true, lowerPurged=false, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 109, 113, 108, 112)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 112, 120, 109, 111)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 112, 122, 89, 100))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 13, true)
+    q.cleanliness == "unverified" and q.functionStatus == "parent_objective_delivered" and q.points == 2 and q.percent == 40 and q.terminalBound == true and q.outsideCloses == 0
+
+f_case_soup_terminal_new_extreme_is_bound_bull() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=false, lowerPurged=true, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 91, 92, 87, 88)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 88, 91, 80, 89)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 88, 111, 78, 100))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 13, true)
+    q.cleanliness == "unverified" and q.functionStatus == "parent_objective_delivered" and q.points == 2 and q.percent == 40 and q.terminalBound == true and q.outsideCloses == 0
+
+f_case_soup_gap_prevents_later_claim_bear() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=true, lowerPurged=false, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 109, 113, 108, 112)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 112, 120, 109, 111)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(13, 14, 112, 122, 89, 100))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 14, true)
+    q.cleanliness == "unverified" and q.functionStatus == "unverified" and q.complete == false and q.points == 0 and q.windowEnd == 12
+
+f_case_soup_gap_prevents_later_claim_bull() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=false, lowerPurged=true, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 91, 92, 87, 88)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 88, 91, 80, 89)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(13, 14, 88, 111, 78, 100))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 14, true)
+    q.cleanliness == "unverified" and q.functionStatus == "unverified" and q.complete == false and q.points == 0 and q.windowEnd == 12
+
+f_case_soup_parent_invalidation_ends_window_bear() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=true, lowerPurged=false, invalidAt=13)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 109, 113, 108, 112)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 112, 120, 109, 111)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 112, 121, 110, 112), EvidenceCandle.new(13, 14, 112, 122, 89, 100))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 14, true)
+    q.cleanliness == "degraded" and q.functionStatus == "parent_invalidated_before_delivery" and q.points == 1 and q.windowEnd == 13
+
+f_case_soup_parent_invalidation_ends_window_bull() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=false, lowerPurged=true, invalidAt=13)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 91, 92, 87, 88)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 88, 91, 80, 89)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 88, 90, 79, 88), EvidenceCandle.new(13, 14, 88, 111, 78, 100))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 14, true)
+    q.cleanliness == "degraded" and q.functionStatus == "parent_invalidated_before_delivery" and q.points == 1 and q.windowEnd == 13
+
+f_case_soup_forming_bar_does_not_leak_bear() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=true, lowerPurged=false, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 109, 113, 108, 112)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 112, 120, 109, 111)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 112, 121, 110, 112))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 12, true)
+    q.cleanliness == "clean" and q.functionStatus == "pending" and q.points == 0 and q.complete == true
+
+f_case_soup_forming_bar_does_not_leak_bull() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=false, lowerPurged=true, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 91, 92, 87, 88)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 88, 91, 80, 89)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(12, 13, 88, 90, 79, 88))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 12, true)
+    q.cleanliness == "clean" and q.functionStatus == "pending" and q.points == 0 and q.complete == true
+
+f_case_soup_calendar_gap_is_witnessed_bear() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=true, lowerPurged=false, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 109, 113, 108, 112)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 112, 120, 109, 111)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(14, 15, 112, 121, 110, 112, 12, 14))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 15, true)
+    q.cleanliness == "degraded" and q.functionStatus == "pending" and q.points == 1 and q.complete == true
+
+f_case_soup_calendar_gap_is_witnessed_bull() =>
+    ActiveRange r = ActiveRange.new(110, 90, 0, 10, 0, "QA", upperPurged=false, lowerPurged=true, invalidAt=na)
+    EvidenceCandle model = EvidenceCandle.new(10, 11, 91, 92, 87, 88)
+    EvidenceCandle soup = EvidenceCandle.new(11, 12, 88, 91, 80, 89)
+    array<EvidenceCandle> bars = array.from(EvidenceCandle.new(14, 15, 88, 90, 79, 88, 12, 14))
+    SoupFollow q = f_soup_follow(r, model, soup, bars, 15, true)
+    q.cleanliness == "degraded" and q.functionStatus == "pending" and q.points == 1 and q.complete == true
+
+var table result = table.new(position.top_center, 1, 1)
+if barstate.islast
+    int passed = 0
+    if not (f_gtop_inside(110, 110, 90) == false)
+        runtime.error("GTOP rule failed: high_edge_inside")
+    passed += 1
+    if not (f_gtop_outside(110, 110, 90) == false)
+        runtime.error("GTOP rule failed: high_edge_outside")
+    passed += 1
+    if not (f_gtop_at_boundary(110, 110, 90) == true)
+        runtime.error("GTOP rule failed: high_edge_at_boundary")
+    passed += 1
+    if not (f_gtop_inside(90, 110, 90) == false)
+        runtime.error("GTOP rule failed: low_edge_inside")
+    passed += 1
+    if not (f_gtop_outside(90, 110, 90) == false)
+        runtime.error("GTOP rule failed: low_edge_outside")
+    passed += 1
+    if not (f_gtop_at_boundary(90, 110, 90) == true)
+        runtime.error("GTOP rule failed: low_edge_at_boundary")
+    passed += 1
+    if not (f_gtop_inside(109.75, 110, 90) == true)
+        runtime.error("GTOP rule failed: inside_high_inside")
+    passed += 1
+    if not (f_gtop_outside(109.75, 110, 90) == false)
+        runtime.error("GTOP rule failed: inside_high_outside")
+    passed += 1
+    if not (f_gtop_at_boundary(109.75, 110, 90) == false)
+        runtime.error("GTOP rule failed: inside_high_at_boundary")
+    passed += 1
+    if not (f_gtop_inside(90.25, 110, 90) == true)
+        runtime.error("GTOP rule failed: inside_low_inside")
+    passed += 1
+    if not (f_gtop_outside(90.25, 110, 90) == false)
+        runtime.error("GTOP rule failed: inside_low_outside")
+    passed += 1
+    if not (f_gtop_at_boundary(90.25, 110, 90) == false)
+        runtime.error("GTOP rule failed: inside_low_at_boundary")
+    passed += 1
+    if not (f_gtop_inside(110.25, 110, 90) == false)
+        runtime.error("GTOP rule failed: outside_high_inside")
+    passed += 1
+    if not (f_gtop_outside(110.25, 110, 90) == true)
+        runtime.error("GTOP rule failed: outside_high_outside")
+    passed += 1
+    if not (f_gtop_at_boundary(110.25, 110, 90) == false)
+        runtime.error("GTOP rule failed: outside_high_at_boundary")
+    passed += 1
+    if not (f_gtop_inside(89.75, 110, 90) == false)
+        runtime.error("GTOP rule failed: outside_low_inside")
+    passed += 1
+    if not (f_gtop_outside(89.75, 110, 90) == true)
+        runtime.error("GTOP rule failed: outside_low_outside")
+    passed += 1
+    if not (f_gtop_at_boundary(89.75, 110, 90) == false)
+        runtime.error("GTOP rule failed: outside_low_at_boundary")
+    passed += 1
+    if not (f_gtop_purged(110, 90, 110, true) == false)
+        runtime.error("GTOP rule failed: touch_True")
+    passed += 1
+    if not (f_gtop_purged(110.25, 89.75, 110, true) == true)
+        runtime.error("GTOP rule failed: strict_purge_True")
+    passed += 1
+    if not (f_gtop_body_purge(100, 110, 100, 110, 110, true) == false)
+        runtime.error("GTOP rule failed: body_close_equal_True")
+    passed += 1
+    if not (f_gtop_body_purge(110, 110.25, 110, 110.25, 110, true) == true)
+        runtime.error("GTOP rule failed: body_open_equal_True")
+    passed += 1
+    if not (f_gtop_body_purge(111, 112, 111, 112, 110, true) == false)
+        runtime.error("GTOP rule failed: gap_body_True")
+    passed += 1
+    if not (f_gtop_cisd(90, 110, 90, true) == false)
+        runtime.error("GTOP rule failed: cisd_equal_True")
+    passed += 1
+    if not (f_gtop_cisd(89.75, 110, 90, true) == true)
+        runtime.error("GTOP rule failed: cisd_strict_True")
+    passed += 1
+    if not (f_gtop_purged(110, 90, 90, false) == false)
+        runtime.error("GTOP rule failed: touch_False")
+    passed += 1
+    if not (f_gtop_purged(110.25, 89.75, 90, false) == true)
+        runtime.error("GTOP rule failed: strict_purge_False")
+    passed += 1
+    if not (f_gtop_body_purge(100, 100, 90, 90, 90, false) == false)
+        runtime.error("GTOP rule failed: body_close_equal_False")
+    passed += 1
+    if not (f_gtop_body_purge(90, 90, 89.75, 89.75, 90, false) == true)
+        runtime.error("GTOP rule failed: body_open_equal_False")
+    passed += 1
+    if not (f_gtop_body_purge(89, 89, 88, 88, 90, false) == false)
+        runtime.error("GTOP rule failed: gap_body_False")
+    passed += 1
+    if not (f_gtop_cisd(110, 110, 90, false) == false)
+        runtime.error("GTOP rule failed: cisd_equal_False")
+    passed += 1
+    if not (f_gtop_cisd(110.25, 110, 90, false) == true)
+        runtime.error("GTOP rule failed: cisd_strict_False")
+    passed += 1
+    if not (f_gtop_inside_bar(110, 90, 110, 90) == true)
+        runtime.error("GTOP rule failed: inside_bar_edges")
+    passed += 1
+    if not (f_gtop_inside_bar(110.25, 90, 110, 90) == false)
+        runtime.error("GTOP rule failed: inside_bar_breach")
+    passed += 1
+    if not (f_gtop_v6_before_full(true, true, false, false) == true)
+        runtime.error("GTOP rule failed: v6_eligible")
+    passed += 1
+    if not (f_gtop_v6_before_full(true, true, false, false) == true)
+        runtime.error("GTOP rule failed: v6_midpoint_not_input")
+    passed += 1
+    if not (f_gtop_v6_before_full(false, true, false, false) == false)
+        runtime.error("GTOP rule failed: v6_no_first_return")
+    passed += 1
+    if not (f_gtop_v6_before_full(true, false, false, false) == false)
+        runtime.error("GTOP rule failed: v6_not_extreme")
+    passed += 1
+    if not (f_gtop_v6_before_full(true, true, true, false) == false)
+        runtime.error("GTOP rule failed: v6_full_before")
+    passed += 1
+    if not (f_gtop_v6_before_full(true, true, false, true) == false)
+        runtime.error("GTOP rule failed: v6_samebar_full")
+    passed += 1
+    if not (f_gtop_chart_contiguous(100, 100, 0, 0) == true)
+        runtime.error("GTOP rule failed: chart_calendar_adjacent")
+    passed += 1
+    if not (f_gtop_chart_contiguous(100, 200, 100, 200) == true)
+        runtime.error("GTOP rule failed: chart_calendar_weekend")
+    passed += 1
+    if not (f_gtop_chart_contiguous(100, 190, 100, 190) == true)
+        runtime.error("GTOP rule failed: chart_calendar_dst_or_holiday")
+    passed += 1
+    if not (f_gtop_chart_contiguous(100, 200, 150, 200) == false)
+        runtime.error("GTOP rule failed: chart_calendar_omitted_row")
+    passed += 1
+    if not (f_gtop_chart_contiguous(100, 200, 100, 199) == false)
+        runtime.error("GTOP rule failed: chart_calendar_wrong_projection")
+    passed += 1
+    if not (f_gtop_chart_contiguous(100, 200, 0, 0) == false)
+        runtime.error("GTOP rule failed: chart_calendar_unknown")
+    passed += 1
+    if not (f_gtop_body_purge(30890.4, 31155.7, 30735.8, 31133, 30839, true) == true)
+        runtime.error("GTOP rule failed: nas100_monday_oct5")
+    passed += 1
+    if not (f_gtop_body_purge(101, 104, 99, 103, 100, true) == true)
+        runtime.error("GTOP rule failed: outside_open_buy_retest")
+    passed += 1
+    if not (f_gtop_body_purge(89, 91, 86, 87, 90, false) == true)
+        runtime.error("GTOP rule failed: outside_open_sell_retest")
+    passed += 1
+    if not (f_gtop_body_purge(101, 104, 100, 103, 100, true) == false)
+        runtime.error("GTOP rule failed: outside_open_buy_touch_only")
+    passed += 1
+    if not (f_gtop_body_purge(89, 90, 86, 87, 90, false) == false)
+        runtime.error("GTOP rule failed: outside_open_sell_touch_only")
+    passed += 1
+    if not (f_gtop_body_purge(101, 104, 101, 103, 100, true) == false)
+        runtime.error("GTOP rule failed: outside_open_buy_no_retest")
+    passed += 1
+    if not (f_gtop_body_purge(89, 89, 86, 87, 90, false) == false)
+        runtime.error("GTOP rule failed: outside_open_sell_no_retest")
+    passed += 1
+    if not (f_gtop_body_purge(103, 104, 99, 101, 100, true) == false)
+        runtime.error("GTOP rule failed: outside_open_buy_inward")
+    passed += 1
+    if not (f_gtop_body_purge(87, 91, 86, 89, 90, false) == false)
+        runtime.error("GTOP rule failed: outside_open_sell_inward")
+    passed += 1
+    if not (f_gtop_body_purge(101, 104, 99, 101, 100, true) == false)
+        runtime.error("GTOP rule failed: outside_open_buy_doji")
+    passed += 1
+    if not (f_gtop_body_purge(89, 91, 86, 89, 90, false) == false)
+        runtime.error("GTOP rule failed: outside_open_sell_doji")
+    passed += 1
+    if not (f_gtop_soup_confirmation(102, 104, 99, 101, 103, 98, true) == true)
+        runtime.error("GTOP rule failed: soup_wick_return")
+    passed += 1
+    if not (f_gtop_soup_confirmation(89, 91, 86, 90, 92, 87, false) == true)
+        runtime.error("GTOP rule failed: soup_sell_wick_return")
+    passed += 1
+    if not (f_gtop_soup_confirmation(102, 103, 96, 97, 103, 98, true) == false)
+        runtime.error("GTOP rule failed: soup_cisd_alone")
+    passed += 1
+    if not (f_gtop_soup_confirmation(102, 105, 99, 104, 103, 98, true) == false)
+        runtime.error("GTOP rule failed: soup_adverse_outside_alone")
+    passed += 1
+    if not (f_gtop_soup_confirmation(102, 104, 96, 97, 103, 98, true) == true)
+        runtime.error("GTOP rule failed: soup_same_candle_v2")
+    passed += 1
+    if not (f_gtop_soup_confirmation(89, 94, 86, 93, 92, 87, false) == true)
+        runtime.error("GTOP rule failed: soup_mirrored_v2")
+    passed += 1
+    if not (f_gtop_soup_confirmation(102, 104, 99, 103, 103, 98, true) == false)
+        runtime.error("GTOP rule failed: soup_boundary_return")
+    passed += 1
+    if not (f_gtop_soup_confirmation(102, 104, 97, 101, 103, 98, true) == false)
+        runtime.error("GTOP rule failed: soup_ambiguous_two_sided")
+    passed += 1
+    if not (f_gtop_soup_confirmation(104, 105, 96, 97, 103, 98, true) == false)
+        runtime.error("GTOP rule failed: soup_later_entry_open_outside")
+    passed += 1
+    if not (f_case_edge_pending_bearish())
+        runtime.error("GTOP rule failed: edge_pending_bearish")
+    passed += 1
+    if not (f_case_edge_pending_bullish())
+        runtime.error("GTOP rule failed: edge_pending_bullish")
+    passed += 1
+    if not (f_case_edge_then_inside_bearish())
+        runtime.error("GTOP rule failed: edge_then_inside_bearish")
+    passed += 1
+    if not (f_case_edge_then_inside_bullish())
+        runtime.error("GTOP rule failed: edge_then_inside_bullish")
+    passed += 1
+    if not (f_case_edge_then_outside_bearish())
+        runtime.error("GTOP rule failed: edge_then_outside_bearish")
+    passed += 1
+    if not (f_case_edge_then_outside_bullish())
+        runtime.error("GTOP rule failed: edge_then_outside_bullish")
+    passed += 1
+    if not (f_case_prior_return_survives_edge_bearish())
+        runtime.error("GTOP rule failed: prior_return_survives_edge_bearish")
+    passed += 1
+    if not (f_case_prior_return_survives_edge_bullish())
+        runtime.error("GTOP rule failed: prior_return_survives_edge_bullish")
+    passed += 1
+    if not (f_case_v6_edge_pending_bearish())
+        runtime.error("GTOP rule failed: v6_edge_pending_bearish")
+    passed += 1
+    if not (f_case_v6_edge_pending_bullish())
+        runtime.error("GTOP rule failed: v6_edge_pending_bullish")
+    passed += 1
+    if not (f_case_v6_edge_then_inside_bearish())
+        runtime.error("GTOP rule failed: v6_edge_then_inside_bearish")
+    passed += 1
+    if not (f_case_v6_edge_then_inside_bullish())
+        runtime.error("GTOP rule failed: v6_edge_then_inside_bullish")
+    passed += 1
+    if not (f_case_v6_samebar_confirm_bearish())
+        runtime.error("GTOP rule failed: v6_samebar_confirm_bearish")
+    passed += 1
+    if not (f_case_v6_samebar_confirm_bullish())
+        runtime.error("GTOP rule failed: v6_samebar_confirm_bullish")
+    passed += 1
+    if not (f_case_v6_equal_extreme_not_purge_bearish())
+        runtime.error("GTOP rule failed: v6_equal_extreme_not_purge_bearish")
+    passed += 1
+    if not (f_case_v6_equal_extreme_not_purge_bullish())
+        runtime.error("GTOP rule failed: v6_equal_extreme_not_purge_bullish")
+    passed += 1
+    if not (f_case_v6_original_edge_not_extreme_bearish())
+        runtime.error("GTOP rule failed: v6_original_edge_not_extreme_bearish")
+    passed += 1
+    if not (f_case_v6_original_edge_not_extreme_bullish())
+        runtime.error("GTOP rule failed: v6_original_edge_not_extreme_bullish")
+    passed += 1
+    if not (f_case_v6_keeps_confirmed_identity_bearish())
+        runtime.error("GTOP rule failed: v6_keeps_confirmed_identity_bearish")
+    passed += 1
+    if not (f_case_v6_keeps_confirmed_identity_bullish())
+        runtime.error("GTOP rule failed: v6_keeps_confirmed_identity_bullish")
+    passed += 1
+    if not (f_case_own_timeframe())
+        runtime.error("GTOP rule failed: own_timeframe")
+    passed += 1
+    if not (f_case_delivery_candle_double_purge())
+        runtime.error("GTOP rule failed: delivery_candle_double_purge")
+    passed += 1
+    if not (f_gtop_assigned_tf("1M") == "1D")
+        runtime.error("GTOP rule failed: mapping_MN1")
+    passed += 1
+    if not (f_gtop_assigned_tf("1W") == "240")
+        runtime.error("GTOP rule failed: mapping_W1")
+    passed += 1
+    if not (f_gtop_assigned_tf("1D") == "60")
+        runtime.error("GTOP rule failed: mapping_D1")
+    passed += 1
+    if not (f_gtop_assigned_tf("240") == "15")
+        runtime.error("GTOP rule failed: mapping_H4")
+    passed += 1
+    if not (f_gtop_assigned_tf("60") == "5")
+        runtime.error("GTOP rule failed: mapping_H1")
+    passed += 1
+    if not (f_case_active_before_history())
+        runtime.error("GTOP rule failed: active_before_history")
+    passed += 1
+    if not (f_case_child_failure_preserves_parent())
+        runtime.error("GTOP rule failed: child_failure_preserves_parent")
+    passed += 1
+    if not (f_case_shared_model_independent_parents())
+        runtime.error("GTOP rule failed: shared_model_independent_parents")
+    passed += 1
+    if not (f_case_calendar_closure_and_missing_row())
+        runtime.error("GTOP rule failed: calendar_closure_and_missing_row")
+    passed += 1
+    if not (f_case_retained_model_cisd(true))
+        runtime.error("GTOP rule failed: retained_model_cisd_bear")
+    passed += 1
+    if not (f_case_retained_model_cisd(false))
+        runtime.error("GTOP rule failed: retained_model_cisd_bull")
+    passed += 1
+    if not (f_case_soup_close_above_model_below_soup_wick_bear())
+        runtime.error("GTOP rule failed: soup_close_above_model_below_soup_wick_bear")
+    passed += 1
+    if not (f_case_soup_close_above_model_below_soup_wick_bull())
+        runtime.error("GTOP rule failed: soup_close_above_model_below_soup_wick_bull")
+    passed += 1
+    if not (f_case_soup_wick_repurge_without_outside_close_bear())
+        runtime.error("GTOP rule failed: soup_wick_repurge_without_outside_close_bear")
+    passed += 1
+    if not (f_case_soup_wick_repurge_without_outside_close_bull())
+        runtime.error("GTOP rule failed: soup_wick_repurge_without_outside_close_bull")
+    passed += 1
+    if not (f_case_soup_equal_touch_stays_clean_bear())
+        runtime.error("GTOP rule failed: soup_equal_touch_stays_clean_bear")
+    passed += 1
+    if not (f_case_soup_equal_touch_stays_clean_bull())
+        runtime.error("GTOP rule failed: soup_equal_touch_stays_clean_bull")
+    passed += 1
+    if not (f_case_soup_degraded_then_parent_delivers_and_freezes_bear())
+        runtime.error("GTOP rule failed: soup_degraded_then_parent_delivers_and_freezes_bear")
+    passed += 1
+    if not (f_case_soup_degraded_then_parent_delivers_and_freezes_bull())
+        runtime.error("GTOP rule failed: soup_degraded_then_parent_delivers_and_freezes_bull")
+    passed += 1
+    if not (f_case_soup_terminal_new_extreme_is_bound_bear())
+        runtime.error("GTOP rule failed: soup_terminal_new_extreme_is_bound_bear")
+    passed += 1
+    if not (f_case_soup_terminal_new_extreme_is_bound_bull())
+        runtime.error("GTOP rule failed: soup_terminal_new_extreme_is_bound_bull")
+    passed += 1
+    if not (f_case_soup_gap_prevents_later_claim_bear())
+        runtime.error("GTOP rule failed: soup_gap_prevents_later_claim_bear")
+    passed += 1
+    if not (f_case_soup_gap_prevents_later_claim_bull())
+        runtime.error("GTOP rule failed: soup_gap_prevents_later_claim_bull")
+    passed += 1
+    if not (f_case_soup_parent_invalidation_ends_window_bear())
+        runtime.error("GTOP rule failed: soup_parent_invalidation_ends_window_bear")
+    passed += 1
+    if not (f_case_soup_parent_invalidation_ends_window_bull())
+        runtime.error("GTOP rule failed: soup_parent_invalidation_ends_window_bull")
+    passed += 1
+    if not (f_case_soup_forming_bar_does_not_leak_bear())
+        runtime.error("GTOP rule failed: soup_forming_bar_does_not_leak_bear")
+    passed += 1
+    if not (f_case_soup_forming_bar_does_not_leak_bull())
+        runtime.error("GTOP rule failed: soup_forming_bar_does_not_leak_bull")
+    passed += 1
+    if not (f_case_soup_calendar_gap_is_witnessed_bear())
+        runtime.error("GTOP rule failed: soup_calendar_gap_is_witnessed_bear")
+    passed += 1
+    if not (f_case_soup_calendar_gap_is_witnessed_bull())
+        runtime.error("GTOP rule failed: soup_calendar_gap_is_witnessed_bull")
+    passed += 1
+    table.cell(result, 0, 0, "GTOP " + GTOP_RULESET_VERSION + " | " + str.tostring(passed) + " checks PASS", text_color=color.white, bgcolor=color.green)

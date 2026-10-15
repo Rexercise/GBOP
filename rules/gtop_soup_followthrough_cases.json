@@ -1,0 +1,243 @@
+{
+  "model": [
+    10,
+    11,
+    109,
+    113,
+    108,
+    112
+  ],
+  "soup": [
+    11,
+    12,
+    112,
+    120,
+    109,
+    111
+  ],
+  "parent_high": 110,
+  "parent_low": 90,
+  "parent_end": 10,
+  "cases": [
+    {
+      "id": "close_above_model_below_soup_wick",
+      "bars": [
+        [
+          12,
+          13,
+          114,
+          119,
+          110,
+          116
+        ]
+      ],
+      "cutoff": 13,
+      "expect": {
+        "cleanliness": "clean",
+        "function_status": "pending",
+        "max_adverse_points": 0,
+        "model_boundary_points": 6,
+        "outside_close_count": 1,
+        "coverage_complete": true
+      }
+    },
+    {
+      "id": "wick_repurge_without_outside_close",
+      "bars": [
+        [
+          12,
+          13,
+          112,
+          121,
+          110,
+          112
+        ]
+      ],
+      "cutoff": 13,
+      "expect": {
+        "cleanliness": "degraded",
+        "degraded_at": 13,
+        "max_adverse_points": 1,
+        "max_adverse_percent": 20,
+        "outside_close_count": 0
+      }
+    },
+    {
+      "id": "equal_touch_stays_clean",
+      "bars": [
+        [
+          12,
+          13,
+          112,
+          120,
+          110,
+          112
+        ]
+      ],
+      "cutoff": 13,
+      "expect": {
+        "cleanliness": "clean",
+        "equal_touch_at": 13,
+        "max_adverse_points": 0
+      }
+    },
+    {
+      "id": "degraded_then_parent_delivers_and_freezes",
+      "bars": [
+        [
+          12,
+          13,
+          112,
+          121,
+          110,
+          112
+        ],
+        [
+          13,
+          14,
+          112,
+          112,
+          89,
+          100
+        ],
+        [
+          14,
+          15,
+          100,
+          999,
+          80,
+          150
+        ]
+      ],
+      "cutoff": 15,
+      "expect": {
+        "cleanliness": "degraded",
+        "function_status": "parent_objective_delivered",
+        "target_open": 13,
+        "window_end": 14,
+        "max_adverse_points": 1,
+        "max_adverse_percent": 20,
+        "terminal_bar_bound": false
+      }
+    },
+    {
+      "id": "terminal_new_extreme_is_bound",
+      "bars": [
+        [
+          12,
+          13,
+          112,
+          122,
+          89,
+          100
+        ]
+      ],
+      "cutoff": 13,
+      "expect": {
+        "cleanliness": "unverified",
+        "function_status": "parent_objective_delivered",
+        "max_adverse_points": 2,
+        "max_adverse_percent": 40,
+        "terminal_bar_bound": true,
+        "outside_close_count": 0
+      }
+    },
+    {
+      "id": "gap_prevents_later_claim",
+      "bars": [
+        [
+          13,
+          14,
+          112,
+          122,
+          89,
+          100
+        ]
+      ],
+      "cutoff": 14,
+      "expect": {
+        "cleanliness": "unverified",
+        "function_status": "unverified",
+        "coverage_complete": false,
+        "max_adverse_points": 0,
+        "window_end": 12
+      }
+    },
+    {
+      "id": "parent_invalidation_ends_window",
+      "bars": [
+        [
+          12,
+          13,
+          112,
+          121,
+          110,
+          112
+        ],
+        [
+          13,
+          14,
+          112,
+          122,
+          89,
+          100
+        ]
+      ],
+      "cutoff": 14,
+      "invalid_at": 13,
+      "expect": {
+        "cleanliness": "degraded",
+        "function_status": "parent_invalidated_before_delivery",
+        "max_adverse_points": 1,
+        "window_end": 13
+      }
+    },
+    {
+      "id": "forming_bar_does_not_leak",
+      "bars": [
+        [
+          12,
+          13,
+          112,
+          121,
+          110,
+          112
+        ]
+      ],
+      "cutoff": 12,
+      "expect": {
+        "cleanliness": "clean",
+        "function_status": "pending",
+        "max_adverse_points": 0,
+        "coverage_complete": true
+      }
+    },
+    {
+      "id": "calendar_gap_is_witnessed",
+      "bars": [
+        [
+          14,
+          15,
+          112,
+          121,
+          110,
+          112
+        ]
+      ],
+      "calendar": [
+        [
+          14,
+          12,
+          14
+        ]
+      ],
+      "cutoff": 15,
+      "expect": {
+        "cleanliness": "degraded",
+        "function_status": "pending",
+        "max_adverse_points": 1,
+        "coverage_complete": true
+      }
+    }
+  ]
+}

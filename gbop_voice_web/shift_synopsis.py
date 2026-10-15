@@ -4,6 +4,8 @@ The seven o'clock range is evaluated independently even when eight/nine fails.
 Young Lefty's status is always stated; only a real early purge creates its setup.
 No assigned-candle candidate list or entry inference is needed for this view.
 """
+
+from gbop_voice_web import shared_gtop_rules as rules
 from copy import deepcopy
 from datetime import datetime
 
@@ -600,7 +602,7 @@ def _acting_parent_context(row, fact, earlier):
                 or not anchor.get('complete')
                 or parent.get('invalidated_at_ny') and
                    parse_time(parent['invalidated_at_ny']) <= parse_time(candle['end_ny'])
-                or not anchor['low'] <= candle['close'] <= anchor['high']):
+                or not rules.inside(candle['close'], anchor['high'], anchor['low'])):
             continue
         above, below = candle['high'] > anchor['high'], candle['low'] < anchor['low']
         if above == below:

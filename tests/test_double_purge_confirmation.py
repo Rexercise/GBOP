@@ -145,12 +145,15 @@ class SelectedTimeframeDoublePurgeTests(unittest.TestCase):
             self.assertFalse(self.assess(bars, '11:15', failed)['observed'])
         self.assertFalse(self.assess(bars, '10:45', reviewed)['observed'])
 
-    def test_boundary_close_counts_as_inside_but_only_at_own_tf_close(self):
+    def test_boundary_close_preserves_validity_but_does_not_confirm(self):
         bars = fixture('11:15')
         next(b for b in bars if b['time'] == t('10:59')).update(low=80, close=80)
         value = self.assess(bars, '11:00')
-        self.assertTrue(value['observed'])
-        self.assertEqual(value['sequence']['selected_timeframe_return_inside']['close'], 80)
+        self.assertFalse(value['observed'])
+        self.assertTrue(value['developing'])
+        self.assertIsNone(value['sequence']['selected_timeframe_return_inside'])
+        self.assertEqual(value['confirmation_status'], 'awaiting_selected_timeframe_close')
+        self.assertIsNone(review(bars, '11:00').get('invalidated_at_ny'))
 
     def test_named_execution_direction_cannot_replace_physical_first_boundary_purge(self):
         bars = fixture('11:15')

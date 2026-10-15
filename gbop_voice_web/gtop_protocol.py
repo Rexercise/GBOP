@@ -1,9 +1,10 @@
 """Shared GTOP terminology and risk classification; independent of runtime."""
+
 from pathlib import Path
 import re
 
 TIER_LIMITS = {1: 0.60, 2: 0.30, 3: 0.10}
-KNOWLEDGE_FILES = ("gtop_knowledge.txt", "gtop_boneless.txt", "gtop_lifecycle.txt", "gtop_super_soup.txt", "gtop_tab.txt", "gtop_targets.txt", "gtop_soupier_soup.txt")
+KNOWLEDGE_FILES = ("gtop_knowledge.txt", "gtop_boneless.txt", "gtop_lifecycle.txt", "gtop_super_soup.txt", "gtop_tab.txt", "gtop_targets.txt", "gtop_soupier_soup.txt", "gtop_shared_rules.txt")
 CANONICAL_KNOWLEDGE = "\n\n".join(
     Path(__file__).with_name(name).read_text(encoding="utf-8").strip()
     for name in KNOWLEDGE_FILES

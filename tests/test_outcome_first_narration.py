@@ -127,7 +127,21 @@ class OutcomeFirstNarrationTests(unittest.TestCase):
         page = expanded(match, match)
         self.assertEqual(page['review']['candle_lifecycle']['purge_candles'],
                          full['review']['candle_lifecycle']['purge_candles'][:1])
-        self.assertEqual(page['review']['events'], full['review']['events'])
+        # Bounded pages declare removal of repeated prose/extrema audit only.
+        # The selected lifecycle above stays byte-for-byte equivalent.
+        expected_events = deepcopy(full['review']['events'])
+        if page['voice_detail_page'].get('parent_event_detail_omitted'):
+            def event_facts(value):
+                if isinstance(value, list):
+                    return [event_facts(v) for v in value]
+                if isinstance(value, dict):
+                    omitted = {'spoken_summary', 'high_last_seen', 'low_last_seen',
+                               'high_occurrences', 'low_occurrences'}
+                    return {k: event_facts(v) for k, v in value.items() if k not in omitted}
+                return value
+            self.assertEqual(event_facts(page['review']['events']), event_facts(expected_events))
+        else:
+            self.assertEqual(page['review']['events'], expected_events)
         double = page['review']['double_purge']
         original = raw['review']['double_purge']
         self.assertEqual(double['confirmed_at_ny'], original['confirmed_at_ny'])

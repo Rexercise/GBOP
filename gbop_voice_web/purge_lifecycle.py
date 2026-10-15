@@ -5,6 +5,8 @@ reported as an observation awaiting rejection, not silently treated as a
 successful Turtle Soup. Coverage and chronology travel with every conclusion.
 """
 from __future__ import annotations
+
+from gbop_voice_web import shared_gtop_rules as rules
 from gbop_voice_web.candle_naming import objective_identity
 from gbop_voice_web import cisd_rule
 
@@ -17,15 +19,15 @@ def _form(candle, level, side):
     if side == 'buy':
         if candle['high'] <= level:
             return None
-        if candle['open'] <= level < candle['close']:
-            return 'body_cross_and_close'
+        if rules.body_purge(candle['open'], candle['high'], candle['low'], candle['close'], level, True):
+            return ('body_cross_and_close' if min(candle['open'], candle['close']) <= level <= max(candle['open'], candle['close']) else 'outside_open_retest_and_close')
         if max(candle['open'], candle['close']) <= level:
             return 'wick_only'
     else:
         if candle['low'] >= level:
             return None
-        if candle['close'] < level <= candle['open']:
-            return 'body_cross_and_close'
+        if rules.body_purge(candle['open'], candle['high'], candle['low'], candle['close'], level, False):
+            return ('body_cross_and_close' if min(candle['open'], candle['close']) <= level <= max(candle['open'], candle['close']) else 'outside_open_retest_and_close')
         if min(candle['open'], candle['close']) >= level:
             return 'wick_only'
     return 'outside_or_returning_body'
@@ -96,7 +98,7 @@ def _life(bars, model, candles, anchor, through, step, invalid_at):
                            'continuous_since_model1': continuous,
                            'immediate_next_assigned_candle': t == formed,
                            'before_csd_close_verified': continuous,
-                           'close_back_inside_model1': model['low'] <= c['close'] <= model['high'],
+                           'close_back_inside_model1': rules.inside(c['close'], model['high'], model['low']),
                            'close_back_through_swept_extreme': c['close'] <= extreme if bearish else c['close'] >= extreme}
         if first_sweep and return_inside is None and (c['close'] <= extreme if bearish else c['close'] >= extreme):
             return_inside = _bar(c)

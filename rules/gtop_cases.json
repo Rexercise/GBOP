@@ -1,0 +1,1057 @@
+{
+  "scalar": [
+    {
+      "id": "high_edge_inside",
+      "predicate": "inside",
+      "args": [
+        110,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "high_edge_outside",
+      "predicate": "outside",
+      "args": [
+        110,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "high_edge_at_boundary",
+      "predicate": "at_boundary",
+      "args": [
+        110,
+        110,
+        90
+      ],
+      "expected": true
+    },
+    {
+      "id": "low_edge_inside",
+      "predicate": "inside",
+      "args": [
+        90,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "low_edge_outside",
+      "predicate": "outside",
+      "args": [
+        90,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "low_edge_at_boundary",
+      "predicate": "at_boundary",
+      "args": [
+        90,
+        110,
+        90
+      ],
+      "expected": true
+    },
+    {
+      "id": "inside_high_inside",
+      "predicate": "inside",
+      "args": [
+        109.75,
+        110,
+        90
+      ],
+      "expected": true
+    },
+    {
+      "id": "inside_high_outside",
+      "predicate": "outside",
+      "args": [
+        109.75,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "inside_high_at_boundary",
+      "predicate": "at_boundary",
+      "args": [
+        109.75,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "inside_low_inside",
+      "predicate": "inside",
+      "args": [
+        90.25,
+        110,
+        90
+      ],
+      "expected": true
+    },
+    {
+      "id": "inside_low_outside",
+      "predicate": "outside",
+      "args": [
+        90.25,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "inside_low_at_boundary",
+      "predicate": "at_boundary",
+      "args": [
+        90.25,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_high_inside",
+      "predicate": "inside",
+      "args": [
+        110.25,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_high_outside",
+      "predicate": "outside",
+      "args": [
+        110.25,
+        110,
+        90
+      ],
+      "expected": true
+    },
+    {
+      "id": "outside_high_at_boundary",
+      "predicate": "at_boundary",
+      "args": [
+        110.25,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_low_inside",
+      "predicate": "inside",
+      "args": [
+        89.75,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_low_outside",
+      "predicate": "outside",
+      "args": [
+        89.75,
+        110,
+        90
+      ],
+      "expected": true
+    },
+    {
+      "id": "outside_low_at_boundary",
+      "predicate": "at_boundary",
+      "args": [
+        89.75,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "touch_True",
+      "predicate": "purged",
+      "args": [
+        110,
+        90,
+        110,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "strict_purge_True",
+      "predicate": "purged",
+      "args": [
+        110.25,
+        89.75,
+        110,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "id": "body_close_equal_True",
+      "predicate": "body_purge",
+      "args": [
+        100,
+        110,
+        100,
+        110,
+        110,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "body_open_equal_True",
+      "predicate": "body_purge",
+      "args": [
+        110,
+        110.25,
+        110,
+        110.25,
+        110,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "id": "gap_body_True",
+      "predicate": "body_purge",
+      "args": [
+        111,
+        112,
+        111,
+        112,
+        110,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "cisd_equal_True",
+      "predicate": "cisd",
+      "args": [
+        90,
+        110,
+        90,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "cisd_strict_True",
+      "predicate": "cisd",
+      "args": [
+        89.75,
+        110,
+        90,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "id": "touch_False",
+      "predicate": "purged",
+      "args": [
+        110,
+        90,
+        90,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "strict_purge_False",
+      "predicate": "purged",
+      "args": [
+        110.25,
+        89.75,
+        90,
+        false
+      ],
+      "expected": true
+    },
+    {
+      "id": "body_close_equal_False",
+      "predicate": "body_purge",
+      "args": [
+        100,
+        100,
+        90,
+        90,
+        90,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "body_open_equal_False",
+      "predicate": "body_purge",
+      "args": [
+        90,
+        90,
+        89.75,
+        89.75,
+        90,
+        false
+      ],
+      "expected": true
+    },
+    {
+      "id": "gap_body_False",
+      "predicate": "body_purge",
+      "args": [
+        89,
+        89,
+        88,
+        88,
+        90,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "cisd_equal_False",
+      "predicate": "cisd",
+      "args": [
+        110,
+        110,
+        90,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "cisd_strict_False",
+      "predicate": "cisd",
+      "args": [
+        110.25,
+        110,
+        90,
+        false
+      ],
+      "expected": true
+    },
+    {
+      "id": "inside_bar_edges",
+      "predicate": "inside_bar",
+      "args": [
+        110,
+        90,
+        110,
+        90
+      ],
+      "expected": true
+    },
+    {
+      "id": "inside_bar_breach",
+      "predicate": "inside_bar",
+      "args": [
+        110.25,
+        90,
+        110,
+        90
+      ],
+      "expected": false
+    },
+    {
+      "id": "v6_eligible",
+      "predicate": "v6_before_full",
+      "args": [
+        true,
+        true,
+        false,
+        false
+      ],
+      "expected": true
+    },
+    {
+      "id": "v6_midpoint_not_input",
+      "predicate": "v6_before_full",
+      "args": [
+        true,
+        true,
+        false,
+        false
+      ],
+      "expected": true
+    },
+    {
+      "id": "v6_no_first_return",
+      "predicate": "v6_before_full",
+      "args": [
+        false,
+        true,
+        false,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "v6_not_extreme",
+      "predicate": "v6_before_full",
+      "args": [
+        true,
+        false,
+        false,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "v6_full_before",
+      "predicate": "v6_before_full",
+      "args": [
+        true,
+        true,
+        true,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "v6_samebar_full",
+      "predicate": "v6_before_full",
+      "args": [
+        true,
+        true,
+        false,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "chart_calendar_adjacent",
+      "predicate": "chart_contiguous",
+      "args": [
+        100,
+        100,
+        0,
+        0
+      ],
+      "expected": true
+    },
+    {
+      "id": "chart_calendar_weekend",
+      "predicate": "chart_contiguous",
+      "args": [
+        100,
+        200,
+        100,
+        200
+      ],
+      "expected": true
+    },
+    {
+      "id": "chart_calendar_dst_or_holiday",
+      "predicate": "chart_contiguous",
+      "args": [
+        100,
+        190,
+        100,
+        190
+      ],
+      "expected": true
+    },
+    {
+      "id": "chart_calendar_omitted_row",
+      "predicate": "chart_contiguous",
+      "args": [
+        100,
+        200,
+        150,
+        200
+      ],
+      "expected": false
+    },
+    {
+      "id": "chart_calendar_wrong_projection",
+      "predicate": "chart_contiguous",
+      "args": [
+        100,
+        200,
+        100,
+        199
+      ],
+      "expected": false
+    },
+    {
+      "id": "chart_calendar_unknown",
+      "predicate": "chart_contiguous",
+      "args": [
+        100,
+        200,
+        0,
+        0
+      ],
+      "expected": false
+    },
+    {
+      "id": "nas100_monday_oct5",
+      "predicate": "body_purge",
+      "args": [
+        30890.4,
+        31155.7,
+        30735.8,
+        31133,
+        30839,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "id": "outside_open_buy_retest",
+      "predicate": "body_purge",
+      "args": [
+        101,
+        104,
+        99,
+        103,
+        100,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "id": "outside_open_sell_retest",
+      "predicate": "body_purge",
+      "args": [
+        89,
+        91,
+        86,
+        87,
+        90,
+        false
+      ],
+      "expected": true
+    },
+    {
+      "id": "outside_open_buy_touch_only",
+      "predicate": "body_purge",
+      "args": [
+        101,
+        104,
+        100,
+        103,
+        100,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_open_sell_touch_only",
+      "predicate": "body_purge",
+      "args": [
+        89,
+        90,
+        86,
+        87,
+        90,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_open_buy_no_retest",
+      "predicate": "body_purge",
+      "args": [
+        101,
+        104,
+        101,
+        103,
+        100,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_open_sell_no_retest",
+      "predicate": "body_purge",
+      "args": [
+        89,
+        89,
+        86,
+        87,
+        90,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_open_buy_inward",
+      "predicate": "body_purge",
+      "args": [
+        103,
+        104,
+        99,
+        101,
+        100,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_open_sell_inward",
+      "predicate": "body_purge",
+      "args": [
+        87,
+        91,
+        86,
+        89,
+        90,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_open_buy_doji",
+      "predicate": "body_purge",
+      "args": [
+        101,
+        104,
+        99,
+        101,
+        100,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "outside_open_sell_doji",
+      "predicate": "body_purge",
+      "args": [
+        89,
+        91,
+        86,
+        89,
+        90,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "id": "soup_wick_return",
+      "predicate": "soup_confirmation",
+      "args": [
+        102,
+        104,
+        99,
+        101,
+        103,
+        98,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "id": "soup_sell_wick_return",
+      "predicate": "soup_confirmation",
+      "args": [
+        89,
+        91,
+        86,
+        90,
+        92,
+        87,
+        false
+      ],
+      "expected": true
+    },
+    {
+      "id": "soup_cisd_alone",
+      "predicate": "soup_confirmation",
+      "args": [
+        102,
+        103,
+        96,
+        97,
+        103,
+        98,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "soup_adverse_outside_alone",
+      "predicate": "soup_confirmation",
+      "args": [
+        102,
+        105,
+        99,
+        104,
+        103,
+        98,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "soup_same_candle_v2",
+      "predicate": "soup_confirmation",
+      "args": [
+        102,
+        104,
+        96,
+        97,
+        103,
+        98,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "id": "soup_mirrored_v2",
+      "predicate": "soup_confirmation",
+      "args": [
+        89,
+        94,
+        86,
+        93,
+        92,
+        87,
+        false
+      ],
+      "expected": true
+    },
+    {
+      "id": "soup_boundary_return",
+      "predicate": "soup_confirmation",
+      "args": [
+        102,
+        104,
+        99,
+        103,
+        103,
+        98,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "soup_ambiguous_two_sided",
+      "predicate": "soup_confirmation",
+      "args": [
+        102,
+        104,
+        97,
+        101,
+        103,
+        98,
+        true
+      ],
+      "expected": false
+    },
+    {
+      "id": "soup_later_entry_open_outside",
+      "predicate": "soup_confirmation",
+      "args": [
+        104,
+        105,
+        96,
+        97,
+        103,
+        98,
+        true
+      ],
+      "expected": false
+    }
+  ],
+  "lifecycle": [
+    {
+      "id": "edge_pending",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          110
+        ]
+      ],
+      "qualified": false,
+      "invalid": false,
+      "codes": [],
+      "v6_pending": false
+    },
+    {
+      "id": "edge_then_inside",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          110
+        ],
+        [
+          106,
+          109,
+          104,
+          106
+        ]
+      ],
+      "qualified": true,
+      "invalid": false,
+      "codes": [],
+      "v6_pending": false
+    },
+    {
+      "id": "edge_then_outside",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          110
+        ],
+        [
+          106,
+          111,
+          104,
+          110.25
+        ]
+      ],
+      "qualified": false,
+      "invalid": true,
+      "codes": [],
+      "v6_pending": false
+    },
+    {
+      "id": "prior_return_survives_edge",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          106
+        ],
+        [
+          106,
+          111,
+          104,
+          110
+        ]
+      ],
+      "qualified": true,
+      "invalid": false,
+      "codes": [],
+      "v6_pending": false
+    },
+    {
+      "id": "v6_edge_pending",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          106
+        ],
+        [
+          106,
+          113,
+          104,
+          110
+        ]
+      ],
+      "qualified": true,
+      "invalid": false,
+      "codes": [],
+      "v6_pending": true
+    },
+    {
+      "id": "v6_edge_then_inside",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          106
+        ],
+        [
+          106,
+          113,
+          104,
+          110
+        ],
+        [
+          106,
+          109,
+          104,
+          106
+        ]
+      ],
+      "qualified": true,
+      "invalid": false,
+      "codes": [
+        "V6"
+      ],
+      "v6_pending": false
+    },
+    {
+      "id": "v6_samebar_confirm",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          106
+        ],
+        [
+          106,
+          113,
+          104,
+          106
+        ]
+      ],
+      "qualified": true,
+      "invalid": false,
+      "codes": [
+        "V6"
+      ],
+      "v6_pending": false
+    },
+    {
+      "id": "v6_equal_extreme_not_purge",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          106
+        ],
+        [
+          106,
+          112,
+          104,
+          106
+        ]
+      ],
+      "qualified": true,
+      "invalid": false,
+      "codes": [],
+      "v6_pending": false
+    },
+    {
+      "id": "v6_original_edge_not_extreme",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          106
+        ],
+        [
+          106,
+          111,
+          104,
+          106
+        ]
+      ],
+      "qualified": true,
+      "invalid": false,
+      "codes": [],
+      "v6_pending": false
+    },
+    {
+      "id": "v6_keeps_confirmed_identity",
+      "range": [
+        100,
+        110,
+        90,
+        100
+      ],
+      "candles": [
+        [
+          106,
+          112,
+          104,
+          106
+        ],
+        [
+          106,
+          113,
+          104,
+          106
+        ],
+        [
+          106,
+          114,
+          104,
+          110
+        ]
+      ],
+      "qualified": true,
+      "invalid": false,
+      "codes": [
+        "V6"
+      ],
+      "v6_pending": false
+    }
+  ]
+}

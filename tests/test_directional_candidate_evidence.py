@@ -94,14 +94,14 @@ class DirectionalCandidateEvidenceTests(unittest.TestCase):
 
     def test_later_wicks_are_explicitly_omitted_but_all_model1s_remain_indexed(self):
         evidence = self.evidence()
-        self.assertEqual(len(evidence['identity_index']), 4)
-        self.assertEqual(sum(row['purge_type'] == 'body_soup' for row in evidence['identity_index']), 3)
+        self.assertEqual(len(evidence['identity_index']), 6)
+        self.assertEqual(sum(row['purge_type'] == 'body_soup' for row in evidence['identity_index']), 5)
         coverage = evidence['coverage']
-        self.assertEqual(coverage['available_identity_count'], 9)
+        self.assertEqual(coverage['available_identity_count'], 11)
         self.assertEqual(coverage['omitted_available_identity_count'], 5)
         self.assertEqual(coverage['first_omitted_available_candle_open_ny'], ny('11:30'))
         full = self.evidence(include_later_wicks=True)
-        self.assertEqual(len(full['identity_index']), 9)
+        self.assertEqual(len(full['identity_index']), 11)
         self.assertEqual(full['coverage']['omitted_available_identity_count'], 0)
 
     def test_focus_retains_omitted_wick_without_inventing_body_csd_or_soup(self):
@@ -194,7 +194,7 @@ class DirectionalCandidateEvidenceTests(unittest.TestCase):
 
     def test_dual_boundary_candle_keeps_both_exact_identities(self):
         review = deepcopy(self.review)
-        first = deepcopy(review['candle_lifecycle']['purge_candles'][2])
+        first = deepcopy(next(row for row in review['candle_lifecycle']['purge_candles'] if row['bar_open_ny'] == ny('11:10')))
         second = deepcopy(first)
         second.update(purged_side='buy', direction='bearish', purged_level=30995.59)
         for row in (first, second):
@@ -209,7 +209,7 @@ class DirectionalCandidateEvidenceTests(unittest.TestCase):
 
     def test_overlapping_coarse_source_bars_do_not_invent_tick_order(self):
         review = deepcopy(self.review)
-        review['candle_lifecycle']['purge_candles'][2]['purge_source_interval'].update(
+        next(row for row in review['candle_lifecycle']['purge_candles'] if row['bar_open_ny'] == ny('11:10'))['purge_source_interval'].update(
             bar_open_ny=ny('11:10'), bar_close_ny=ny('11:15'), precision_seconds=300)
         row = self.identity(directional_candidate_evidence(review, 'NAS100'), '11:10')
         self.assertEqual(row['source_vs_original_delivery'], 'overlapping_source_intervals_order_unknown')
@@ -234,12 +234,13 @@ class DirectionalCandidateEvidenceTests(unittest.TestCase):
     def test_card_bounds_and_small_named_payload(self):
         evidence = self.evidence(max_cards=0)
         self.assertEqual(evidence['candidate_cards'], [])
-        self.assertEqual(len(self.evidence(max_cards=32)['candidate_cards']), 3)
+        self.assertEqual(len(self.evidence(max_cards=32)['candidate_cards']), 5)
         for bad in (-1, 33, 1.5, None):
             with self.subTest(value=bad), self.assertRaises(ValueError):
                 self.evidence(max_cards=bad)
         default = self.evidence()
-        self.assertLess(len(json.dumps(default['identity_index'], separators=(',', ':'))), 2500)
+        # The outside-open retest rule adds two evidenced bodies to this replay.
+        self.assertLess(len(json.dumps(default['identity_index'], separators=(',', ':'))), 4000)
         self.assertLess(len(json.dumps(default['candidate_cards'], separators=(',', ':'))), 2100)
         self.assertNotIn('columns', json.dumps(default))
 

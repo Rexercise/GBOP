@@ -58,6 +58,15 @@
         Voice is AI-generated. While connected, microphone audio is sent directly to OpenAI Live.
         GBOP does not intentionally store raw microphone audio.
       </div>
+      <details class="transcript-card chart-context-card">
+        <summary>Read my Butterfly chart</summary>
+        <p>Paste a Butterfly evidence alert to give GBOP the chart's actual closed candles and displayed interpretation. This capture stays selected for your voice conversation until you clear it or sign out. It does not update automatically.</p>
+        <label for="chartSnapshot">Butterfly evidence message</label>
+        <textarea id="chartSnapshot" rows="5" maxlength="40960" spellcheck="false"></textarea>
+        <button id="compareChartButton" class="primary">Use this chart capture</button>
+        <button id="clearChartButton">Clear chart capture</button>
+        <div id="chartComparison" role="status" aria-live="polite"></div>
+      </details>
     </section>
   </main>
 

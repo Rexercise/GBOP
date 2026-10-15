@@ -1,0 +1,168 @@
+{
+  "ok": true,
+  "source": "TradingView chart capture",
+  "symbol": "OANDA:NAS100USD",
+  "capture_id": "fe42679a3c0bb1fc",
+  "live_chart_connected": false,
+  "cutoff_ny": "2026-10-14T17:00:00-04:00",
+  "captured_at_ny": "2026-10-15T11:19:57-04:00",
+  "freshness": "recent_capture",
+  "rules_match": true,
+  "parents": [
+    {
+      "ok": true,
+      "source": "TradingView chart capture",
+      "symbol": "OANDA:NAS100USD",
+      "capture_id": "45d0c87934653d0e",
+      "live_chart_connected": false,
+      "cutoff_ny": "2026-10-14T17:00:00-04:00",
+      "captured_at_ny": "2026-10-15T11:19:57-04:00",
+      "freshness": "recent_capture",
+      "range": {
+        "timeframe": "MN1",
+        "start_ny": "2026-08-31T17:00:00-04:00",
+        "end_ny": "2026-09-30T17:00:00-04:00",
+        "high": 30839.0,
+        "low": 28795.4,
+        "definition": "native_chart"
+      },
+      "rules_match": true,
+      "butterfly_reported": {
+        "state": "source_close_pending",
+        "direction": "bearish",
+        "variant": "unclassified",
+        "v6_pending": false,
+        "purge_at": null,
+        "return_at": null,
+        "invalid_at": null,
+        "objective_at": null,
+        "double_purge_at": null,
+        "last_close_at": null,
+        "last_close": null,
+        "model_at": 1791579600,
+        "cisd_at": 1791838800,
+        "model_invalid_open": 1791752400,
+        "model_invalid_at": 1791838800,
+        "primary_model_verified": true,
+        "assigned_complete": true
+      },
+      "checks": [],
+      "discrepancies": [],
+      "assigned_evidence": {
+        "timeframe": "1D",
+        "retained": 32,
+        "complete": true,
+        "calendar_bridges": 2,
+        "calendar_basis": "native_chart_projection",
+        "model1": [
+          1791493200,
+          1791579600,
+          30815.9,
+          31060.0,
+          30746.8,
+          30928.2
+        ],
+        "primary_model_verified": true,
+        "cisd": [
+          1791752400,
+          1791838800,
+          30926.6,
+          31087.8,
+          30654.2,
+          30689.4
+        ],
+        "model1_own_crt_invalidating_candle": [
+          1791752400,
+          1791838800,
+          30926.6,
+          31087.8,
+          30654.2,
+          30689.4
+        ]
+      },
+      "super_soup_range": {
+        "status": "invalidated",
+        "invalidating_candle_open_ny": "2026-10-11T17:00:00-04:00",
+        "confirmation_close_ny": "2026-10-12T17:00:00-04:00",
+        "entry_status": "not_assessed",
+        "model1_identity_preserved": true
+      },
+      "independent_candle_review": null,
+      "limits": "Indicator-reported lifecycle is separate from independently checked candles. No MT5 substitution, paired SMT, execution or profit inference.",
+      "spoken_summary": "TradingView OANDA:NAS100USD, MN1 range 2026-08-31T17:00:00-04:00, through 2026-10-14T17:00:00-04:00: Butterfly reports source close pending. A local body Model 1 is visible in the 5:00 PM D1 candle on 2026-10-08. CISD is confirmed by the 5:00 PM D1 candle on 2026-10-11. Super Soup invalidated by the 5:00 PM D1 candle on 2026-10-11; this does not invalidate the parent MN1 range. This is the selected chart capture, not a live feed.",
+      "parent_id": "1M:1788210000"
+    }
+  ],
+  "linked_events": [
+    {
+      "kind": "model1",
+      "timeframe": "1D",
+      "candle_open_ny": "2026-10-08T17:00:00-04:00",
+      "confirmation_close_ny": "2026-10-09T17:00:00-04:00",
+      "parent_ids": [
+        "1M:1788210000"
+      ],
+      "primary_model_verified_by_parent": {
+        "1M:1788210000": true
+      }
+    },
+    {
+      "kind": "cisd",
+      "timeframe": "1D",
+      "candle_open_ny": "2026-10-11T17:00:00-04:00",
+      "confirmation_close_ny": "2026-10-12T17:00:00-04:00",
+      "parent_ids": [
+        "1M:1788210000"
+      ],
+      "primary_model_verified_by_parent": {
+        "1M:1788210000": true
+      }
+    },
+    {
+      "kind": "super_soup_invalidated",
+      "timeframe": "1D",
+      "candle_open_ny": "2026-10-11T17:00:00-04:00",
+      "confirmation_close_ny": "2026-10-12T17:00:00-04:00",
+      "parent_ids": [
+        "1M:1788210000"
+      ],
+      "primary_model_verified_by_parent": {
+        "1M:1788210000": true
+      }
+    }
+  ],
+  "shared_event_count": 0,
+  "overview_reported": [
+    {
+      "range_tf": "3M",
+      "range_open": 1774990800,
+      "range_end": 1782853200,
+      "high": 30773.2,
+      "low": 23511.0,
+      "range_definition": "native_chart",
+      "coverage": "closed_source",
+      "direction": "bearish",
+      "state": "active_relevant",
+      "basis": "indicator_reported",
+      "objective_side": "low",
+      "objective_price": 23511.0
+    },
+    {
+      "range_tf": "1M",
+      "range_open": 1788210000,
+      "range_end": 1790802000,
+      "high": 30839.0,
+      "low": 28795.4,
+      "range_definition": "native_chart",
+      "coverage": "unverified",
+      "direction": "bearish",
+      "state": "unverified",
+      "basis": "indicator_reported",
+      "objective_side": "low",
+      "objective_price": 28795.4
+    }
+  ],
+  "discrepancies": [],
+  "limits": "Indicator-reported lifecycle is separate from independently checked candles. No MT5 substitution, paired SMT, execution or profit inference.",
+  "spoken_summary": "TradingView OANDA:NAS100USD, MN1 range 2026-08-31T17:00:00-04:00, through 2026-10-14T17:00:00-04:00: Butterfly reports source close pending. A local body Model 1 is visible in the 5:00 PM D1 candle on 2026-10-08. CISD is confirmed by the 5:00 PM D1 candle on 2026-10-11. Super Soup invalidated by the 5:00 PM D1 candle on 2026-10-11; this does not invalidate the parent MN1 range. This is the selected chart capture, not a live feed."
+}
