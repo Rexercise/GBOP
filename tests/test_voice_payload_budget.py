@@ -40,6 +40,9 @@ def expanded(overview, value):
         target = expanded(overview, {'same_evidence_as': value['join_text_from']})
         return value['separator'].join(row['text'] for row in target if row['role'] == value['where_role'])
     if isinstance(value, dict):
+        if 'identity_rows' in value and 'model1_identity_columns' in overview.get('voice_view', {}):
+            return {**{key: expanded(overview, child) for key, child in value.items() if key != 'identity_rows'},
+                    'candles': [expanded(overview, dict(zip(overview['voice_view']['model1_identity_columns'], row))) for row in value['identity_rows']]}
         return {key: expanded(overview, child) for key, child in value.items()}
     if isinstance(value, list):
         return [expanded(overview, child) for child in value]

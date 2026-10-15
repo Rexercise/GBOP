@@ -303,13 +303,14 @@ class DoublePurgeTests(unittest.TestCase):
         self.assertEqual(out['status'], 'unverified_initiating_source_evidence')
         self.assertFalse(out['observed'])
 
-    def test_close_on_selected_boundary_is_inside_and_zero_width_anchor_is_unverified(self):
+    def test_boundary_is_pending_until_strict_inside_and_zero_width_is_unverified(self):
         bars = fixture()
         next(b for b in bars if b['time'] == t('10:06'))['close'] = 80
         out = self.assess(bars)
         self.assertFalse(out['observed'])
         self.assertTrue(out['developing'])
-        self.assertEqual(out['sequence']['source_return_inside']['close'], 80)
+        self.assertEqual(out['sequence']['source_return_inside']['close'], 90)
+        self.assertEqual(out['sequence']['source_return_inside']['bar_open_ny'], ny('10:07'))
         reviewed = review(bars)
         reviewed['anchor']['high'] = reviewed['anchor']['low']
         self.assertEqual(self.assess(bars, reviewed=reviewed)['status'], 'unverified_nonpositive_range')

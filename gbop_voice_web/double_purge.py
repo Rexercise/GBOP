@@ -7,6 +7,8 @@ Source and assigned closes are developing evidence, not official confirmation.
 Each close has its own known-at time. The reversal's full objective is
 the originally purged boundary; the selected-range midpoint is halfway only.
 """
+
+from gbop_voice_web import shared_gtop_rules as rules
 from copy import deepcopy
 
 from gbop_voice_web.candle_evidence import (
@@ -80,7 +82,7 @@ def _assigned_return(bars, anchor, mapped, purge, side, end, step):
     while next_boundary(cursor, mapped) <= end:
         stop = next_boundary(cursor, mapped)
         row = summarize(bars, cursor, stop, step)
-        if row['complete'] and anchor['low'] <= row['close'] <= anchor['high']:
+        if row['complete'] and rules.inside(row['close'], anchor['high'], anchor['low']):
             return {'bar_open_ny': stamp(cursor), 'bar_close_ny': stamp(stop),
                     'known_at_ny': stamp(stop), 'timeframe': mapped,
                     'precision_seconds': stop - cursor, 'source_resolution_seconds': step,
@@ -104,26 +106,29 @@ def _selected_return(bars, anchor, opposing, end, step, native_hour=None):
             return None, 'unverified_selected_timeframe_confirmation_scope'
         if not native_hour.get('complete'):
             return None, 'unverified_incomplete_selected_timeframe_candle'
-        if not anchor['low'] <= native_hour['close'] <= anchor['high']:
+        if rules.outside(native_hour['close'], anchor['high'], anchor['low']):
             return None, 'not_confirmed_before_range_invalidation'
-        return {'bar_open_ny': stamp(cursor), 'bar_close_ny': stamp(stop),
+        if rules.inside(native_hour['close'], anchor['high'], anchor['low']):
+            return {'bar_open_ny': stamp(cursor), 'bar_close_ny': stamp(stop),
                 'known_at_ny': stamp(stop), 'timeframe': tf, 'close': native_hour['close'],
                 'precision_seconds': stop - cursor, 'source_resolution_seconds': step,
                 'exact_tick_time_known': False, 'confirmation_basis': 'resolved_closed_H1',
                 **{key: deepcopy(native_hour[key]) for key in ('ohlc_basis',
                     'source_coverage_complete', 'native_ohlc_provenance') if key in native_hour}}, 'confirmed'
+        cursor = stop  # Boundary close: wait for a later own-timeframe return.
     while next_boundary(cursor, tf) <= end:
         stop = next_boundary(cursor, tf)
         row = summarize(bars, cursor, stop, step)
         if not row['complete']:
             return None, 'unverified_incomplete_selected_timeframe_candle'
-        if anchor['low'] <= row['close'] <= anchor['high']:
+        if rules.inside(row['close'], anchor['high'], anchor['low']):
             return {'bar_open_ny': stamp(cursor), 'bar_close_ny': stamp(stop),
                     'known_at_ny': stamp(stop), 'timeframe': tf,
                     'precision_seconds': stop - cursor, 'source_resolution_seconds': step,
                     'close': row['close'], 'exact_tick_time_known': False}, 'confirmed'
-        # An own-timeframe close outside invalidates this selected range.
-        return None, 'not_confirmed_before_range_invalidation'
+        if rules.outside(row['close'], anchor['high'], anchor['low']):
+            return None, 'not_confirmed_before_range_invalidation'
+        cursor = stop  # Equality keeps validity but does not confirm a return.
     return None, 'awaiting_selected_timeframe_close'
 
 
@@ -302,7 +307,7 @@ def double_purge_evidence(review, bars, end, step):
         out['status'] = 'unverified_same_source_bar_order'
         return out
     returned = next((b for b in rows if b['time'] >= opposing['time'] and
-                     anchor['low'] <= b['close'] <= anchor['high']), None)
+                     rules.inside(b['close'], anchor['high'], anchor['low'])), None)
     assigned = review.get('assigned_timeframe') or review.get('candle_lifecycle', {}).get('assigned_timeframe')
     sequence['assigned_return_inside'] = _assigned_return(
         rows, anchor, assigned, opposing, opposite, cutoff, step) if assigned else None

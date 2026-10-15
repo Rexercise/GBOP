@@ -3,6 +3,8 @@
 Closed candles only. No broker orders, member fills, stop placement or alerts.
 A Model 1's immutable identity is kept separately from this evolving lifecycle.
 """
+
+from gbop_voice_web import shared_gtop_rules as rules
 from gbop_voice_web.candle_evidence import (
     interval, next_boundary, parse_time, stamp, summarize,
 )
@@ -17,14 +19,13 @@ def relation(row, reference, bearish):
     """Describe actual OHLC, including bodies returning inward from outside."""
     high, low = reference['high'], reference['low']
     above, below = row['high'] > high, row['low'] < low
-    inside = low <= row['close'] <= high
+    inside = rules.inside(row['close'], high, low)
     form = ('close_above' if row['close'] > high else
             'close_below' if row['close'] < low else
             'both_sides_wicked' if above and below else
             'wick_above' if above else 'wick_below' if below else 'inside_bar')
     level = high if bearish else low
-    outward = (row['open'] <= level < row['close'] if bearish else
-               row['close'] < level <= row['open'])
+    outward = rules.body_purge(row['open'], row['high'], row['low'], row['close'], level, bearish)
     wick_only = (max(row['open'], row['close']) <= level < row['high'] if bearish else
                  row['low'] < level <= min(row['open'], row['close']))
     swept = above if bearish else below
@@ -170,7 +171,7 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
             break
     forming = bool(later and later[-1]['forming'])
     parent_validity = all(r['complete'] for r in rows if r['_start'] < start)
-    local_invalid = next((r for r in prefix if not model['low'] <= r['close'] <= model['high']), None)
+    local_invalid = next((r for r in prefix if rules.outside(r['close'], model['high'], model['low'])), None)
     local_invalid_at = local_invalid['_end'] if local_invalid else None
     confirmation = cisd_rule.reference(model, bearish)
     csd = next((r for r in prefix if cisd_rule.confirms(r, model, bearish)), None)
@@ -242,7 +243,7 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
         return result
 
     rel = relation(event, model, bearish)
-    previously_invalid = any(not model['low'] <= r['close'] <= model['high'] for r in prior)
+    previously_invalid = any(rules.outside(r['close'], model['high'], model['low']) for r in prior)
     wrong_side_first = any(r['low'] < model['low'] if bearish else r['high'] > model['high'] for r in prior)
     clean = cisd_rule.wick_soup(event, model, bearish) and not previously_invalid and not wrong_side_first
     purge_bar = next(b for b in event['_bars'] if (b['high'] > model['high'] if bearish else b['low'] < model['low']))
@@ -302,6 +303,19 @@ def model_lifecycle(model, anchor, rows, end, step, parent_invalid_at=None):
         if csd_at == event['_end']:
             soup['pre_csd'] = False
             soup['occurrence_type'] = 'completed_crt_super_soup_same_csd_close'
+    established = eligible and (clean or completed or rules.soup_confirmation(
+        event['open'], event['high'], event['low'], event['close'], model['high'], model['low'], bearish))
+    if established:
+        from gbop_voice_web.soup_followthrough import evaluate
+        def candle(row):
+            return [row['_start'], row['_end'], row['open'], row['high'], row['low'], row['close']]
+        all_sources = [b for r in rows for b in r['_bars']]
+        raw = [[b['time'], b['time'] + step, b['open'], b['high'], b['low'], b['close']] for b in all_sources]
+        model_row = [parse_time(model['bar_open_ny']), start, model['open'], model['high'], model['low'], model['close']]
+        soup['follow_through'] = evaluate(model_row, candle(event), anchor['high'], anchor['low'],
+            bearish, [candle(r) for r in rows if r['complete']], end,
+            parent_end=parse_time(anchor['end_ny']), parent_invalid_at=parent_invalid_at,
+            source=raw, verified=parent_validity)
     return result
 
 
@@ -335,9 +349,9 @@ def enrich_model1(bars, anchor, model1, end, step, parent_invalid_at=None):
                   'Super Soup structure and outcomes. CSD requires a strict assigned close below the full Model 1 low bearish, '
                   'above its full high bullish. A wick or equality is not confirmation. Identity stays in candles. assigned_range_purges '
                   'distinguishes wick-only purges from body-purging Model 1 candles. '
-                  'Cleanliness is independent of success. Local Model 1 CRT validity, local_function '
+                  'Cleanliness is independent of success. Super Soup range validity, local_function '
                   'delivery and parent objectives are separate. Local function observations continue '
-                  'after Model 1 invalidation within the selected-range review window; they never '
+                  'after Model 1 own-CRT invalidation within the selected-range review window; they never '
                   'restore CRT validity or clean structure. Preserve same-bar ordering uncertainty. '
                   'No trade execution or live alert is inferred. '
                   'Legacy top-level not_assessed flags do not override the detailed lifecycle.')

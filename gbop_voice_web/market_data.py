@@ -460,6 +460,9 @@ FRACTAL_ARGS = {
 }
 
 MARKET_TOOLS = [
+    schema('review_tradingview_chart', 'Explain an explicit Butterfly capture using its actual TradingView candles and reported indicator state. No broker substitution or live-feed claim.', {'snapshot_json': {'type': 'string'}}),
+    schema('compare_butterfly_context', 'Compare a pasted Butterfly context alert with GBOP broker evidence. Never infer a live chart connection or feed equivalence from matching rules or prices.', {
+        'asset': {'type': 'string'}, 'snapshot_json': {'type': 'string'}}),
     schema('review_post_shift_followthrough', 'Append later candle evidence for a qualified relevant range whose full objective was pending at the ORIGINAL frozen GTOP shift cutoff. Use a returned post_shift_followthrough candidate exactly: same asset/date/shift/anchor/phase and source_scope_id as expected_scope_id. If its source_scope_id was not supplied, use expected_scope_id=null to read the frozen snapshot first, then continue with returned next_arguments; no new user question. No new qualification from later candles. Null through_ny uses closed available evidence bounded by now; an explicit horizon is optional. Preserve the original shift outcome and distinguish later valid delivery, structural invalidation, and physical touches after invalidation. No entry, fill or profit inference; gaps never justify never.', {
         'asset': {'type': 'string'}, 'date_ny': {'type': 'string'},
         'shift': {'type': 'string', 'enum': ['day', 'night']},
@@ -546,6 +549,7 @@ familiar GTOP terminology. Examples: 'did 988 happen today?', 'you seen today’
 'I took the Super Soup on NAS today', 'when was that high purged?', 'when did it
 invalidate?', 'last Wednesday’s low', or a timeframe-specific CRT review. These are
 not definition questions. Delegate first; never invent today’s candle behavior.
+Chart/Butterfly questions require backend delegation. A selected TradingView capture owns chart evidence; preserve its provider and cutoff, never substitute MT5 or claim live sight.
 Current requests use review_current_market. Keep cutoff until explicit refresh. State as-of/observed-through and freshness; forming is not closed, snapshots are not instant ticks.
 'What did price do this shift/today?' uses the SHORT shift_synopsis.spoken_summary.
 Opening plays follow evidenced event-time order, Young Lefty first when earlier. Include
@@ -876,6 +880,12 @@ def market_tool(db, name, args, now=None, *, include_post_shift=True):
     try:
         if name not in MARKET_NAMES:
             return {'ok': False, 'error': 'Unknown market tool.'}
+        if name == 'review_tradingview_chart':
+            from gbop_voice_web.tradingview_evidence import review_capture
+            return review_capture(args.get('snapshot_json'), now)
+        if name == 'compare_butterfly_context':
+            from gbop_voice_web.chart_context import compare_chart_context
+            return compare_chart_context(db, args, now)
         if name == 'scan_young_lefty':
             from gbop_voice_web.market_scan import scan_young_lefty
             return scan_young_lefty(db, args, now)

@@ -42,7 +42,7 @@ class DirectionalVoiceIntegrationTests(unittest.TestCase):
         page = expanded(wire, wire)
         row = next(r for r in page['review']['shift_story']['ranges'] if r['anchor_start_ny'] == NY('09:00'))
         body = {x['bar_open_ny']: x for x in row['model1']['candles']}
-        self.assertEqual(set(body), {NY('10:00'), NY('10:10'), NY('11:15')})
+        self.assertEqual(set(body), {NY('10:00'), NY('10:10'), NY('10:15'), NY('11:15'), NY('11:20')})
         for clock in ('10:00', '10:10'):
             self.assertEqual((body[NY(clock)]['direction'], body[NY(clock)]['purged_side'], body[NY(clock)]['purged_level']),
                              ('bearish', 'buy', 30995.59))
@@ -58,7 +58,7 @@ class DirectionalVoiceIntegrationTests(unittest.TestCase):
         self.assertEqual(soup['pre_csd_status'], 'observed_before_csd')
         self.assertEqual(soup['candle']['bar_open_ny'], NY('10:05'))
         self.assertEqual(soup['structure_known_at_ny'], NY('10:10'))
-        self.assertNotIn('model1_identity_columns', wire['voice_view'])
+        self.assertEqual(len(body), 5)  # Lossless index includes outside-open retest bodies.
         self.assertNotIn('model1_outcome_columns', wire['voice_view'])
 
     def test_voice_margin_tolerates_small_live_metadata_growth(self):

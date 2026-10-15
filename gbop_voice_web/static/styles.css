@@ -12,6 +12,14 @@ body { margin: 0; min-height: 100vh; background:
   #09090b; }
 
 button, input { font: inherit; }
+textarea, select { font: inherit; }
+.chart-context-card { margin-top: 18px; padding: 18px; }
+.chart-context-card summary { cursor: pointer; font-weight: 600; }
+.chart-context-card p { color: #a1a1aa; font-size: 13px; line-height: 1.5; }
+.chart-context-card label { display: block; margin: 12px 0 6px; }
+.chart-context-card select, .chart-context-card textarea { width: 100%; padding: 10px; border: 1px solid #52525b; border-radius: 8px; background: #18181b; color: #fafafa; }
+.chart-context-card button { margin-top: 12px; }
+#chartComparison { margin-top: 14px; white-space: pre-wrap; font-size: 13px; line-height: 1.5; }
 
 .shell {
   width: min(720px, 100%);

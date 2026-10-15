@@ -4,6 +4,8 @@ Variant labels describe candle structure, never a confirmed member execution.
 Distribution timing uses the opposing-liquidity objective; midpoint-only delivery
 is reported separately. Unordered source bars cannot prove a completed variant.
 """
+
+from gbop_voice_web import shared_gtop_rules as rules
 from datetime import datetime
 from gbop_voice_web.variant_explanation import NAMES, variant_explanation, variant_clause
 from gbop_voice_web.candle_evidence import parse_time, summarize, interval, timeframe
@@ -129,7 +131,7 @@ def attach_directional_outcome(review, bars, end, step):
         start = parse_time(origin['source_purge']['bar_open_ny'])
         stop = parse_time(review['invalidated_at_ny']) if review.get('invalidated_at_ny') else end
         returned = next((b for b in bars if start <= b['time'] and b['time'] + step <= stop
-                         and review['anchor']['low'] <= b['close'] <= review['anchor']['high']), None)
+                         and rules.inside(b['close'], review['anchor']['high'], review['anchor']['low'])), None)
         outcome['first_source_return_inside'] = interval(returned, step) if returned else None
     lifecycle = review.get('candle_lifecycle', {})
     outcome['separate_opposite_identities'] = [
@@ -192,7 +194,8 @@ def _classify_structure(row, bars, end, step, *, candle_timeframe=None):
         result['reason'] = 'Missing candles before or during manipulation.'
         return result
     manipulation = sequence[-1]
-    closed_outside = not anchor['low'] <= manipulation['close'] <= anchor['high']
+    closed_outside = rules.outside(manipulation['close'], anchor['high'], anchor['low'])
+    returned_inside = rules.inside(manipulation['close'], anchor['high'], anchor['low'])
     inside = sequence[1:-1]
     if not all(c['high'] <= anchor['high'] and c['low'] >= anchor['low'] for c in inside):
         result['reason'] = 'Intervening candles do not establish a clean inside-bar sequence.'
@@ -203,9 +206,9 @@ def _classify_structure(row, bars, end, step, *, candle_timeframe=None):
                   later_range_invalidated_at_ny=row.get('invalidated_at_ny'))
     def label(code, name, reason):
         result['labels'].append({'code': code, 'name': name, 'reason': reason})
-    if len(inside) == 1 and not closed_outside:
+    if len(inside) == 1 and returned_inside:
         label('V4', 'one inside bar', f'One complete inside {tf} preceded manipulation; manipulation closed back inside.')
-    elif len(inside) >= 2 and not closed_outside:
+    elif len(inside) >= 2 and returned_inside:
         label('V5', 'multiple inside bars', f'{len(inside)} complete inside {tf} candles preceded manipulation; manipulation closed back inside.')
 
     target = next((o['evidence'] for o in row['objectives']
@@ -227,9 +230,9 @@ def _classify_structure(row, bars, end, step, *, candle_timeframe=None):
             if not inside and manipulation_index == 1:
                 if count == 2:
                     label('V2', NAMES['V2'], f'Candle 2 purged and reached opposing liquidity in later source bars within the same {tf}.')
-                elif count == 3 and not closed_outside:
+                elif count == 3 and returned_inside:
                     label('V1', 'Textbook', 'Candle 1 was the range, candle 2 manipulated and closed inside, candle 3 reached opposing liquidity.')
-                elif count > 3 and not closed_outside:
+                elif count > 3 and returned_inside:
                     label('V3', 'extended distribution', f'Opposing liquidity was first observed in candle {count}.')
 
     if closed_outside:
@@ -237,6 +240,13 @@ def _classify_structure(row, bars, end, step, *, candle_timeframe=None):
             result.update(status='invalidated', reason='Manipulation hour closed outside before verified opposing delivery.')
         else:
             result['reason'] = f'Opposing delivery completed before the later invalidating {tf} close; keep both facts.'
+        return result
+
+    if not returned_inside:
+        # Equality is neither a return confirmation nor an invalidating close.
+        # Ordered completed V2, if any, remains valid above.
+        if result['status'] != 'distribution_observed':
+            result.update(status='developing', reason='Manipulation closed exactly on the range boundary; strict-inside return confirmation remains pending.')
         return result
 
     # A repeat touch of the original range boundary is NOT enough for V6.
@@ -248,6 +258,7 @@ def _classify_structure(row, bars, end, step, *, candle_timeframe=None):
     distribution_start = parse_time(full_touch['bar_open_ny']) if full_touch else end
     invalid_at = parse_time(row['invalidated_at_ny']) if row.get('invalidated_at_ny') else end
     bearish = row['direction_observed'] == 'bearish'
+    pending_resoup = None
     for t, stop in clock_rows[manipulation_index + 1:]:
         if t >= min(end, invalid_at):
             break
@@ -264,12 +275,21 @@ def _classify_structure(row, bars, end, step, *, candle_timeframe=None):
                               pending_resoup_hour_ny=partial['start_ny'])
             break
         resoup = later['high'] > manipulation['high'] if bearish else later['low'] < manipulation['low']
-        if (resoup and stop <= min(distribution_start, invalid_at, end)
-                and anchor['low'] <= later['close'] <= anchor['high']):
-            result['labels'] = []
-            label('V6', 're-soup', f'A later completed {tf} swept the first manipulation extreme and returned inside before full opposing-liquidity delivery.')
-            result['resoup_hour_ny'] = later['start_ny']
+        if stop > min(distribution_start, invalid_at, end):
             break
+        if resoup and pending_resoup is None:
+            pending_resoup = later['start_ny']
+            result.update(labels=[], eligible_codes=['V6'], pending_resoup_hour_ny=pending_resoup)
+        if pending_resoup and rules.inside(later['close'], anchor['high'], anchor['low']):
+            result['labels'] = []
+            label('V6', 're-soup', f'A later completed {tf} confirmed a strict-inside return after the first manipulation extreme was swept, before full opposing-liquidity delivery.')
+            result['resoup_hour_ny'] = pending_resoup
+            result['resoup_confirmation_hour_ny'] = later['start_ny']
+            result.pop('eligible_codes', None)
+            result.pop('pending_resoup_hour_ny', None)
+            break
+    if result.get('pending_resoup_hour_ny') and (full_touch or row.get('invalidated_at_ny')):
+        result.pop('eligible_codes', None)
     if result['labels'] and result['status'] == 'developing':
         result['status'] = 'structure_observed_distribution_unresolved'
     if not result['labels']:
@@ -343,7 +363,7 @@ def _delivery_milestones(row, bars, end, step, *, candle_timeframe=None):
         t, stop = clock_rows[manipulation_index]
         manipulation = summarize(prefix,t,stop,step)
         if delivery_index > manipulation_index and (not manipulation['complete']
-                or not anchor['low'] <= manipulation['close'] <= anchor['high']):
+                or not rules.inside(manipulation['close'], anchor['high'], anchor['low'])):
             continue
         codes = [v['code'] for v in structure['labels']]
         count = delivery_index + 1
@@ -355,7 +375,7 @@ def _delivery_milestones(row, bars, end, step, *, candle_timeframe=None):
             timing = 'V2' if count == 2 else 'V1' if count == 3 else 'V3'
         else:
             timing = None
-        if timing and timing not in codes and 'V6' not in codes:
+        if timing and timing not in codes and 'V6' not in codes and not structure.get('pending_resoup_hour_ny'):
             codes.insert(0,timing)
         if codes:
             manner.update(status='observed', primary_code='V6' if 'V6' in codes else codes[0],

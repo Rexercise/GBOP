@@ -4,6 +4,8 @@ An under-review anchor is navigation. Source return, own-timeframe return and
 named-play eligibility remain distinct facts; this module does not classify a
 named play or infer a confirmed CRT from source return alone.
 """
+
+from gbop_voice_web import shared_gtop_rules as rules
 from copy import deepcopy
 from datetime import datetime
 
@@ -40,12 +42,13 @@ def review_progression(hours, ranges):
         else:
             hi, lo = anchor['high'], anchor['low']
             above, below = candle['high'] > hi, candle['low'] < lo
-            outside = not lo <= candle['close'] <= hi
+            outside = rules.outside(candle['close'], hi, lo)
             item.update(swept_buy_side=above, swept_sell_side=below, close=candle['close'],
                 candle_science=('close_above' if candle['close'] > hi else
                     'close_below' if candle['close'] < lo else 'both_sides_wicked' if above and below else
                     'wick_above' if above else 'wick_below' if below else 'inside_range'),
-                status=('invalidated_by_hourly_close' if outside else 'two_sided_sweep' if above and below else
+                status=('invalidated_by_hourly_close' if outside else
+                        'boundary_close_return_pending' if rules.at_boundary(candle['close'], hi, lo) else 'two_sided_sweep' if above and below else
                         'sweep_and_close_back_inside' if above or below else 'inside_range'))
             row = ranges[active]
             objective = next((o for o in row['objectives'] if o['objective'] == 'opposing_liquidity'), {})
@@ -97,16 +100,16 @@ def attach_qualification(row, bars, end, step, native_h1=None):
         row['context_qualification'] = result
         return result
     returned = next((b for b in bars if parse_time(first['bar_open_ny']) <= b['time']
-        and b['time'] + step <= prefix and anchor['low'] <= b['close'] <= anchor['high']), None)
+        and b['time'] + step <= prefix and rules.inside(b['close'], anchor['high'], anchor['low'])), None)
     if returned:
         result.update(source_return_observed=True, source_return_known_at_ny=stamp(returned['time'] + step),
                       crt_status='developing_source_return_only')
     cursor = max(start, parse_time(first['bar_open_ny']) // 3600 * 3600)
     while cursor + 3600 <= stop:
         candle = h1_anchor(bars, cursor, step, native_h1, end)
-        if not candle.get('complete') or not anchor['low'] <= candle['close'] <= anchor['high']:
+        if not candle.get('complete') or rules.outside(candle['close'], anchor['high'], anchor['low']):
             break
-        if returned and returned['time'] + step <= cursor + 3600:
+        if returned and rules.inside(candle['close'], anchor['high'], anchor['low']) and returned['time'] + step <= cursor + 3600:
             result.update(selected_tf_return_confirmed=True,
                 selected_tf_return_candle_ny=candle['start_ny'], selected_tf_return_known_at_ny=candle['end_ny'],
                 crt_status='purge_and_H1_return_observed')

@@ -1,0 +1,328 @@
+{
+  "ok": true,
+  "source": "TradingView chart capture",
+  "symbol": "OANDA:XAUUSD",
+  "capture_id": "7fe93b4a9b389a3d",
+  "live_chart_connected": false,
+  "cutoff_ny": "2026-10-15T11:00:00-04:00",
+  "captured_at_ny": "2026-10-15T11:38:58-04:00",
+  "freshness": "recent_capture",
+  "rules_match": true,
+  "parents": [
+    {
+      "ok": true,
+      "source": "TradingView chart capture",
+      "symbol": "OANDA:XAUUSD",
+      "capture_id": "32730cce45ec8cde",
+      "live_chart_connected": false,
+      "cutoff_ny": "2026-10-15T11:00:00-04:00",
+      "captured_at_ny": "2026-10-15T11:38:58-04:00",
+      "freshness": "recent_capture",
+      "range": {
+        "timeframe": "H1",
+        "start_ny": "2026-10-15T08:00:00-04:00",
+        "end_ny": "2026-10-15T09:00:00-04:00",
+        "high": 4159.5,
+        "low": 4130.245,
+        "definition": "native_chart"
+      },
+      "rules_match": true,
+      "butterfly_reported": {
+        "state": "confirmed",
+        "direction": "bearish",
+        "variant": "unclassified",
+        "v6_pending": false,
+        "purge_at": 1792072800,
+        "return_at": 1792072800,
+        "invalid_at": null,
+        "objective_at": null,
+        "double_purge_at": null,
+        "last_close_at": 1792076400,
+        "last_close": 4157.915,
+        "model_at": 1792070400,
+        "cisd_at": 1792070700,
+        "model_invalid_open": 1792070400,
+        "model_invalid_at": 1792070700,
+        "primary_model_verified": true,
+        "assigned_complete": true,
+        "variant_display": "Potential V3"
+      },
+      "checks": [
+        {
+          "field": "reported_own_close",
+          "position": "inside",
+          "price": 4157.915,
+          "at_ny": "2026-10-15T11:00:00-04:00",
+          "basis": "indicator_reported"
+        }
+      ],
+      "discrepancies": [],
+      "assigned_evidence": {
+        "timeframe": "5",
+        "retained": 36,
+        "complete": true,
+        "calendar_bridges": 0,
+        "calendar_basis": "native_chart_projection",
+        "model1": [
+          1792070100,
+          1792070400,
+          4157.815,
+          4168.72,
+          4157.735,
+          4163.745
+        ],
+        "primary_model_verified": true,
+        "cisd": [
+          1792070400,
+          1792070700,
+          4163.65,
+          4163.835,
+          4154.445,
+          4155.4
+        ],
+        "model1_own_crt_invalidating_candle": [
+          1792070400,
+          1792070700,
+          4163.65,
+          4163.835,
+          4154.445,
+          4155.4
+        ]
+      },
+      "super_soup_range": {
+        "status": "invalidated",
+        "invalidating_candle_open_ny": "2026-10-15T09:20:00-04:00",
+        "confirmation_close_ny": "2026-10-15T09:25:00-04:00",
+        "entry_status": "not_assessed",
+        "model1_identity_preserved": true
+      },
+      "independent_candle_review": {
+        "status": "range_sweep_candidate",
+        "anchor": {
+          "start_ny": "2026-10-15T08:00:00-04:00",
+          "end_ny": "2026-10-15T09:00:00-04:00",
+          "complete": true,
+          "source_resolution_seconds": 300,
+          "bar_count": 12,
+          "missing_bar_count": 0,
+          "coverage_note": "Gaps may be missing data or market closures; no session calendar is assumed.",
+          "open": 4145.085,
+          "high": 4159.5,
+          "low": 4130.245,
+          "close": 4152.2,
+          "midpoint": 4144.8724999999995,
+          "high_first_seen": {
+            "bar_open_ny": "2026-10-15T08:35:00-04:00",
+            "bar_close_ny": "2026-10-15T08:40:00-04:00",
+            "precision_seconds": 300,
+            "exact_tick_time_known": false
+          },
+          "low_first_seen": {
+            "bar_open_ny": "2026-10-15T08:30:00-04:00",
+            "bar_close_ny": "2026-10-15T08:35:00-04:00",
+            "precision_seconds": 300,
+            "exact_tick_time_known": false
+          },
+          "high_occurrences": 1,
+          "low_occurrences": 1,
+          "high_last_seen": {
+            "bar_open_ny": "2026-10-15T08:35:00-04:00",
+            "bar_close_ny": "2026-10-15T08:40:00-04:00",
+            "precision_seconds": 300,
+            "exact_tick_time_known": false
+          },
+          "low_last_seen": {
+            "bar_open_ny": "2026-10-15T08:30:00-04:00",
+            "bar_close_ny": "2026-10-15T08:35:00-04:00",
+            "precision_seconds": 300,
+            "exact_tick_time_known": false
+          },
+          "timeframe": "H1"
+        },
+        "events": [
+          {
+            "kind": "buy_side_purge",
+            "level": 4159.5,
+            "observed_price": 4168.72,
+            "first_in_available_data": true,
+            "bar_open_ny": "2026-10-15T09:15:00-04:00",
+            "bar_close_ny": "2026-10-15T09:20:00-04:00",
+            "precision_seconds": 300,
+            "exact_tick_time_known": false,
+            "assigned_purge": {
+              "assigned_timeframe": "M5",
+              "source_purge": {
+                "bar_open_ny": "2026-10-15T09:15:00-04:00",
+                "bar_close_ny": "2026-10-15T09:20:00-04:00",
+                "precision_seconds": 300,
+                "exact_tick_time_known": false
+              },
+              "status": "containing_candle_identified",
+              "assigned_candle": {
+                "start_ny": "2026-10-15T09:15:00-04:00",
+                "end_ny": "2026-10-15T09:20:00-04:00",
+                "complete": true,
+                "source_resolution_seconds": 300,
+                "bar_count": 1,
+                "missing_bar_count": 0,
+                "coverage_note": "Gaps may be missing data or market closures; no session calendar is assumed.",
+                "open": 4157.815,
+                "high": 4168.72,
+                "low": 4157.735,
+                "close": 4163.745,
+                "midpoint": 4163.2275,
+                "high_first_seen": {
+                  "bar_open_ny": "2026-10-15T09:15:00-04:00",
+                  "bar_close_ny": "2026-10-15T09:20:00-04:00",
+                  "precision_seconds": 300,
+                  "exact_tick_time_known": false
+                },
+                "low_first_seen": {
+                  "bar_open_ny": "2026-10-15T09:15:00-04:00",
+                  "bar_close_ny": "2026-10-15T09:20:00-04:00",
+                  "precision_seconds": 300,
+                  "exact_tick_time_known": false
+                },
+                "high_occurrences": 1,
+                "low_occurrences": 1,
+                "high_last_seen": {
+                  "bar_open_ny": "2026-10-15T09:15:00-04:00",
+                  "bar_close_ny": "2026-10-15T09:20:00-04:00",
+                  "precision_seconds": 300,
+                  "exact_tick_time_known": false
+                },
+                "low_last_seen": {
+                  "bar_open_ny": "2026-10-15T09:15:00-04:00",
+                  "bar_close_ny": "2026-10-15T09:20:00-04:00",
+                  "precision_seconds": 300,
+                  "exact_tick_time_known": false
+                },
+                "timeframe": "M5"
+              },
+              "model1_qualification": "model1_body_purge",
+              "csd_status": "not_assessed",
+              "spoken_summary": "The assigned 9:15 AM M5 candle contains the buy-side purge of the 8:00 AM H1 range; the precise source purge is in the 9:15 AM M5 candle."
+            }
+          }
+        ],
+        "range_observation_coverage": {
+          "start_ny": "2026-10-15T09:00:00-04:00",
+          "end_ny": "2026-10-15T11:00:00-04:00",
+          "complete": true,
+          "source_resolution_seconds": 300,
+          "bar_count": 24,
+          "missing_bar_count": 0,
+          "coverage_note": "Gaps may be missing data or market closures; no session calendar is assumed.",
+          "open": 4152.195,
+          "high": 4168.72,
+          "low": 4144.28,
+          "close": 4157.915,
+          "midpoint": 4156.5,
+          "high_first_seen": {
+            "bar_open_ny": "2026-10-15T09:15:00-04:00",
+            "bar_close_ny": "2026-10-15T09:20:00-04:00",
+            "precision_seconds": 300,
+            "exact_tick_time_known": false
+          },
+          "low_first_seen": {
+            "bar_open_ny": "2026-10-15T09:00:00-04:00",
+            "bar_close_ny": "2026-10-15T09:05:00-04:00",
+            "precision_seconds": 300,
+            "exact_tick_time_known": false
+          },
+          "high_occurrences": 1,
+          "low_occurrences": 1,
+          "high_last_seen": {
+            "bar_open_ny": "2026-10-15T09:15:00-04:00",
+            "bar_close_ny": "2026-10-15T09:20:00-04:00",
+            "precision_seconds": 300,
+            "exact_tick_time_known": false
+          },
+          "low_last_seen": {
+            "bar_open_ny": "2026-10-15T09:00:00-04:00",
+            "bar_close_ny": "2026-10-15T09:05:00-04:00",
+            "precision_seconds": 300,
+            "exact_tick_time_known": false
+          }
+        },
+        "invalidated_at_ny": null,
+        "range_still_valid_in_available_closes": true
+      },
+      "limits": "Indicator-reported lifecycle is separate from independently checked candles. No MT5 substitution, paired SMT, execution or profit inference.",
+      "spoken_summary": "TradingView OANDA:XAUUSD, H1 range 2026-10-15T08:00:00-04:00, through 2026-10-15T11:00:00-04:00: Butterfly reports confirmed. Butterfly labels this Potential V3. A local body Model 1 is visible in the 9:15 AM M5 candle on 2026-10-15. CISD is confirmed by the 9:20 AM M5 candle on 2026-10-15. Super Soup invalidated by the 9:20 AM M5 candle on 2026-10-15; this does not invalidate the parent H1 range. This is the selected chart capture, not a live feed.",
+      "parent_id": "60:1792065600"
+    }
+  ],
+  "linked_events": [
+    {
+      "kind": "model1",
+      "timeframe": "5",
+      "candle_open_ny": "2026-10-15T09:15:00-04:00",
+      "confirmation_close_ny": "2026-10-15T09:20:00-04:00",
+      "parent_ids": [
+        "60:1792065600"
+      ],
+      "primary_model_verified_by_parent": {
+        "60:1792065600": true
+      }
+    },
+    {
+      "kind": "cisd",
+      "timeframe": "5",
+      "candle_open_ny": "2026-10-15T09:20:00-04:00",
+      "confirmation_close_ny": "2026-10-15T09:25:00-04:00",
+      "parent_ids": [
+        "60:1792065600"
+      ],
+      "primary_model_verified_by_parent": {
+        "60:1792065600": true
+      }
+    },
+    {
+      "kind": "super_soup_invalidated",
+      "timeframe": "5",
+      "candle_open_ny": "2026-10-15T09:20:00-04:00",
+      "confirmation_close_ny": "2026-10-15T09:25:00-04:00",
+      "parent_ids": [
+        "60:1792065600"
+      ],
+      "primary_model_verified_by_parent": {
+        "60:1792065600": true
+      }
+    }
+  ],
+  "shared_event_count": 0,
+  "overview_reported": [
+    {
+      "range_tf": "1W",
+      "range_open": 1790542800,
+      "range_end": 1790974800,
+      "high": 4275.325,
+      "low": 4110.87,
+      "range_definition": "native_chart",
+      "coverage": "closed_source",
+      "direction": "bullish",
+      "state": "active_relevant",
+      "basis": "indicator_reported",
+      "objective_side": "high",
+      "objective_price": 4275.325
+    },
+    {
+      "range_tf": "60",
+      "range_open": 1792065600,
+      "range_end": 1792069200,
+      "high": 4159.5,
+      "low": 4130.245,
+      "range_definition": "native_chart",
+      "coverage": "closed_source",
+      "direction": "bearish",
+      "state": "active_relevant",
+      "basis": "indicator_reported",
+      "objective_side": "low",
+      "objective_price": 4130.245
+    }
+  ],
+  "discrepancies": [],
+  "limits": "Indicator-reported lifecycle is separate from independently checked candles. No MT5 substitution, paired SMT, execution or profit inference.",
+  "spoken_summary": "TradingView OANDA:XAUUSD, H1 range 2026-10-15T08:00:00-04:00, through 2026-10-15T11:00:00-04:00: Butterfly reports confirmed. Butterfly labels this Potential V3. A local body Model 1 is visible in the 9:15 AM M5 candle on 2026-10-15. CISD is confirmed by the 9:20 AM M5 candle on 2026-10-15. Super Soup invalidated by the 9:20 AM M5 candle on 2026-10-15; this does not invalidate the parent H1 range. This is the selected chart capture, not a live feed."
+}
