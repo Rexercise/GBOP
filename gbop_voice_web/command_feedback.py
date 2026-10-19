@@ -12,6 +12,14 @@ import discord
 LOG = logging.getLogger(__name__)
 MEETING_TIMEOUT_SECONDS = 60
 FEEDBACK_TIMEOUT_SECONDS = 5
+ACKNOWLEDGEMENT_TIMEOUT_SECONDS = 3
+
+MEETING_ACKNOWLEDGEMENT = (
+    "**Meeting request received.** I'll post your private room link or result below. "
+    "If no result appears within 70 seconds, completion could not be confirmed. "
+    "Please don't repeat the command while Discord is rate-limiting requests. "
+    "You can open your [private browser session](https://gbop.onrender.com/) instead."
+)
 
 
 def is_discord_rate_limit(error):
@@ -89,10 +97,28 @@ def command_error_message(error, cooldown):
 
 def log_failure(interaction, error, stage):
     # HTTPException.__str__ may contain HTML, tokens or private upstream data.
-    LOG.warning("[GBOP-COMMAND-ERROR] command=%s stage=%s type=%s status=%s code=%s",
+    LOG.warning("[GBOP-COMMAND-ERROR] command=%s stage=%s type=%s status=%s code=%s acknowledged=%s",
                 getattr(getattr(interaction, "command", None), "name", "unknown"),
                 stage, type(error).__name__, getattr(error, "status", None),
-                getattr(error, "code", None))
+                getattr(error, "code", None), interaction.response.is_done())
+
+
+async def acknowledge_private_meeting(interaction, cooldown):
+    """A visible receipt survives even if Discord refuses every later update."""
+    blocked = bool(cooldown.remaining() or cooldown.probing)
+    message = (command_error_message(MeetingCooldown(), cooldown)
+               if blocked else MEETING_ACKNOWLEDGEMENT)
+    try:
+        await asyncio.wait_for(
+            interaction.response.send_message(message, ephemeral=True),
+            timeout=ACKNOWLEDGEMENT_TIMEOUT_SECONDS)
+    except Exception as error:
+        cooldown.record(error)
+        log_failure(interaction, error, "acknowledgement")
+        # No setup and no second delivery attempt after an uncertain/failed receipt.
+        return False
+    print(f"[GBOP-MEETING] stage=acknowledged setup_allowed={not blocked}", flush=True)
+    return not blocked
 
 
 async def report_command_error(interaction, error, cooldown, *, view=None):

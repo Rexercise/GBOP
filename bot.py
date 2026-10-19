@@ -24,7 +24,8 @@ from gbop_voice_web.discord_controls import (
 )
 from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
 from gbop_voice_web.command_feedback import (
-    DiscordCooldown, is_discord_rate_limit, report_command_error, run_private_meeting,
+    DiscordCooldown, acknowledge_private_meeting, is_discord_rate_limit,
+    report_command_error, run_private_meeting,
 )
 from db_compat import db
 from gbop_voice_web.member_access import MEMBER_ACCESS_UNAVAILABLE, member_access_error
@@ -8428,7 +8429,8 @@ async def gbop_start_private_meeting(interaction):
 async def meet(interaction: discord.Interaction):
     if not await require_member(interaction):
         return
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    if not await acknowledge_private_meeting(interaction, GBOP_DISCORD_COOLDOWN):
+        return
     key = (interaction.guild.id, interaction.user.id)
     await run_private_meeting(
         interaction, gbop_start_private_meeting,

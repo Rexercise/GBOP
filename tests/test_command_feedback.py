@@ -136,6 +136,52 @@ class CooldownTests(unittest.TestCase):
         self.assertEqual(cooldown.failures, 0)
 
 
+class MeetingAcknowledgementTests(unittest.IsolatedAsyncioTestCase):
+    async def test_receipt_is_an_immediate_private_message(self):
+        target = interaction(done=False)
+        with patch('builtins.print') as receipt_log:
+            self.assertTrue(await feedback.acknowledge_private_meeting(target, feedback.DiscordCooldown()))
+        receipt_log.assert_called_once_with('[GBOP-MEETING] stage=acknowledged setup_allowed=True', flush=True)
+        args = target.response.send_message.await_args
+        self.assertTrue(args.kwargs['ephemeral'])
+        self.assertIn('Meeting request received', args.args[0])
+        self.assertLess(len(args.args[0]), 2000)
+        target.followup.send.assert_not_awaited()
+        target.edit_original_response.assert_not_awaited()
+
+    async def test_known_cooldown_is_explained_in_the_first_reply_without_setup(self):
+        target, cooldown = interaction(done=False), feedback.DiscordCooldown()
+        cooldown.record(http_error(headers={'Retry-After': '1200'}))
+        self.assertFalse(await feedback.acknowledge_private_meeting(target, cooldown))
+        self.assertIn('rate-limiting', target.response.send_message.await_args.args[0])
+        self.assertEqual(cooldown.failures, 1)
+        target.followup.send.assert_not_awaited()
+
+    async def test_unconfirmed_receipt_times_out_without_another_request(self):
+        target = interaction(done=False)
+        cancelled = asyncio.Event()
+        async def stalled(*args, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        target.response.send_message.side_effect = stalled
+        with patch.object(feedback, 'ACKNOWLEDGEMENT_TIMEOUT_SECONDS', .01), self.assertLogs(feedback.LOG):
+            allowed = await asyncio.wait_for(feedback.acknowledge_private_meeting(
+                target, feedback.DiscordCooldown()), timeout=.5)
+        self.assertFalse(allowed)
+        self.assertTrue(cancelled.is_set())
+        target.response.send_message.assert_awaited_once()
+        target.followup.send.assert_not_awaited()
+
+    async def test_external_cancellation_is_not_swallowed(self):
+        target = interaction(done=False)
+        target.response.send_message.side_effect = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            await feedback.acknowledge_private_meeting(target, feedback.DiscordCooldown())
+        target.followup.send.assert_not_awaited()
+
+
 class MeetingCompletionTests(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_cancels_setup_releases_lock_and_completes_deferred_reply(self):
         target, lock, cooldown = interaction(), asyncio.Lock(), feedback.DiscordCooldown()

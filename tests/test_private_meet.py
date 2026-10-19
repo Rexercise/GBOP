@@ -12,7 +12,8 @@ from test_private_voice import code, Entity
 from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
 from gbop_voice_web.discord_controls import private_room_owner
 from gbop_voice_web.command_feedback import (
-    DiscordCooldown, is_discord_rate_limit, report_command_error, run_private_meeting,
+    DiscordCooldown, acknowledge_private_meeting, is_discord_rate_limit,
+    report_command_error, run_private_meeting,
 )
 
 
@@ -27,7 +28,8 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
         ready = asyncio.Event(); ready.set()
         session = NS(ready=ready, voice_client=NS(channel=room))
         interaction = NS(user=member, guild=member.guild,
-                         response=NS(defer=AsyncMock(), is_done=Mock(return_value=True), type=None),
+                         response=NS(defer=AsyncMock(), send_message=AsyncMock(),
+                                     is_done=Mock(return_value=True), type=None),
                          followup=NS(send=AsyncMock()))
         ns = dict(asyncio=asyncio, discord=NS(Interaction=object, HTTPException=PermissionError),
                   gbop_private_room=AsyncMock(return_value=room),
@@ -36,6 +38,7 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
                   gbop_connect_member_voice=AsyncMock(return_value=(room, session)),
                   in_voice_channel=in_voice_channel,
                   run_private_meeting=run_private_meeting, is_discord_rate_limit=is_discord_rate_limit,
+                  acknowledge_private_meeting=acknowledge_private_meeting,
                   report_command_error=report_command_error,
                   GBOP_DISCORD_COOLDOWN=DiscordCooldown(),
                   GBOP_PRIVATE_ROOMS=PrivateRoomCleanup(), GBOP_MEETING_LOCKS={}, require_member=AsyncMock(return_value=True))
@@ -61,7 +64,9 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
         interaction, room, session, ns, _, command = self.fixture()
         await command(interaction)
         ns['require_member'].assert_awaited_once_with(interaction)
-        interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+        interaction.response.defer.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once()
+        self.assertTrue(interaction.response.send_message.await_args.kwargs['ephemeral'])
         ns['gbop_private_room'].assert_awaited_once_with(interaction, announce=False, prefer_temporary=True)
         interaction.user.move_to.assert_awaited_once_with(room, reason='Member requested /meet with GBOP')
         ns['gbop_connect_member_voice'].assert_awaited_once_with(interaction.user, room)
@@ -102,6 +107,7 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
         ns['gbop_private_room'].assert_not_awaited()
         interaction.user.move_to.assert_not_awaited()
         interaction.response.defer.assert_not_awaited()
+        interaction.response.send_message.assert_not_awaited()
         ns['gbop_connect_member_voice'].assert_not_awaited()
 
     async def test_room_setup_failure_does_not_move_or_send_duplicate_error(self):
@@ -128,13 +134,50 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
                     await command(interaction)
                 failing.assert_awaited_once()
                 ns['gbop_private_room'].assert_awaited_once()
-                self.assertEqual(interaction.followup.send.await_count, 2)
+                self.assertEqual(interaction.followup.send.await_count, 1)
+                self.assertEqual(interaction.response.send_message.await_count, 2)
+                self.assertIn('rate-limiting', interaction.response.send_message.await_args.args[0])
                 for reply in interaction.followup.send.await_args_list:
                     self.assertIn('rate-limiting', reply.args[0])
                     self.assertLess(len(reply.args[0]), 2000)
                     self.assertNotIn('upstream-secret', reply.args[0])
                 self.assertNotIn('upstream-secret', ''.join(logs.output))
                 self.assertFalse(ns['GBOP_MEETING_LOCKS'][(123, 42)].locked())
+
+    async def test_receipt_survives_when_setup_and_error_feedback_are_both_rate_limited(self):
+        interaction, _, _, ns, _, command = self.fixture()
+        error = discord_api.HTTPException(NS(status=429, reason='rate limited', headers={}),
+                                          '<html>Cloudflare 1015</html>')
+        async def blocked_setup(*args, **kwargs):
+            # The user must already have a visible reply before any setup request.
+            interaction.response.send_message.assert_awaited_once()
+            raise error
+        ns['gbop_private_room'].side_effect = blocked_setup
+        interaction.followup.send.side_effect = error
+        with self.assertLogs('gbop_voice_web.command_feedback', level='WARNING') as logs:
+            await command(interaction)
+        interaction.response.defer.assert_not_awaited()
+        receipt = interaction.response.send_message.await_args.args[0]
+        self.assertIn('Meeting request received', receipt)
+        self.assertIn('70 seconds', receipt)
+        self.assertIn('https://gbop.onrender.com/', receipt)
+        self.assertNotIn('<html>', receipt)
+        interaction.followup.send.assert_awaited_once()
+        ns['gbop_connect_member_voice'].assert_not_awaited()
+        self.assertIn('feedback-undelivered', ''.join(logs.output))
+
+    async def test_blocked_initial_receipt_does_not_start_setup_or_retry(self):
+        interaction, _, _, ns, _, command = self.fixture()
+        interaction.response.send_message.side_effect = discord_api.HTTPException(
+            NS(status=429, reason='rate limited', headers={'Retry-After': '1200'}), 'blocked')
+        with self.assertLogs('gbop_voice_web.command_feedback', level='WARNING') as logs:
+            await command(interaction)
+        interaction.response.send_message.assert_awaited_once()
+        interaction.response.defer.assert_not_awaited()
+        interaction.followup.send.assert_not_awaited()
+        ns['gbop_private_room'].assert_not_awaited()
+        self.assertGreaterEqual(ns['GBOP_DISCORD_COOLDOWN'].remaining(), 1199)
+        self.assertIn('stage=acknowledgement', ''.join(logs.output))
 
     async def test_forbidden_move_keeps_manual_join_path_and_does_not_connect(self):
         interaction, _, _, ns, _, command = self.fixture()
@@ -247,7 +290,7 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
     async def test_different_members_do_not_share_meeting_lock(self):
         interaction, _, _, ns, _, command = self.fixture()
         other = NS(user=NS(id=43), guild=interaction.guild,
-                   response=NS(defer=AsyncMock()))
+                   response=NS(defer=AsyncMock(), send_message=AsyncMock()))
         both_started = asyncio.Event()
         started = 0
         async def start(_):
