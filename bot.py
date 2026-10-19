@@ -23,6 +23,9 @@ from gbop_voice_web.discord_controls import (
     private_room_autojoin_allowed,
 )
 from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
+from gbop_voice_web.command_feedback import (
+    DiscordCooldown, is_discord_rate_limit, report_command_error, run_private_meeting,
+)
 from db_compat import db
 from gbop_voice_web.member_access import MEMBER_ACCESS_UNAVAILABLE, member_access_error
 from gbop_voice_web.owner_broadcast import (
@@ -6620,6 +6623,7 @@ GBOP_RT_SINKS = {}
 GBOP_RT_LOCKS = {}
 GBOP_VOICE_CONTROL_LOCKS = {}
 GBOP_MEETING_LOCKS = {}
+GBOP_DISCORD_COOLDOWN = DiscordCooldown()
 GBOP_PRIVATE_ROOMS = PrivateRoomCleanup()
 GBOP_RT_STOPPING = set()
 GBOP_RT_CLEANUP_TASKS = set()
@@ -8357,7 +8361,9 @@ async def gbop_start_private_meeting(interaction):
     if current.id != room.id:
         try:
             await member.move_to(room, reason="Member requested /meet with GBOP")
-        except discord.HTTPException:
+        except discord.HTTPException as exc:
+            if is_discord_rate_limit(exc):
+                raise
             await interaction.followup.send(
                 f"Your private room is {room.mention}, but Discord could not move you. "
                 "**Open it below and join voice; GBOP joins automatically.** "
@@ -8391,22 +8397,22 @@ async def gbop_start_private_meeting(interaction):
         return
     try:
         room, session = await gbop_connect_member_voice(member, room)
-        if session is None:
-            await interaction.followup.send(
-                "Your meeting did not start because you left voice or the session is paused. "
-                "Run `/meet` when you're ready.", view=view, ephemeral=True)
-            return
-        try:
-            await asyncio.wait_for(session.ready.wait(), timeout=12)
-        except asyncio.TimeoutError:
-            await interaction.followup.send(
-                f"GBOP is in {room.mention}, but the AI connection is still starting. "
-                "Use `/gbop action:status` to check.\n" + notice, view=view, ephemeral=True)
-            return
     except Exception as exc:
+        if is_discord_rate_limit(exc):
+            raise
+        await report_command_error(interaction, exc, GBOP_DISCORD_COOLDOWN, view=view)
+        return
+    if session is None:
         await interaction.followup.send(
-            f"Your room is ready, but GBOP could not start the meeting: {exc}\n"
-            "Try `/meet` again or use the browser session below.", view=view, ephemeral=True)
+            "Your meeting did not start because you left voice or the session is paused. "
+            "Run `/meet` when you're ready.", view=view, ephemeral=True)
+        return
+    try:
+        await asyncio.wait_for(session.ready.wait(), timeout=12)
+    except asyncio.TimeoutError:
+        await interaction.followup.send(
+            f"GBOP is in {room.mention}, but the AI connection is still starting. "
+            "Use `/gbop action:status` to check.\n" + notice, view=view, ephemeral=True)
         return
     if not in_voice_channel(member, session.voice_client):
         await interaction.followup.send(
@@ -8424,8 +8430,9 @@ async def meet(interaction: discord.Interaction):
         return
     await interaction.response.defer(ephemeral=True, thinking=True)
     key = (interaction.guild.id, interaction.user.id)
-    async with GBOP_MEETING_LOCKS.setdefault(key, asyncio.Lock()):
-        await gbop_start_private_meeting(interaction)
+    await run_private_meeting(
+        interaction, gbop_start_private_meeting,
+        GBOP_MEETING_LOCKS.setdefault(key, asyncio.Lock()), GBOP_DISCORD_COOLDOWN)
 
 
 @tree.command(name="gbop", description="Open private browser voice, call GBOP into a channel, or get help.", guild=GUILD)
@@ -8568,26 +8575,7 @@ async def gbop_tree_error(
     error: app_commands.AppCommandError,
 ):
     original = getattr(error, "original", error)
-
-    print(
-        "[GBOP-COMMAND-ERROR]",
-        getattr(interaction.command, "name", "unknown"),
-        type(original).__name__,
-        original,
-    )
-
-    try:
-        message = (
-            "❌ **GBOP command error**\n"
-            f"`{type(original).__name__}: {original}`"
-        )
-
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-    except Exception:
-        pass
+    await report_command_error(interaction, original, GBOP_DISCORD_COOLDOWN)
 
 
 async def gbop_voice_readiness_monitor():

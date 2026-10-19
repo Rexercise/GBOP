@@ -5,11 +5,15 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock
+import discord as discord_api
 
 from gbop_voice_web.discord_controls import in_voice_channel, private_room_autojoin_allowed
 from test_private_voice import code, Entity
 from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
 from gbop_voice_web.discord_controls import private_room_owner
+from gbop_voice_web.command_feedback import (
+    DiscordCooldown, is_discord_rate_limit, report_command_error, run_private_meeting,
+)
 
 
 class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
@@ -22,7 +26,8 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
         member.move_to = AsyncMock(side_effect=move)
         ready = asyncio.Event(); ready.set()
         session = NS(ready=ready, voice_client=NS(channel=room))
-        interaction = NS(user=member, guild=member.guild, response=NS(defer=AsyncMock()),
+        interaction = NS(user=member, guild=member.guild,
+                         response=NS(defer=AsyncMock(), is_done=Mock(return_value=True), type=None),
                          followup=NS(send=AsyncMock()))
         ns = dict(asyncio=asyncio, discord=NS(Interaction=object, HTTPException=PermissionError),
                   gbop_private_room=AsyncMock(return_value=room),
@@ -30,6 +35,9 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
                   private_room_autojoin_allowed=Mock(return_value=True),
                   gbop_connect_member_voice=AsyncMock(return_value=(room, session)),
                   in_voice_channel=in_voice_channel,
+                  run_private_meeting=run_private_meeting, is_discord_rate_limit=is_discord_rate_limit,
+                  report_command_error=report_command_error,
+                  GBOP_DISCORD_COOLDOWN=DiscordCooldown(),
                   GBOP_PRIVATE_ROOMS=PrivateRoomCleanup(), GBOP_MEETING_LOCKS={}, require_member=AsyncMock(return_value=True))
         start = code('gbop_start_private_meeting', ns)
         command = code('meet', ns)
@@ -104,6 +112,30 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
         ns['gbop_connect_member_voice'].assert_not_awaited()
         interaction.followup.send.assert_not_awaited()
 
+    async def test_rate_limits_at_each_meeting_stage_stop_setup_and_block_repeated_meet(self):
+        for stage in ('room', 'move', 'connect'):
+            with self.subTest(stage=stage):
+                interaction, _, _, ns, _, command = self.fixture()
+                ns['discord'].HTTPException = discord_api.HTTPException
+                error = discord_api.HTTPException(
+                    NS(status=429, reason='rate limited', headers={'Retry-After': '600'}),
+                    '<html>Cloudflare error 1015 ' + 'upstream-secret' * 400 + '</html>')
+                failing = {'room': ns['gbop_private_room'], 'move': interaction.user.move_to,
+                           'connect': ns['gbop_connect_member_voice']}[stage]
+                failing.side_effect = error
+                with self.assertLogs('gbop_voice_web.command_feedback', level='WARNING') as logs:
+                    await command(interaction)
+                    await command(interaction)
+                failing.assert_awaited_once()
+                ns['gbop_private_room'].assert_awaited_once()
+                self.assertEqual(interaction.followup.send.await_count, 2)
+                for reply in interaction.followup.send.await_args_list:
+                    self.assertIn('rate-limiting', reply.args[0])
+                    self.assertLess(len(reply.args[0]), 2000)
+                    self.assertNotIn('upstream-secret', reply.args[0])
+                self.assertNotIn('upstream-secret', ''.join(logs.output))
+                self.assertFalse(ns['GBOP_MEETING_LOCKS'][(123, 42)].locked())
+
     async def test_forbidden_move_keeps_manual_join_path_and_does_not_connect(self):
         interaction, _, _, ns, _, command = self.fixture()
         interaction.user.move_to.side_effect = PermissionError('Missing Permissions')
@@ -170,11 +202,13 @@ class PrivateMeetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_full_pool_reports_browser_fallback_without_claiming_success(self):
         interaction, _, _, ns, _, command = self.fixture(already_here=True)
-        ns['gbop_connect_member_voice'].side_effect = RuntimeError('All GBOP Discord voice slots are in use.')
+        ns['gbop_connect_member_voice'].side_effect = RuntimeError(
+            'All GBOP Discord voice slots are in use. Try again later or use browser voice.')
         await command(interaction)
         message = self.message(interaction)
         self.assertIn('slots are in use', message)
         self.assertIn('browser session', message)
+        self.assertEqual(interaction.followup.send.await_args.kwargs['view'], 'room-view')
         self.assertNotIn('You and GBOP are ready', message)
 
     async def test_ai_not_ready_is_reported_separately(self):
