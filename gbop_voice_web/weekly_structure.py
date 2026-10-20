@@ -336,7 +336,8 @@ def _ss_preview(value, limit):
     return text[:limit - 1].rstrip() + '…'
 
 
-def format_pre_shift_structure(state, *, preview_chars=240, compact_dates=False):
+def format_pre_shift_structure(state, *, preview_chars=240, compact_dates=False,
+                               emphasize_closure=False):
     """Bounded reminder, with market evidence and personal hypotheses separate."""
     reports = state.get('reports', [])
     selected = state.get('symbol_selection', {}).get('symbols')
@@ -365,7 +366,12 @@ def format_pre_shift_structure(state, *, preview_chars=240, compact_dates=False)
             if not ohlc:
                 lines.append(f"{report['asset']}: member analysis saved; market candles unavailable.")
                 continue
-            lines.append(f"{report['asset']}: " + _gtop_closure(ohlc, report.get('previous_observed_ohlc')) + '.')
+            closure = _gtop_closure(ohlc, report.get('previous_observed_ohlc'))
+            if emphasize_closure and closure.endswith(('→ Higher pricing', '→ Lower pricing')):
+                # Discord has no supported inline font color. A red marker and
+                # bold text highlight either direction without ANSI/client hacks.
+                closure = f'🔴 **{closure}**'
+            lines.append(f"{report['asset']}: {closure}.")
     lines.append('Based on retained candles; full-week coverage unverified. This is not a current-week bias.')
     hypotheses = [r for r in reports if r.get('member_structure', {}).get('next_week_hypothesis')]
     if hypotheses:

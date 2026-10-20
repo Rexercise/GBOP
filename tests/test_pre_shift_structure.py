@@ -46,7 +46,7 @@ class PreShiftStructureTests(unittest.TestCase):
         self.assertIsNone(plan['current_ss'])
         self.assertEqual(plan['weekly_structure']['reports'][0]['asset'], 'NAS100')
         message = intel.build_pre_shift_message(self.db, 10, 20, 'day', '2026-10-13')
-        self.assertIn('NAS100: Close above → Higher pricing', message)
+        self.assertIn('NAS100: 🔴 **Close above → Higher pricing**.', message)
         self.assertIn('Week 1 of October (Oct 5–Oct 9, 2026)', message)
         self.assertIn('Week 4 of September (Sep 28–Oct 2, 2026)', message)
         self.assertIn('hypothesis is not saved', message)

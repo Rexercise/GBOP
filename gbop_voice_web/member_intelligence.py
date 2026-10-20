@@ -1235,7 +1235,8 @@ def build_pre_shift_message(db, guild, user, shift, session_date=None, *, news_s
             (240, False, True), (240, False, False), (120, False, False),
             (60, False, False), (0, False, False), (0, True, False)):
         structural = format_pre_shift_structure(state['weekly_structure'],
-            preview_chars=preview_chars, compact_dates=compact_dates)
+            preview_chars=preview_chars, compact_dates=compact_dates,
+            emphasize_closure=True)
         message = (
             f"⏱️ **{label} begins in 5 minutes** ({clock} Eastern).\n\n"
             f"**SS structure:** {structural}\n"

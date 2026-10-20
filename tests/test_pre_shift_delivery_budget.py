@@ -131,6 +131,17 @@ class ReminderBudgetTests(unittest.TestCase):
         for current, expected in cases:
             with self.subTest(expected=expected):
                 self.assertEqual(ss._gtop_closure(current, previous), expected)
+                report = dict(asset='NAS100', week_start='2026-10-05', previous_week_start='2026-09-28',
+                              observed_ohlc=current, previous_observed_ohlc=previous, member_structure={})
+                state = {'reports': [report]}
+                plain = ss.format_pre_shift_structure(state)
+                message = self.compose(state)
+                if ' → ' in expected:
+                    self.assertIn(f'NAS100: 🔴 **{expected}**.', message)
+                    self.assertNotIn('🔴', plain)
+                else:
+                    self.assertIn(f'NAS100: {expected}.', message)
+                    self.assertNotIn('🔴', message)
         self.assertEqual(ss._gtop_closure({'close': 95}, None), 'Weekly closure unverified (prior OHLC unavailable)')
 
 
@@ -143,7 +154,7 @@ class ReminderTransportTests(unittest.IsolatedAsyncioTestCase):
         member = NS(id=20, send=AsyncMock(return_value=NS(id=55)))
         summary = news(7)
         reports = [dict(asset=asset, week_start='2026-10-05', previous_week_start='2026-09-28',
-            observed_ohlc=dict(high=110, low=90, close=105), previous_observed_ohlc=dict(high=108, low=95),
+            observed_ohlc=dict(high=99, low=80, close=85), previous_observed_ohlc=dict(high=100, low=90),
             member_structure=dict(next_week_hypothesis='condition ' * 200, hypothesis_invalidation='invalid ' * 200))
             for asset in sorted(ASSETS)]
         plan = dict(weekly_structure=dict(reports=reports, symbol_selection={'symbols': sorted(ASSETS)}),
@@ -162,7 +173,7 @@ class ReminderTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.count('red-folder news today:'), 1)
         self.assertIn('USD — CPI release 0', message)
         for asset in ASSETS:
-            self.assertIn(asset + ':', message)
+            self.assertIn(asset + ': 🔴 **Close below → Lower pricing**.', message)
         self.assertIn('EXACT SAVED EXECUTION FOCUS', message)
         self.assertEqual(conn.execute('SELECT count(*) c FROM gbop_shift_deliveries').fetchone()['c'], 1)
 
