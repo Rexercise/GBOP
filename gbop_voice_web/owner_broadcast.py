@@ -109,6 +109,7 @@ class BroadcastDraft:
     recipients: tuple[BroadcastRecipient, ...]
     excluded_count: int = 0
     image: BroadcastImage | None = None
+    campaign: str | None = None
 
     @property
     def page_count(self):

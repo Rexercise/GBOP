@@ -33,6 +33,7 @@ from gbop_voice_web.owner_broadcast import (
     AUDIENCE_LABELS, PREVIEW_SECONDS, build_draft, owner_message, parse_selection,
     read_broadcast_image,
 )
+from gbop_voice_web import readiness_announcement
 from gbop_voice_web.checkin_routing import save_checkin_reply
 from gbop_voice_web.no_trade_checkins import (
     no_trade_acknowledgment, record_reason_prompt, save_no_trade_reason,
@@ -679,6 +680,8 @@ async def _resolve_owner_broadcast_draft(text, audience, selected_ids, image=Non
 
 async def _send_owner_broadcast(draft):
     """Never expand a confirmed audience; fail closed at every recipient."""
+    if getattr(draft, 'campaign', None) is not None:
+        return await _send_readiness_broadcast(draft)
     sent = unconfirmed = skipped = 0
     if (draft.owner_id != GTOP_OWNER_USER_ID or draft.guild_id != GTOP_GUILD_ID
             or draft.audience not in AUDIENCE_LABELS):
@@ -706,6 +709,39 @@ async def _send_owner_broadcast(draft):
                 file.close()
                 file.fp.close()
     return sent, unconfirmed, skipped
+
+
+async def _readiness_authorized_member(user_id):
+    guild = client.get_guild(GTOP_GUILD_ID)
+    if guild is None or guild.id != GTOP_GUILD_ID:
+        raise ValueError('GBOP guild unavailable')
+    try:
+        member = await guild.fetch_member(user_id)
+    except discord.NotFound:
+        return False
+    if (member.id != user_id or member.guild.id != GTOP_GUILD_ID or member.bot is not False
+            or not (has_member_role(member) or is_owner(member))):
+        return False
+    error = await asyncio.to_thread(member_access_error, db, GTOP_GUILD_ID, user_id, GTOP_OWNER_USER_ID)
+    if error == MEMBER_ACCESS_UNAVAILABLE:
+        raise ValueError('GBOP access unavailable')
+    return not error
+
+
+async def _send_readiness_broadcast(draft):
+    if (draft.owner_id != GTOP_OWNER_USER_ID or draft.guild_id != GTOP_GUILD_ID
+            or not client.is_ready() or client.user is None):
+        return readiness_announcement.Result(unavailable=True)
+    sender = readiness_announcement.SingleAttemptDM(
+        DISCORD_TOKEN, client.user.id, authorize=_readiness_authorized_member)
+    try:
+        return await readiness_announcement.deliver(
+            db, draft, _readiness_authorized_member, sender, logger=logger)
+    finally:
+        try:
+            await asyncio.wait_for(sender.close(), timeout=5)
+        except Exception:
+            logger.warning('GBOP readiness transport cleanup failed; no delivery retry')
 
 
 class OwnerBroadcastView(discord.ui.View):
@@ -746,6 +782,10 @@ class OwnerBroadcastView(discord.ui.View):
         embed.set_footer(text=(f'Recipients page {self.page_index + 1}/{self.draft.page_count}. '
             'Review every page, then Confirm send. Expires in 10 minutes. '
             f'New members are not added; {skip_notice}'))
+        if self.draft.campaign:
+            embed.add_field(name='One-time readiness announcement', value=(
+                'This announcement uses the reviewed audience once. Previous or uncertain '
+                'deliveries will not be resent, even if the process is interrupted.'), inline=False)
         if self.draft.image:
             embed.add_field(name='Image included', value=self.draft.image.filename, inline=False)
             if not self.draft.image.spoiler:
@@ -820,8 +860,12 @@ class OwnerBroadcastView(discord.ui.View):
             await interaction.response.edit_message(
                 content='Sending the exact message to the reviewed recipients…', embed=None, view=None,
             )
-        sent, unconfirmed, skipped = await _send_owner_broadcast(self.draft)
+        result = await _send_owner_broadcast(self.draft)
         self.state = 'finished'
+        if self.draft.campaign:
+            await interaction.followup.send(result.summary(), ephemeral=True)
+            return
+        sent, unconfirmed, skipped = result
         await interaction.followup.send(
             f'GBOP message delivered to **{sent}** member(s). '
             f'{unconfirmed} delivery attempt(s) could not be confirmed; GBOP did not retry after a delivery error. '
@@ -1475,6 +1519,7 @@ class OwnerBroadcastGuidedPreview(OwnerBroadcastView):
     audience="Use selected to pick server users; all/all_except use GBOP eligibility; all_server_members uses all.",
     members="Optional exact @user mentions/IDs. Leave blank for the selected/all_except server-user picker.",
     image="Optional PNG, JPEG, GIF, or WebP up to 10 MiB. Text is optional when an image is attached.",
+    readiness="Preview the one-time fixed journaling-readiness announcement for eligible GBOP members.",
 )
 async def gbopmessage(
     interaction: discord.Interaction,
@@ -1482,12 +1527,27 @@ async def gbopmessage(
     audience: Literal['all', 'selected', 'all_server_members', 'all_except'] = 'all',
     members: str = '',
     image: discord.Attachment | None = None,
+    readiness: bool = False,
 ):
     if not is_owner(interaction.user) or interaction.guild_id != GTOP_GUILD_ID:
         await interaction.response.send_message(
             "⛔ Only the GBOP owner can preview a GBOP message in the G.T.O.P server.", ephemeral=True,
         )
         return
+    if readiness:
+        if text is not None or image is not None or audience not in ('all', 'all_except'):
+            await interaction.response.send_message(
+                'The readiness announcement uses its fixed message, no image, and eligible GBOP members only.',
+                ephemeral=True)
+            return
+        try:
+            # Exclusions must be explicit; do not pass the fixed campaign through
+            # an unrestricted composer or a server-wide member picker.
+            parse_selection(audience, members)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        text = readiness_announcement.TEXT
     uploaded_image = None
     if image is not None:
         await interaction.response.defer(ephemeral=True)
@@ -1536,6 +1596,8 @@ async def gbopmessage(
         return
     try:
         draft = await _resolve_owner_broadcast_draft(text, audience, selected_ids, uploaded_image)
+        if readiness:
+            draft = readiness_announcement.bind_draft(draft)
     except ValueError as exc:
         await interaction.followup.send(str(exc), ephemeral=True)
         return

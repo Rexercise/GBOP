@@ -35,7 +35,7 @@ SYNTHETIC_DATE = '2040-01-01T00:00:00+00:00'
 def bootstrap(adapter):
     """Execute the real base-schema functions without importing/running the bot."""
     source = ast.parse((ROOT / 'bot.py').read_text())
-    names = ('init_db', 'init_journal_db', 'init_thesis_db', 'init_member_trade_flow_db')
+    names = ('init_db', 'init_journal_db', 'init_thesis_db', 'init_member_trade_flow_db', 'init_checkin_db')
     selected = [next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == name)
                 for name in names]
     namespace = {'db': adapter.db}
@@ -403,6 +403,70 @@ class PostgresJournalTests(unittest.TestCase):
         self.assertTrue(refreshed['ok'], refreshed)
         self.save(refreshed, self.fresh())
         self.assertEqual(self.count('journals'), 1)
+
+    def readiness_draft(self):
+        from gbop_voice_web import readiness_announcement as campaign
+        from gbop_voice_web.owner_broadcast import BroadcastDraft, BroadcastRecipient
+        draft = BroadcastDraft(999, 10, 'all', campaign.MESSAGE,
+                               tuple(BroadcastRecipient(uid, 'Synthetic fixture') for uid in (20, 30)))
+        return campaign, campaign.bind_draft(draft)
+
+    def test_readiness_real_concurrent_claims_and_reopened_receipts(self):
+        campaign, draft = self.readiness_draft()
+        before = self.snapshot()
+        barrier = threading.Barrier(2)
+        results, errors = [], []
+        def claim():
+            try:
+                barrier.wait(timeout=5)
+                results.append(campaign.claim_campaign(self.db, draft))
+            except Exception as exc:
+                errors.append(exc)
+        threads = [threading.Thread(target=claim, daemon=True) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=8)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(results), [False, True])
+        self.assertEqual(self.count('gbop_shift_deliveries'), 3)
+        campaign.transition(self.db, 10, 20, 'queued', campaign.Receipt('pending'))
+        self.assertEqual(campaign.snapshot(self.db, 10, 999).uncertain, 1)
+        campaign.transition(self.db, 10, 20, 'pending', campaign.Receipt('sent', '700', '800'))
+        result = campaign.snapshot(self.db, 10, 999)
+        self.assertEqual((result.sent, result.queued), (1, 1))
+        self.assertFalse(campaign.claim_campaign(self.db, draft))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_readiness_real_constraint_rolls_back_whole_audience_claim(self):
+        campaign, draft = self.readiness_draft()
+        with self.db() as conn:
+            conn.execute('ALTER TABLE gbop_shift_deliveries ADD CONSTRAINT fixture_reject_receipt CHECK(user_id<>30)')
+        try:
+            with self.assertRaises(self.driver.errors.CheckViolation):
+                campaign.claim_campaign(self.db, draft)
+            self.assertEqual(self.count('gbop_shift_deliveries'), 0)
+        finally:
+            with self.db() as conn:
+                conn.execute('ALTER TABLE gbop_shift_deliveries DROP CONSTRAINT fixture_reject_receipt')
+        self.assertTrue(campaign.claim_campaign(self.db, draft))
+        self.assertEqual(self.count('gbop_shift_deliveries'), 3)
+
+    def test_readiness_receipt_table_retains_rls_and_denies_client_roles(self):
+        campaign, draft = self.readiness_draft()
+        self.assertTrue(campaign.claim_campaign(self.db, draft))
+        with self.db() as conn:
+            self.assertTrue(conn.execute("SELECT relrowsecurity FROM pg_class WHERE oid='gbop_shift_deliveries'::regclass").fetchone()[0])
+            self.assertEqual(conn.execute("SELECT count(*) FROM pg_policies WHERE tablename='gbop_shift_deliveries'").fetchone()[0], 0)
+            for role_name in ('anon', 'authenticated'):
+                self.assertFalse(conn.execute("SELECT has_table_privilege(?, 'gbop_shift_deliveries', 'SELECT')", (role_name,)).fetchone()[0])
+        for role_name in ('anon', 'authenticated'):
+            with self.driver.connect(**self.admin_info) as conn:
+                conn.execute(self.driver.sql.SQL('SET LOCAL ROLE {}').format(self.driver.sql.Identifier(role_name)))
+                with self.assertRaises(self.driver.errors.InsufficientPrivilege):
+                    conn.execute('SELECT * FROM gbop_shift_deliveries')
+                conn.rollback()
 
 
 def main():
