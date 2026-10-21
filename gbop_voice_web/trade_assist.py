@@ -319,6 +319,17 @@ TRADE_ASSIST_PROMPT = """
 Trade assistance is member-plan based, not signal generation.
 - When a member states or changes an objective, thesis invalidation, management
   plan, or personal protection trigger, save it with update_trade_plan.
+- Apply a same-utterance correction ("no, the objective was...") to the plan.
+  If the member also says "I got out" or "I exited", save the plan correction
+  and close that identified whole position with close_trade in the same turn.
+  Exact exit time, outcome and R are optional, never prerequisites. Leave them
+  null/unknown; preserve approximate candle/time and actual exit-level wording.
+  Keep partial exits with a runner open. Ambiguous trade identity or partial/full
+  closure gets one focused question, not a demand for missing risk or results.
+  Planned objective, actual exit and confirmed target touch are distinct: an
+  8 o'clock high target and a 9 o'clock high exit must both survive recall.
+  "98% there" or "essentially reached" does not prove the target was touched.
+  A bare "0.5 risk" has unknown units; never silently turn it into 0.5R.
 - When a member reports progress such as "we're 80% to target", "+1.5R", or a
   management development, use record_trade_progress.
 - If record_trade_progress says saved_trigger_reached=true, remind the member

@@ -5758,8 +5758,14 @@ def ai_record_trade_event(user_id: int, args: dict):
     event = str(args["event"]).strip()
     details = (args.get("details") or "").strip()
     result_r = args.get("result_r")
-    if result_r is not None:
-        result_r = float(result_r)
+    try:
+        if result_r is not None:
+            if isinstance(result_r, bool):
+                raise ValueError('Boolean is not R')
+            result_r = float(result_r)
+    except (ValueError, TypeError, OverflowError):
+        return {'ok': False, 'saved': False, 'write_attempted': False,
+                'error': 'Result R must be numeric or null when unknown. No update was written.'}
 
     if str(args['event']).strip().casefold().startswith('journal_'):
         return {'ok': False, 'error': 'That event name is reserved for the journal system.'}
@@ -7257,6 +7263,11 @@ class GBOPRealtimeSession:
                 receipt_reader=read_delivery_receipt)
             result = await work.run_tool(scope, runner) if work is not None else await runner()
         except Exception as exc:
+            from gbop_voice_web.voice_runtime import JOURNAL_WRITE_NAMES
+            if name in JOURNAL_WRITE_NAMES:
+                # Diagnose failure classes without logging arguments, prose,
+                # member identities or exception bodies from external services.
+                print('[GBOP-JOURNAL-ERROR]', name, 'exception_type=', type(exc).__name__, flush=True)
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
         if work is not None and not work.current(scope):

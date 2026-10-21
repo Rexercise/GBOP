@@ -671,8 +671,14 @@ def tool_record_trade_event(user_id: int, args: dict):
         return {"ok": False, "error": error}
 
     result_r = args.get("result_r")
-    if result_r is not None:
-        result_r = float(result_r)
+    try:
+        if result_r is not None:
+            if isinstance(result_r, bool):
+                raise ValueError('Boolean is not R')
+            result_r = float(result_r)
+    except (ValueError, TypeError, OverflowError):
+        return {'ok': False, 'saved': False, 'write_attempted': False,
+                'error': 'Result R must be numeric or null when unknown. No update was written.'}
 
     if str(args['event']).strip().casefold().startswith('journal_'):
         return {'ok': False, 'error': 'That event name is reserved for the journal system.'}

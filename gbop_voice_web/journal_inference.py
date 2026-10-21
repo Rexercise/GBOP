@@ -290,7 +290,18 @@ def infer_story_context(text, values=None, now=None, timezone_name=None, context
     for pattern in objective_patterns:
         for match in re.finditer(pattern, source, re.I):
             if not _NON_ACTUAL.search(_clause(source, match.start(), match.end())):
-                explicit_objectives.append(match['objective'].strip())
+                objective = re.split(r'\s+\b(?:because|but|so)\b',match['objective'],maxsplit=1,flags=re.I)[0].strip()
+                explicit_objectives.append((match.start(),objective))
+    # Resolve only an explicit correction in this same passage. Conflicting
+    # targets without a correction marker remain ambiguous; existing saved
+    # member facts still require an explicit patch from the caller.
+    ordered_objectives = []
+    for position, objective in sorted(explicit_objectives):
+        prefix = source[max(0,position-80):position]
+        if re.search(r'\b(?:no(?:,\s*no)?|actually|correction|I mean)\b[\s,]*(?:(?:the|my)\s+)?$',prefix,re.I):
+            ordered_objectives = []
+        ordered_objectives.append(objective)
+    explicit_objectives = ordered_objectives
     trading_nine = re.search(r"\b(?:I(?:'m| am| was)?\s+trad(?:e|ed|ing)|my\s+trade(?:\s+is|\s+was)?)\s+(?:the\s+)?9\s+(?:AM\s+|PM\s+)?range\b", source, re.I)
     if trading_nine and _NON_ACTUAL.search(_clause(source, trading_nine.start(), trading_nine.end())):
         trading_nine = None

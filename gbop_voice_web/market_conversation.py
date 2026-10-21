@@ -59,6 +59,13 @@ def contextual_tools(tools):
                         params['required'].append(key)
                 tool['description'] += (' Reported entry/exit timestamps require a date and explicit timezone; '
                     'leave unknown timestamps null. reported_outcome: stopped_out, win, loss, breakeven, open, unknown.')
+            if tool['name'] == 'close_trade':
+                params['properties']['reported_exit_time_text'] = {'type': ['string','null'],
+                    'description': 'Faithful approximate exit wording, including candle and exit level. Keep it separate from the planned objective; null when absent.'}
+                params['required'].append('reported_exit_time_text')
+                tool['description'] += (' Explicit "I got out" or "I exited" closes the identified whole position now, '
+                    'even without exact time, outcome or R. Preserve unknowns as null; do not ask for them before closing. '
+                    'A partial exit with a runner is not full closure. Keep the stated objective distinct from actual exit and do not infer target touch.')
         if tool.get('name') not in SCOPED_TOOLS or tool.get('name') in MULTI_TOOLS:
             continue
         if tool['name'] == 'review_current_market':

@@ -65,6 +65,10 @@ result_r for the overall result. These corrections also work on a saved journal
 and keep its Trade #. If "remove the R" is ambiguous, retain the narration and
 ask at most one brief clarification about risk versus result; saving still works.
 Use stage_journal_story for narration even if it describes only one execution.
+For voice, retain the member's new/separate-trade request in raw_story as well as
+the trade facts. If new_trade intent is unverified, retain the draft and resolve
+that identity on the SAME draft_id. Never switch to open_trade or demand R/tier
+merely because narrative staging needs correction. A draft is not an execution.
 """
 
 
@@ -348,6 +352,8 @@ def render_story(values):
 
 def _question(draft):
     values=draft['values'];candidates=[]
+    if draft.get('new_trade_confirmation_required'):
+        candidates.append(('identity:trade','Is this a separate new trade, or which existing Trade # should I update?'))
     if draft.get('validation_issue'):
         candidates.append(('validation:'+draft['validation_issue'],'The narration is saved, but the reported times conflict. What is the corrected entry or exit date and time?'))
     if not values.get('asset'):
@@ -385,7 +391,7 @@ def _public(draft, context,raw_offset=0):
     return {'ok':True,'status':'saved' if saved else 'draft','saved':saved,'persisted':draft.get('persisted',False),'draft_status':draft.get('draft_status','session_only'),'created_at':draft.get('created_at'),'updated_at':draft.get('updated_at'),'provenance':deepcopy(draft.get('provenance',{})),'draft_id':draft['id'],'revision':draft['revision'],
             'trade_number':draft.get('trade_number'),'story':deepcopy(draft['values']),
             'draft_summary':render_story(draft['values']),'next_question':question,**_raw_page(draft,raw_offset),
-            'validation_issue':draft.get('validation_issue'),'ready_to_finalize':not bool(draft.get('validation_issue')),
+            'validation_issue':draft.get('validation_issue'),'ready_to_finalize':not bool(draft.get('validation_issue') or draft.get('new_trade_confirmation_required')),
             'direction_status':draft.get('direction_status','known' if draft['values'].get('direction') else 'missing'),
             'raw_instruction':'Read every raw narration page before asking for facts that may already be reported. Continue get_journal_story with the same draft_id and next_raw_offset while raw_has_more.',
             'instruction':('This revision was saved as a journal narrative; no execution records were created by staging.' if saved else ('Unfinished journal saved privately and excluded from performance. Keep this draft after pauses; finalize only on explicit request.' if draft.get('persisted') else 'Session-only preview; not saved durably because recording was declined.'))}
@@ -413,6 +419,7 @@ def stage_story(db,guild,user,args):
     from gbop_voice_web.journal_coach import init_coach
     init_coach(db)
     with journal_transaction(db,args,guild,user,serialize=True) as conn:
+        first_draft = not getattr(context,'_journal_story',None) and not journal_drafts.read(conn,guild,user)
         draft=None if args.get('new_draft') is True else _load_owned(conn,context,args,guild,user)
         if args.get('new_draft') is True or draft is None:
             if args.get('draft_id') is not None:raise ValueError('Start a new draft without an old draft_id.')
@@ -434,12 +441,19 @@ def stage_story(db,guild,user,args):
             if _finalize_request(intent_source):draft['save_authorized']=True
         draft['recording_paused']=bool(draft.get('recording_paused') or getattr(context,'_journal_recording_paused',False))
         if intent_source and re.search(r'\b(?:hypothetical|example|imagine|suppose|pretend)\b',intent_source,re.I):draft['example_only']=True
+        new_trade_issue = False
         if args.get('new_trade') is True and not draft['new_trade']:
-            if intent_source is not None and not _new_trade_request(intent_source):
-                raise ValueError('Only an explicitly separate new trade can bypass existing-record reconciliation.')
             if draft.get('saved_journal_id') or draft.get('trade_number'):
                 raise ValueError('A selected/saved story cannot be converted to a new trade. Start a separate draft explicitly.')
-            draft['new_trade']=True;draft['revision']+=1
+            if intent_source is not None and not _new_trade_request(intent_source):
+                # Retain the narration without granting an unverified bypass.
+                # Reconciliation is a finalization concern, not a reason to
+                # lose the first voice passage or demand execution risk.
+                new_trade_issue = True
+                draft['new_trade_confirmation_required'] = True
+            else:
+                draft.pop('new_trade_confirmation_required',None)
+                draft['new_trade']=True;draft['revision']+=1
         number=args.get('trade_number')
         if number is not None:
             if type(number) is not int or number<1:raise ValueError('Use a displayed Trade #.')
@@ -454,6 +468,7 @@ def stage_story(db,guild,user,args):
                 draft['revision']+=1
             draft['trade_number']=number
             draft['selected_key']=selected_key
+            draft.pop('new_trade_confirmation_required',None)
         clears=patch.get('clear_fields',[])
         r_clears_only=all(k=='result_r' or re.fullmatch(r'entries\.(?:[1-9]|1[0-2])\.risk_r',k) for k in clears)
         if clears and not r_clears_only and (draft.get('saved_journal_id') or draft.get('selected_key')):
@@ -517,7 +532,7 @@ def stage_story(db,guild,user,args):
             draft['revision']+=1
             changes={k:{'before':before.get(k),'after':values.get(k)} for k in set(before)|set(values) if before.get(k)!=values.get(k)}
             if any(change['before'] is not None for change in changes.values()):draft['corrections'].append({'recorded_at':journal_drafts.stamp(),'fields':changes})
-        if args.get('new_draft') is True and intent_source is not None and not draft.get('example_only') and not (_new_trade_request(intent_source) or re.search(r'\bnew (?:journal|draft|story)\b',intent_source,re.I)):
+        if args.get('new_draft') is True and not first_draft and intent_source is not None and not draft.get('example_only') and not (_new_trade_request(intent_source) or re.search(r'\bnew (?:journal|draft|story)\b',intent_source,re.I)):
             raise ValueError('Start another journal only when the member asks for a new or separate story.')
         if len(draft['raw_story'])!=raw_before and values==before:draft['revision']+=1
         draft['values']=values
@@ -541,6 +556,12 @@ def stage_story(db,guild,user,args):
             context._journal_discard_notice=None
             context._journal_blocked_draft_id=None
         result=_public(draft,context)
+    if new_trade_issue:
+        result.update(ok=False,status='new_trade_intent_required',ready_to_finalize=False,
+            error='Only an explicitly separate new trade can bypass existing-record reconciliation.',
+            instruction='The narration is retained in this draft; no execution was created. Keep this draft_id. '
+                        'Use the member’s actual separate/new-trade wording to stage it again, or select the intended existing Trade #. '
+                        'Ask one identity question only if still unclear. Do not require risk/tier or use open_trade as a workaround.')
     if draft.get('persisted'):
         from gbop_voice_web.voice_runtime import journal_write_committed
         journal_write_committed(guild,user,{'draft_id':draft['id'],'revision':draft['revision'],
@@ -692,6 +713,10 @@ def save_story(db,guild,user,args):
         elif not draft['new_trade']:
             matches=story_trade_candidates(conn,guild,user,values)
             if matches:return reconciliation_required(matches)
+            if draft.get('new_trade_confirmation_required'):
+                return {'ok':False,'saved':False,'status':'new_trade_intent_required',
+                        'draft_id':draft['id'],
+                        'error':'The unfinished narration is retained. Confirm a separate new trade or select the intended existing Trade # on this same draft before finalizing.'}
     from gbop_voice_web.journal_coach import save_entry
     metadata={k:values[k] for k in ('asset','direction','play','trade_date','session','reported_outcome','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone') if values.get(k)}
     if _direction(values.get('direction')):metadata['direction']=_direction(values['direction'])
