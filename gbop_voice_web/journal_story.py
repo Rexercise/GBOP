@@ -28,7 +28,19 @@ If several unfinished journals exist, ask which one using their returned titles.
 Read back supported asset/date/play/title/direction briefly and invite correction.
 NAS means NAS100; keep the exact name 9ate8. A context downside target alone is
 not proof of the member's short, especially for a hedge/countertrend entry. Infer
-position direction only from actual-position evidence; otherwise preserve unknown.
+position direction from the member's words or trustworthy chart/setup evidence
+explicitly tied to THIS trade. Young Lefty and 9ate8 can be bullish or bearish;
+their names, a downside target, or an unrelated market bias never choose direction.
+Use the member's earlier words and current owned draft before asking. If the
+member identifies a reviewed setup, check its verified asset/date/range evidence
+with the existing market tools, then restage the SAME draft before a direction
+question. Do not invent a date/asset, use another member's context, or turn an
+unverified chart interpretation into evidence. Mixed or missing evidence gets
+one precise question: "Was your position bullish (long) or bearish (short)?"
+Read back a supported direction briefly and continue; do not demand another yes.
+Explicit member corrections override inferred direction and must carry through
+later patches, entries, summary, and finalization on that same journal. Leave a
+different trade separate. Keep ambiguous direction unknown; it never blocks saving.
 Patch new/corrected facts only, keeping stable entry_index values. Corrections keep
 raw narration and an audit trail. Never infer risk, P/L, results, fills, closure,
 or historical dates. Preserve approximate/cross-midnight time wording verbatim;
@@ -157,15 +169,31 @@ def begin_story_turn(context,text,*,generation=None):
     if not _journaling_request(text) or not getattr(context,'auth_provider',None):return
     if len(text.split())<8 and not re.search(r'\b(?:resume|continue|NAS(?:100)?|NASDAQ|SPX|US30|XAUUSD|BTCUSD|EURUSD|9ate8|bought|sold|shorted|entered)\b',text,re.I):return
     if _new_trade_request(text):return
-    with context._lock:
-        if not context.current(ticket):return
-        if draft and draft.get('draft_status')=='finalized':context._journal_story=None
     db,guild,user=context.auth_provider
     try:
         from gbop_voice_web.journal_coach import init_coach
         init_coach(db)
-        result=stage_story(db,guild,user,{'story_json':'{}',
-            '_journal_binding':JournalBinding(context,ticket)})
+        capture={'story_json':'{}','_journal_binding':JournalBinding(context,ticket)}
+        numbers=set(re.findall(r'\btrade\s*#\s*([1-9]\d*)\b',text,re.I))
+        if numbers:
+            # A named saved trade is a continuation, including after reconnect.
+            # Resolve both owned links; never create a second draft or append to
+            # whichever unrelated draft happens to be active in this session.
+            if len(numbers)!=1:raise ValueError('Select one Trade # before continuing its journal.')
+            number=int(next(iter(numbers)))
+            with journal_transaction(db,capture,guild,user) as conn:
+                selected=resolve_journal_selector(conn,guild,user,trade_number=number)
+                if not selected.get('ok'):raise ValueError('Read the intended Trade # before continuing its journal.')
+                rows=conn.execute('''SELECT id FROM journal_story_drafts
+                    WHERE guild_id=? AND user_id=? AND journal_id=? AND thesis_id=? LIMIT 2''',
+                    (guild,user,selected.get('record_id'),selected.get('thesis_id'))).fetchall()
+                if len(rows)!=1:raise ValueError('Select the intended journal draft before continuing this trade.')
+            capture.update(draft_id=rows[0]['id'],trade_number=number)
+        else:
+            with context._lock:
+                if not context.current(ticket):return
+                if draft and draft.get('draft_status')=='finalized':context._journal_story=None
+        result=stage_story(db,guild,user,capture)
         with context._lock:
             if context.current(ticket):context._journal_capture_error=None if result.get('ok') else result.get('error')
     except Exception:
@@ -295,6 +323,8 @@ def render_story(values):
     parts=[' · '.join(values.get(k) or 'Unknown '+k for k in ('asset','direction','play'))]
     if values.get('title'): parts.insert(0,values['title'])
     if values.get('trade_date'): parts.append('Reported date: '+values['trade_date'])
+    for key,label in (('session','Reported session'),('time_zone','Reported timezone')):
+        if values.get(key): parts.append(label+': '+values[key])
     for key,label in (('reported_entry_at','Reported entry'),('reported_exit_at','Reported exit'),('reported_entry_time_text','Reported entry wording'),('reported_exit_time_text','Reported exit wording')):
         if values.get(key):parts.append(label+': '+values[key])
     if values.get('objective'):parts.append('Reported/inferred context objective: '+values['objective'])
@@ -320,8 +350,11 @@ def _question(draft):
     values=draft['values'];candidates=[]
     if draft.get('validation_issue'):
         candidates.append(('validation:'+draft['validation_issue'],'The narration is saved, but the reported times conflict. What is the corrected entry or exit date and time?'))
-    missing=[k for k in ('asset','direction') if not values.get(k)]
-    if missing:candidates.append(('identity:'+','.join(missing),'What '+ ' and '.join(missing)+' should this journal use?'))
+    if not values.get('asset'):
+        candidates.append(('identity:asset','What asset should this journal use?'))
+    if not values.get('direction') or draft.get('direction_status','').startswith('conflicting'):
+        prefix = 'The direction evidence conflicts. ' if draft.get('direction_status','').startswith('conflicting') else ''
+        candidates.append(('identity:direction',prefix+'Was your position bullish (long) or bearish (short)?'))
     if values.get('thesis_invalidation') and not values.get('invalidation_boundary'):
         text=values['thesis_invalidation']
         if re.search(r'\b(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)[ -]*(?:o[’\']?clock|a\.?m\.?|p\.?m\.?)\b',text,re.I) and not re.search(r'\b(?:high|low|midpoint|open price|closing price)\b|\b\d{3,}(?:\.\d+)?\b',text,re.I):
@@ -353,6 +386,7 @@ def _public(draft, context,raw_offset=0):
             'trade_number':draft.get('trade_number'),'story':deepcopy(draft['values']),
             'draft_summary':render_story(draft['values']),'next_question':question,**_raw_page(draft,raw_offset),
             'validation_issue':draft.get('validation_issue'),'ready_to_finalize':not bool(draft.get('validation_issue')),
+            'direction_status':draft.get('direction_status','known' if draft['values'].get('direction') else 'missing'),
             'raw_instruction':'Read every raw narration page before asking for facts that may already be reported. Continue get_journal_story with the same draft_id and next_raw_offset while raw_has_more.',
             'instruction':('This revision was saved as a journal narrative; no execution records were created by staging.' if saved else ('Unfinished journal saved privately and excluded from performance. Keep this draft after pauses; finalize only on explicit request.' if draft.get('persisted') else 'Session-only preview; not saved durably because recording was declined.'))}
 
@@ -425,6 +459,7 @@ def stage_story(db,guild,user,args):
         if clears and not r_clears_only and (draft.get('saved_journal_id') or draft.get('selected_key')):
             raise ValueError('clear_fields only retracts unsaved draft facts. Use an explicit replacement or journal correction for already selected/saved records.')
         before=deepcopy(draft['values'])
+        direction_provenance=deepcopy(draft['provenance'].get('direction',{}))
         suppressed=set(draft.get('suppressed_fields',[]))
         if patch.get('play') is not None and patch['play']!=before.get('play'):
             suppressed.discard('objective')
@@ -464,6 +499,8 @@ def stage_story(db,guild,user,args):
             if key!='clear_fields':draft['provenance'][key]={'kind':'explicit','source':'model_extracted_narration','recorded_at':journal_drafts.stamp()}
         for key in patch.get('clear_fields',[]):draft['provenance'].pop(key,None)
         if raw and not _save_optout(raw):
+            from gbop_voice_web.journal_direction import resolve_direction
+            resolve_direction(draft,before,values,raw,context,direction_provenance)
             normalized=infer_story_context(raw,values=values,now=datetime.fromtimestamp(context._turn_now,tz=timezone.utc) if context._turn_now else None,timezone_name=values.get('time_zone'),context={'now_is_server_clock':True,'provenance':draft['provenance'],'suppressed_fields':draft['suppressed_fields']})
             values=normalized['values']
             draft['provenance']=normalized['provenance']

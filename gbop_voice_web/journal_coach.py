@@ -248,6 +248,9 @@ def save_entry(db,guild,user,args):
         details = owned_journal_details(conn,guild,user,record_id) if old else None
         previous = json.loads(details['metadata'] or '{}') if details else {}
         context = binding(args)
+        if story_payload is None:
+            from gbop_voice_web.journal_direction import protect_saved_direction
+            protect_saved_direction(meta, previous, context)
         merged = merge_metadata(previous, meta, context.snapshot() if context and not old and thesis_id is None else None,
             result_changed=bool(old and (args.get('clear_result') or result is not None and result != old['result_r'])),
             result_before=old['result_r'] if old else None,
@@ -280,6 +283,11 @@ def save_entry(db,guild,user,args):
             fields['result_r'] = None
         elif result is not None:
             fields['result_r'] = result
+        if old and story_payload is None and meta.get('direction') is not None:
+            from gbop_voice_web.journal_direction import sync_saved_direction
+            summary = sync_saved_direction(conn, guild, user, record_id, previous, merged, old['description'])
+            if summary is not None and 'description' not in fields:
+                fields['description'] = summary
         if old and not old['thesis_id']:
             # Explicit legacy edits preserve the unlinked identity. Full previous
             # field values and corrections stay in metadata; never infer a trade.

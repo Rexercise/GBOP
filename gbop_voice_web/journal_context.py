@@ -158,6 +158,8 @@ def compact(value, depth=0):
 
 
 def review_snapshot(result, selection, evidence, focus, session_id, generation):
+    from gbop_voice_web.journal_direction import setup_candidates
+    from gbop_voice_web.journal_review import snapshot_ranges
     review = result.get('review') or {}
     if isinstance(review.get('review'), dict):
         review = review['review']
@@ -185,6 +187,8 @@ def review_snapshot(result, selection, evidence, focus, session_id, generation):
     return {'version': 1, 'scope_id': evidence['scope_id'], 'evidence_id': evidence['evidence_id'],
             'conversation_id': session_id, 'review_generation': generation, 'source_tool': evidence['source_tool'],
             'selection': deepcopy(selection), 'selected_candle': candle,
+            'setup_directions': setup_candidates(review),
+            **snapshot_ranges(review),
             'matching_candle_count': len(identities), 'candle_selection_required': not candle or truncated, 'candle_evidence_truncated': truncated,
             'market_facts': compact({k: evidence[k] for k in ('recap', 'range_outcomes') if k in evidence}),
             'recorded_at': stamp(), 'limits': 'Market evidence only; no member fills, P/L, R or exact execution time inferred.'}
@@ -241,6 +245,11 @@ def merge_metadata(old, reported, context=None, *, result_changed=False, result_
     # Never drop older corrections merely to admit a newer one.
     budget = deepcopy(merged)
     budget.pop('legacy_audit', None)
+    if isinstance(budget.get('market_review'), dict):
+        # Server-only range history has its own bounded snapshot budget. It
+        # must not crowd out previously valid member narration on an update.
+        budget['market_review'].pop('range_history', None)
+        budget['market_review'].pop('range_history_omissions', None)
     if isinstance(budget.get('provenance'), dict):
         budget['provenance'].pop('corrections', None)
     if len(json.dumps(budget)) > 48000:

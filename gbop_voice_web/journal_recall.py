@@ -445,6 +445,10 @@ def history(db, guild_id, user_id, args, *, include_photo_bytes=False, allow_rec
             prior.pop('_thesis_id', None)
             prior.pop('_journal_ids', None)
     open_count = sum(r['status'] == 'OPEN' for r in trades)
+    if not index_view:
+        from gbop_voice_web.journal_review import review_dimensions
+        for row in selected:
+            row['review_dimensions'] = review_dimensions(row)
     result = dict(ok=True, journals=selected, metadata_available=metadata_available, timeline_available=timeline_available,
         photos_available=photos_available, photo_count=len(photos) if photos_available else None,
         selection_basis=basis, latest=latest,
@@ -622,6 +626,21 @@ def _record_text(row, title):
     scope = (meta.get('market_review') or {}).get('selection') or {}
     if scope:
         value += '\nReviewed scope: ' + ' · '.join(str(scope[k]) for k in ('asset','date_ny','shift','anchor_start_ny') if scope.get(k))
+    from gbop_voice_web.journal_review import review_dimensions
+    dimensions = row.get('review_dimensions') or review_dimensions(row)
+    value += '\nSetup validity: not assessed; saved market evidence is separate from member fills.'
+    value += '\nPlan adherence: ' + dimensions['plan_adherence']['value'] + ' (member report only)'
+    outcome = dimensions['actual_outcome']
+    value += '\nActual outcome: ' + outcome['reported_outcome'] + '; ' + ('R unknown' if outcome['result_r'] is None else result_text(outcome['result_r']))
+    if outcome['record_status']:
+        value += '; saved trade status: ' + outcome['record_status']
+    review = meta.get('market_review') or {}
+    for index, source in enumerate(review.get('range_history') or [], 1):
+        value += f'\nSaved setup range {index} (source observations, not a trade result):\n' + _display_value(source)
+    if review.get('range_history_omissions'):
+        value += '\nSetup history omissions (unknown evidence): ' + _display_value(review['range_history_omissions'])
+    elif review and 'range_history' not in review:
+        value += '\nOlder setup snapshot: complete range chronology was not recorded; missing evidence is unknown.'
     # Handwritten source prose is distinct from the member-facing summary.
     if meta.get('transcription') and meta['transcription'] != row.get('summary'):
         value += '\nOriginal transcription: ' + str(meta['transcription'])

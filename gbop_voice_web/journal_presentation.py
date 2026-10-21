@@ -80,6 +80,10 @@ def _review(value):
     else:
         result['selected_candle'] = None
     result['detail_omitted'] = True
+    if isinstance(value.get('range_history'), list):
+        result['range_history_count'] = len(value['range_history'])
+        result['range_history_source_count'] = value.get('range_history_source_count')
+        result['range_history_incomplete'] = bool(value.get('range_history_omissions'))
     result['limits'] = ('Saved market evidence, not member execution. Detailed source evidence '
         'is omitted from this presentation; omission does not establish absence.')
     return result
