@@ -1,8 +1,10 @@
-"""Read-only evidence before text-capable market follow-up generation.
+"""Market evidence before text-capable follow-up generation.
 
 No ASR, provider request or fabricated transcript is introduced. Audio-only
 sessions continue to use explicit model tool calls; known user text can enforce
 retrieval without waiting for the model to choose a tool.
+When narration was already staged, its resolver can persist verified provenance
+to that same owned draft. Retrieval never finalizes a journal or writes a trade.
 """
 import json
 

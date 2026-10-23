@@ -577,6 +577,11 @@ def _record_text(row, title):
              + '\nAdherence: ' + str(row.get('rule_adherence') or 'Not specified')
              + '\nStudy note: ' + str(row.get('study_note') or 'Not specified'))
     meta = row.get('metadata') or {}
+    if meta.get('journal_range'):
+        reference = meta['journal_range']
+        value += '\nJournal range [' + str(reference.get('status')) + ']: ' + str(
+            (reference.get('reference') or {}).get('human_description') or reference.get('description'))
+        value += '\nRange evidence is not proof of execution, setup validity or outcome.'
     value += '\nSaved/logged at: ' + str(row.get('saved_at') or row.get('created_at') or 'Unknown')
     for key,label in (('trade_date','Reported trade date'),('reported_entry_at','Reported entry'),
                       ('reported_exit_at','Reported exit'),('reported_entry_time_text','Reported entry wording'),

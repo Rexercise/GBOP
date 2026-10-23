@@ -30,7 +30,8 @@ def tool():
         'description': 'Resolve a human range reference such as today gold 9ate8 morning or '
             'yesterday NAS H4 GCT. Pass the member\'s words, including corrections, not invented '
             'anchors. Follow-up clarification can be just morning/evening or a date. Reads '
-            'existing broker evidence; does not see chart selection, change journals or trade. ' + CONTRACT,
+            'existing broker evidence; may enrich an already staged owned narrative draft, never '
+            'finalizes it or changes executions. Does not see chart selection. ' + CONTRACT,
         'parameters': {'type': 'object', 'additionalProperties': False,
             'properties': {'reference': {'type': 'string', 'maxLength': 600}},
             'required': ['reference']}}
@@ -78,6 +79,10 @@ def resolve(text, base, now):
             issues.pop('asset', None)
         # Never silently substitute the MT5 feed for an explicitly named feed.
         feed = re.search(r'\b([a-z][a-z0-9_-]*)\s*:\s*([a-z][a-z0-9_.#-]*)', part)
+        if feed and (feed[1] in {'trade', 'range', 'journal', 'correction', 'note', 'market', 'asset', 'symbol', 'objective'}
+                or not (any(feed[2].startswith(a.lower()) for a in ASSETS)
+                        or feed[1] in {'mt5', 'broker', 'oanda', 'fxcm', 'cme', 'binance', 'tradingview'})):
+            feed = None  # Ordinary narration such as "trade: yesterday" is not a feed selector.
         named_feed = re.search(r'\b(?:on|from)\s+(?:the\s+)?([a-z][a-z0-9_-]*)\s+feed\b', part)
         provider = feed[1] if feed else named_feed[1] if named_feed else None
         if (provider and provider not in ('mt5', 'broker') or
@@ -177,8 +182,12 @@ def run(context, arguments, runner, ticket):
             return deepcopy(context._reference_result)
         text = context._client_text if context._client_text is not None else arguments.get('reference')
         selected = context.selected or {}
-        base = context._reference_pending
-        if not base and not context._multi_focus_required:
+        journal_request = getattr(context, '_journal_range_request', None)
+        journal_request = journal_request if journal_request and journal_request['generation'] == ticket else None
+        base = journal_request['base'] if journal_request else context._reference_pending
+        if journal_request:
+            text = journal_request['lookup_reference']
+        if not journal_request and not base and not context._multi_focus_required:
             base = selected.get('range_reference', {}).get('selectors') or {
                 k: selected[k] for k in ('asset', 'date_ny', 'shift') if k in selected}
         resolution = resolve(text, base, context._turn_now)

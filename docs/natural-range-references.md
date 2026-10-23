@@ -83,3 +83,49 @@ claim is involved. No schema migration, dependency or infrastructure change is
 required. Before release, run the full regression suite and browser simulation;
 after an approved release, perform controlled text/voice checks with the actual
 feed and supported examples. Source publication/deployment are separate actions.
+# Narrative journal integration
+
+Natural range references can accompany `stage_journal_story` narration. The
+server preserves the narration in the existing private draft first. Supported
+selectors queue `resolve_market_range`; a successful read enriches that same
+owned draft with its exact reference and market snapshot. Finalizing uses the
+revision-checked draft, never caller-supplied IDs or market facts. No schema,
+permission, credential or infrastructure change is required.
+
+The existing draft payload and journal metadata now carry `journal_range`:
+
+- Member wording, resolved selectors, status and any focused clarification.
+- On verification: exact range identity, feed/symbol, New York window, source
+  snapshot, and available freshness/coverage flags. Historical verified identity
+  does not imply a live quote, valid setup, execution, fill or outcome.
+- Range correction history; canonical journal audit events retain complete
+  before/after metadata. An explicit unverified replacement clears the current
+  `market_review` with null; its previous snapshot remains in audit history.
+
+`get_journal_story` can resume an unfinished lookup after reconnect. Its lookup
+uses the stored absolute date, so yesterday/today never moves to another date
+when a later session resumes it. Text backend prefetch can enrich an already
+staged narrative; audio still requires the model to faithfully stage its
+transcript and call the returned `range_next_tool`. Neither path finalizes the
+journal without the existing explicit save request.
+
+Missing feeds, incomplete anchor coverage, unsupported windows or ambiguous
+selectors leave the member's description unverified and do not block narrative
+saving. Current verification remains limited to the existing named 9ate8,
+Young Lefty and GCT New York windows on the connected MT5 feed. Native Chart H4,
+arbitrary custom ranges, other feeds, and selected TradingView chart points
+remain unsupported. No chart-selection transport is implemented by this patch.
+
+Another range mention does not silently replace a saved association. Corrections
+must identify the intended owned draft/Trade # and be explicit. Draft revision,
+conversation generation, current membership checks and a range baseline for the
+selected journal reject stale enrichment or competing draft corrections. The
+member's unfinished narration remains available if a correction conflicts.
+
+`tests/test_journal_range.py` exercises the real narrative/market/journal handlers
+with synthetic M5 bars and file-backed SQLite, including genuine connection
+close/reopen. It covers create/save/recall, corrections, retry, missing data,
+ambiguity, stale callbacks, competing drafts, member isolation and revocation.
+Network access is prohibited. Supplied text/audio transcripts stand in for model
+extraction; these are not live Discord, ASR, production feed, PostgreSQL locking
+or PostgreSQL RLS tests. Existing PostgreSQL tests remain a separate gate.

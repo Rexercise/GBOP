@@ -25,6 +25,14 @@ never put unrelated conversation, imagined wording, passwords or audio in it.
 Typed member wording is captured by the server. Resume get_journal_story after a
 pause/reconnect and patch the SAME draft_id; never restart known facts or entries.
 If several unfinished journals exist, ask which one using their returned titles.
+RANGE REFERENCES: retain the member's range wording in raw_story. The server can
+resolve supported named New York windows without technical IDs. When range_next_tool
+is resolve_market_range, call it with the member's words, then read this same draft.
+journal_range distinguishes verified market snapshots from unverified descriptions;
+neither implies a fill, setup validity or outcome. Ask only one focused range
+clarification when needed. Missing/unsupported market data must never block saving
+the narrative. Replace a saved range only on explicit correction of that same
+Trade #; preserve other records and the returned range correction history.
 Read back supported asset/date/play/title/direction briefly and invite correction.
 NAS means NAS100; keep the exact name 9ate8. A context downside target alone is
 not proof of the member's short, especially for a hedge/countertrend entry. Infer
@@ -240,6 +248,7 @@ def refresh_story_status(context):
 
 
 def story_prompt_context(context):
+    from gbop_voice_web.journal_range import summary as range_summary
     if getattr(context,'_journal_story_unverified',False):
         return '\nJOURNAL DRAFT NOTICE: Current draft status could not be verified. Do not recall or resume cached narration until a current read succeeds; the local preview remains retained.'
     notice=getattr(context,'_journal_discard_notice',None)
@@ -252,6 +261,7 @@ def story_prompt_context(context):
     return '\nCURRENT UNFINISHED PRIVATE JOURNAL: '+json.dumps({
         'draft_id':draft['id'],'persisted':draft.get('persisted',False),
         'story':draft['values'],'provenance':draft.get('provenance',{}),**_raw_page(draft),
+        'journal_range':range_summary(draft.get('journal_range')),'range_question':draft.get('range_question'),
         'instruction':'Keep this draft, read all raw narration pages via get_journal_story before questions, capture new narration first, use known facts and invite corrections. Finalize only on explicit request.'},ensure_ascii=False)
 
 
@@ -385,11 +395,14 @@ def _raw_page(draft,offset=0):
 
 
 def _public(draft, context,raw_offset=0):
+    from gbop_voice_web.journal_range import summary as range_summary
     key,question=_question(draft)
     draft['question']={'key':key,'text':question,'generation':context.generation} if question else None
     saved = draft.get('saved_revision') == draft['revision']
     return {'ok':True,'status':'saved' if saved else 'draft','saved':saved,'persisted':draft.get('persisted',False),'draft_status':draft.get('draft_status','session_only'),'created_at':draft.get('created_at'),'updated_at':draft.get('updated_at'),'provenance':deepcopy(draft.get('provenance',{})),'draft_id':draft['id'],'revision':draft['revision'],
             'trade_number':draft.get('trade_number'),'story':deepcopy(draft['values']),
+            'journal_range':range_summary(draft.get('journal_range')),'range_question':draft.get('range_question'),
+            'range_next_tool':('resolve_market_range' if getattr(context,'_journal_range_request',None) else None),
             'draft_summary':render_story(draft['values']),'next_question':question,**_raw_page(draft,raw_offset),
             'validation_issue':draft.get('validation_issue'),'ready_to_finalize':not bool(draft.get('validation_issue') or draft.get('new_trade_confirmation_required')),
             'direction_status':draft.get('direction_status','known' if draft['values'].get('direction') else 'missing'),
@@ -466,6 +479,7 @@ def stage_story(db,guild,user,args):
                 raise ValueError('That displayed Trade # now identifies another record. Read history before selecting again.')
             if draft.get('selected_key') != selected_key:
                 draft['revision']+=1
+                draft.pop('range_target_baseline',None)
             draft['trade_number']=number
             draft['selected_key']=selected_key
             draft.pop('new_trade_confirmation_required',None)
@@ -536,6 +550,13 @@ def stage_story(db,guild,user,args):
             raise ValueError('Start another journal only when the member asks for a new or separate story.')
         if len(draft['raw_story'])!=raw_before and values==before:draft['revision']+=1
         draft['values']=values
+        if draft.get('selected_key') and 'range_target_baseline' not in draft:
+            from gbop_voice_web.journal_range import association
+            row=conn.execute('SELECT metadata FROM journal_details WHERE journal_id=? AND guild_id=? AND user_id=?',
+                             (draft['selected_key'][0],guild,user)).fetchone()
+            draft['range_target_baseline']=association(json.loads(row['metadata'] or '{}') if row else {})
+        from gbop_voice_web.journal_range import stage as stage_range
+        stage_range(context,draft,intent_source,values)
         if not _save_optout(intent_source) and not draft.get('example_only') and not draft.get('recording_paused',False):
             linked=draft.get('selected_key') or (None,None)
             durable=journal_drafts.write(conn,guild,user,draft,expected_revision=expected,journal_id=linked[0],thesis_id=linked[1])
@@ -588,6 +609,8 @@ def get_story(db,guild,user,args):
         draft=_load_owned(conn,context,{**args,'_refresh':True},guild,user)
         if draft is None:return {'ok':True,'status':'no_unfinished_journal','drafts':[]}
         _bind_loaded(context,draft)
+        from gbop_voice_web.journal_range import resume as resume_range
+        resume_range(context,draft)
         context._journal_discard_notice=None
         context._journal_blocked_draft_id=None
         if draft.get('saved_journal_id') and not _saved_story_row(conn,guild,user,draft['id']):

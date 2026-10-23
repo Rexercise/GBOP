@@ -540,6 +540,7 @@ class MarketConversation:
                 self.client_turn = self._begun_client_turn = client_turn
             self._client_text = text
             self._turn_now = time.time() if now is None else now
+            self._journal_range_request = self._journal_range_delivery = None
             self._reference_request = self._reference_result = None
             self.generation += 1
             self._scoped_read_lock = threading.RLock()
@@ -676,6 +677,10 @@ class MarketConversation:
         # Audio begin_turn(None) has no transcript; its routing remains model-dependent.
         from gbop_voice_web.candle_evidence import parse_time
         with self._lock:
+            journal_range = getattr(self, '_journal_range_request', None)
+            if not self.closed and journal_range and journal_range['generation'] == self.generation:
+                return {'tool': 'resolve_market_range', 'query_purpose': 'journal_range_identity',
+                        'args': {'reference': journal_range['reference']}, 'status': 'ready'}
             if not self.closed and self._reference_request and self._reference_result is None:
                 return {'tool': 'resolve_market_range', 'query_purpose': 'named_range_identity',
                         'args': {'reference': self._reference_request}, 'status': 'ready'}
@@ -1407,7 +1412,8 @@ class MarketConversation:
             intent = deepcopy(self.intent)
         if name == 'resolve_market_range':
             from gbop_voice_web.range_reference import run as run_reference
-            return run_reference(self, arguments, runner, ticket)
+            from gbop_voice_web.journal_range import complete as complete_journal_range
+            return complete_journal_range(self, run_reference(self, arguments, runner, ticket), ticket)
         if self._reference_request and name in SCOPED_TOOLS and not (self._reference_result or {}).get('ok'):
             return {'ok': False, 'status': 'named_range_resolution_required',
                     'next_tool': 'resolve_market_range',

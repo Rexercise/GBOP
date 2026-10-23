@@ -260,6 +260,11 @@ def save_entry(db,guild,user,args):
                 and (old[key] or '') != args[key]})
         if story_payload is not None:
             # Keep inferred narration defaults distinct from explicit reports
+            from gbop_voice_web.journal_range import merge as merge_range, association
+            if (unfinished[0].get('journal_range') and 'range_target_baseline' in unfinished[0]
+                    and association(previous) != unfinished[0]['range_target_baseline']):
+                return {'ok':False,'error':'This journal’s range changed after this draft was read. The narration is retained; read current history before correcting its range.'}
+            merged=merge_range(previous,merged,unfinished[0].get('journal_range'))
             # even in the canonical metadata's aggregate provenance lists.
             inferred={key for key,value in (story_payload.provenance or {}).items()
                       if key in meta and isinstance(value,dict) and value.get('kind')=='inferred'}
@@ -337,6 +342,7 @@ def save_entry(db,guild,user,args):
             finalized=unfinished[0]
             finalized.update(saved_revision=story_data['revision'],saved_journal_id=record_id,
                              selected_key=(record_id,thesis_id),trade_number=display['trade_number'])
+            finalized['range_target_baseline']=association(merged)
             journal_drafts.write(conn,guild,user,finalized,expected_revision=story_payload.storage_revision,
                                  finalized=True,journal_id=record_id,thesis_id=thesis_id)
     from gbop_voice_web.voice_runtime import journal_write_committed

@@ -126,6 +126,9 @@ def metadata_summary(value, result_r=None):
         result['labels'] = [v for v in value['labels'][:8] if isinstance(v, str) and len(v) <= 80]
     if isinstance(value.get('market_review'), dict):
         result['market_review'] = _review(value['market_review'])
+    if isinstance(value.get('journal_range'), dict):
+        from gbop_voice_web.journal_range import summary as range_summary
+        result['journal_range'] = range_summary(value['journal_range'])
     story_provenance = value.get('story_provenance')
     if isinstance(story_provenance, dict):
         result['story_provenance'] = {
