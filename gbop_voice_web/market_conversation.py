@@ -25,7 +25,7 @@ SCOPED_TOOLS = SHIFT_TOOLS | {'list_market_shifts', 'review_market_crt',
                               'review_market_smt', 'inspect_market_candles', 'review_current_market',
                               'review_other_market_ranges'}
 MULTI_TOOLS = {'review_market_contexts', 'select_market_context'}
-SCOPED_TOOLS |= MULTI_TOOLS
+SCOPED_TOOLS |= MULTI_TOOLS | {'resolve_market_range'}
 DETAIL_SCOPE_KEYS = ('asset', 'anchor_start_ny', 'anchor_timeframe', 'through_ny')
 DETAIL_NULL_ARGS = ('confirmation_timeframe', 'blessed_thief_timeframe',
                     'blessed_thief_from_ny', 'detail_candle_start_ny', 'detail_from_ny')
@@ -66,7 +66,7 @@ def contextual_tools(tools):
                 tool['description'] += (' Explicit "I got out" or "I exited" closes the identified whole position now, '
                     'even without exact time, outcome or R. Preserve unknowns as null; do not ask for them before closing. '
                     'A partial exit with a runner is not full closure. Keep the stated objective distinct from actual exit and do not infer target touch.')
-        if tool.get('name') not in SCOPED_TOOLS or tool.get('name') in MULTI_TOOLS:
+        if tool.get('name') not in SCOPED_TOOLS or tool.get('name') in MULTI_TOOLS | {'resolve_market_range'}:
             continue
         if tool['name'] == 'review_current_market':
             tool['parameters']['properties']['context_action'] = {
@@ -121,6 +121,9 @@ def contextual_tools(tools):
         'An explicit range detail selection stays selected. Never switch asset/date/shift or refresh its cutoff.')
     from gbop_voice_web.multi_market_context import tools as multi_tools
     result.extend(tool for tool in multi_tools() if not any(t.get('name') == tool['name'] for t in result))
+    from gbop_voice_web.range_reference import tool as range_tool
+    if not any(t.get('name') == 'resolve_market_range' for t in result):
+        result.append(range_tool())
     return result
 
 
@@ -462,6 +465,7 @@ class MarketConversation:
         self.intent = None
         self.detail_focus = None
         self._required_detail = None
+        self._reference_request = self._reference_result = self._reference_pending = None
         self._required_current = False
         self._scan_request = None
         self._scan_result = None
@@ -517,6 +521,7 @@ class MarketConversation:
                 self._last_context_ids = []
                 self._last_multi_asset = None
                 self._multi_focus_required = False
+                self._reference_request = self._reference_result = self._reference_pending = None
             self._auth_revision = revision
 
     def begin_turn(self, text=None, *, now=None, client_turn=None):
@@ -535,6 +540,7 @@ class MarketConversation:
                 self.client_turn = self._begun_client_turn = client_turn
             self._client_text = text
             self._turn_now = time.time() if now is None else now
+            self._reference_request = self._reference_result = None
             self.generation += 1
             self._scoped_read_lock = threading.RLock()
             self._multi_read_lock = threading.Lock()
@@ -647,6 +653,17 @@ class MarketConversation:
                 self._required_detail = None
                 self._required_current = self._required_other = self._required_active = False
                 self._scan_request = None
+            from gbop_voice_web.range_reference import requested as range_requested
+            range_reply = self._reference_pending or (
+                (self.selected or {}).get('range_reference') if text and
+                re.match(r'\s*(?:no[, ]|actually\b|i mean\b)', text, re.I) else None)
+            if not correction and self._multi_request is None and range_requested(text, range_reply):
+                self._reference_request = text
+                self._required_detail = self._scan_request = None
+                self._required_current = self._required_other = self._required_active = False
+                self._journal_review = None
+            elif text is not None:
+                self._reference_pending = None
             generation = self.generation
         # Draft persistence acquires DB/member locks before the conversation
         # guard, exactly like all other journal writes. Never invert that order.
@@ -659,6 +676,9 @@ class MarketConversation:
         # Audio begin_turn(None) has no transcript; its routing remains model-dependent.
         from gbop_voice_web.candle_evidence import parse_time
         with self._lock:
+            if not self.closed and self._reference_request and self._reference_result is None:
+                return {'tool': 'resolve_market_range', 'query_purpose': 'named_range_identity',
+                        'args': {'reference': self._reference_request}, 'status': 'ready'}
             if self._comparison_asset_ambiguous:
                 return {'tool': 'review_market_contexts', 'query_purpose': 'multiple_contexts',
                         'args': None, 'status': 'market_asset_required',
@@ -807,6 +827,7 @@ class MarketConversation:
                 'advanced_member_turn': True} if carry_discard else None)
             self.pending = None
             self._multi_request = self._multi_result = None
+            self._reference_request = self._reference_result = None
             self._multi_cache = {}
             self._multi_seen = set()
             self.intent = None
@@ -852,6 +873,7 @@ class MarketConversation:
         with self._lock:
             self.closed = True
             self.invalidate()
+            self._reference_pending = None
             self.context_bank.clear()
             self._last_context_ids = []
 
@@ -943,6 +965,13 @@ class MarketConversation:
         refresh_story_status(self)
         with self._lock:
             story_context = story_prompt_context(self)
+            if self._reference_request:
+                from gbop_voice_web.range_reference import CONTRACT
+                from gbop_voice_web.voice_payload import voice_tool_payload
+                reference = (voice_tool_payload('resolve_market_range', self._reference_result)
+                             if self._reference_result is not None else self.required_evidence_request())
+                return (story_context + '\nNAMED RANGE REFERENCE\n' + CONTRACT + '\n' +
+                    json.dumps(reference, separators=(',', ':')))
             if not self.selected and not self.requested and not self.context_bank.entries and not self._multi_request:
                 return story_context
             snapshot = {'requested_context': self.requested, 'selection': self.selected,
@@ -1376,6 +1405,17 @@ class MarketConversation:
                 return self._stale(write_not_started=name in WRITE_TOOLS)
             active = deepcopy(self.pending or self.requested or self.selected)
             intent = deepcopy(self.intent)
+        if name == 'resolve_market_range':
+            from gbop_voice_web.range_reference import run as run_reference
+            return run_reference(self, arguments, runner, ticket)
+        if self._reference_request and name in SCOPED_TOOLS and not (self._reference_result or {}).get('ok'):
+            return {'ok': False, 'status': 'named_range_resolution_required',
+                    'next_tool': 'resolve_market_range',
+                    'next_arguments': {'reference': self._reference_request},
+                    'error': 'Resolve the member\'s named range before using another market scope.'}
+        if self._reference_request and name == 'review_current_market':
+            return {'ok': False, 'status': 'selected_range_requires_detail',
+                    'error': 'This turn selected a named range. Retain its exact window and cutoff for detail; do not substitute the current session.'}
         if name == 'review_post_shift_followthrough':
             from gbop_voice_web.post_shift_followthrough import run_context_followthrough
             return run_context_followthrough(self, arguments, runner, ticket)
@@ -1569,6 +1609,9 @@ class MarketConversation:
                     for key in ('anchor_start_ny', 'anchor_timeframe', 'through_ny'):
                         if key in fields or (intent is None and name not in SHIFT_TOOLS and args.get(key)):
                             canonical[key] = fields.get(key, args.get(key))
+                reference = (active or {}).get('range_reference')
+                if reference and all(canonical.get(k) == active.get(k) for k in DETAIL_SCOPE_KEYS):
+                    canonical.update(range_reference=deepcopy(reference), range_name=active.get('range_name'))
                 target = canonical
             elif name not in SHIFT_TOOLS:
                 for key in ('anchor_start_ny', 'anchor_timeframe', 'through_ny'):
@@ -1586,6 +1629,12 @@ class MarketConversation:
             if required:
                 target.update({k: required['args'][k] for k in DETAIL_SCOPE_KEYS})
                 asset = target['asset']
+            reference = target.get('range_reference')
+            if reference and any(target.get(k) != reference.get(k) for k in DETAIL_SCOPE_KEYS):
+                # An explicit new candle/window must not retain the old named
+                # range's identity, including on audio same-shift navigation.
+                target.pop('range_reference', None)
+                target.pop('range_name', None)
             args['asset'] = asset
             if name in SHIFT_TOOLS:
                 original = _selection(asset, target['date_ny'], target['shift'])
@@ -1639,6 +1688,10 @@ class MarketConversation:
                 self.requested = deepcopy(target)
                 if not result.get('ok'):
                     return result
+                reference = target.get('range_reference')
+                if reference and (result.get('symbol') != reference.get('symbol') or result.get('source') != reference.get('source')):
+                    return {'ok': False, 'status': 'range_feed_mismatch',
+                            'error': 'The feed changed since this range was selected. Resolve the named range again before using this evidence.'}
                 if name in SHIFT_TOOLS:
                     review = result.get('review') or {}
                     actual = {key: result.get(key) or review.get(key) for key in ('asset', 'date_ny', 'shift')}

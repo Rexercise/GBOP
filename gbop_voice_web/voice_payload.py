@@ -991,6 +991,12 @@ def current_voice_overview(result):
 
 def voice_tool_payload(name, result):
     """Select a bounded presentation after authoritative context capture."""
+    if name == 'resolve_market_range':
+        if not result.get('ok'):
+            return deepcopy(result)  # Bounded selector/coverage error; no raw provider body.
+        out = voice_tool_payload('review_market_crt', result)
+        out['range_reference'] = deepcopy(result['range_reference'])
+        return out
     if name == 'review_market_contexts':
         return deepcopy(result)  # Already bounded; never omit one requested member.
     if name == 'select_market_context' and result.get('ok'):
