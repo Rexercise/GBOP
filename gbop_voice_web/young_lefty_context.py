@@ -5,6 +5,8 @@ the manipulation H1 swept both sides. Each direction can be checked against
 real source bars; HTF context/confluence and the user's narrative remain
 separate. These checks neither grant early execution nor create another play.
 """
+
+from gbop_voice_web import shared_gtop_rules as rules
 from copy import deepcopy
 from datetime import datetime
 
@@ -26,7 +28,7 @@ def young_lefty_context(review, bars, end, step):
     manipulation = summarize(bars, start+3600, start+7200, step)
     if (start+7200 > end or not manipulation['complete']
             or not (manipulation['high'] > anchor['high'] and manipulation['low'] < anchor['low'])
-            or not anchor['low'] <= manipulation['close'] <= anchor['high']):
+            or not rules.inside(manipulation['close'], anchor['high'], anchor['low'])):
         return None
     invalid = review.get('invalidated_at_ny')
     stop = min(end, parse_time(invalid)) if invalid else end

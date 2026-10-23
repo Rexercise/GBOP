@@ -1,0 +1,32 @@
+{
+  "source": "TradingView native Data Window, read directly on 2026-10-15",
+  "symbol": "OANDA:NAS100USD",
+  "timeframe": "60",
+  "timezone": "America/New_York",
+  "parent": {
+    "opening_date": "2026-10-14",
+    "timeframe": "D1",
+    "low": 29896.0,
+    "high": 30704.7
+  },
+  "model1": {
+    "opening": "2026-10-14T18:00:00-04:00",
+    "open": 29955.0,
+    "high": 29963.1,
+    "low": 29781.6,
+    "close": 29809.5
+  },
+  "cisd": {
+    "opening": "2026-10-15T15:00:00-04:00",
+    "confirmation_close": "2026-10-15T16:00:00-04:00",
+    "open": 29861.7,
+    "high": 30022.9,
+    "low": 29861.4,
+    "close": 29967.9
+  },
+  "scope": "Two direct candle observations, not a complete chart capture or full calendar witness. Confirms strict close above retained Model 1 high; does not establish first Model 1 identity.",
+  "screenshots": [
+    "nas100-h1-model1-values.png",
+    "nas100-h1-cisd-close-values.png"
+  ]
+}

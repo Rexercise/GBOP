@@ -98,8 +98,8 @@ class SuperSoupFunctionTests(unittest.TestCase):
         self.assertEqual(local['local_function_outcome'], 'opposing_liquidity_delivered')
         self.assertEqual(local['local_function_objectives']['opposing_liquidity']['relative_to_model1_invalidation'],
                          'same_model1_invalidating_bar_order_unresolved')
-        self.assertIn('order relative to the Model 1 invalidating close is unresolved',
-                      result['candle_lifecycle']['spoken_summary'])
+        self.assertIn('Degraded · Parent objective pending', result['candle_lifecycle']['spoken_summary'])
+        self.assertIn('beyond the Super Soup extreme', result['candle_lifecycle']['spoken_summary'])
         self.assertNotIn('after its', result['candle_lifecycle']['spoken_summary'])
 
     def test_delivery_before_later_invalidation_keeps_its_chronology(self):

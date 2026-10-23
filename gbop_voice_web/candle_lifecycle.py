@@ -5,6 +5,8 @@ candle's full opposing extreme: below its low bearish, above its high bullish.
 Retests and later closes are named by the exact reference tested. They never
 silently become a member's stop or the parent range's invalidation rule.
 """
+
+from gbop_voice_web import shared_gtop_rules as rules
 from gbop_voice_web.candle_evidence import summarize, stamp, parse_time, next_boundary, timeframe, interval
 from gbop_voice_web.candle_naming import candle_label, closure_label, source_timeframe, objective_identity
 from gbop_voice_web import cisd_rule
@@ -164,7 +166,7 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
         if not row['complete']:
             continue
         for side, level in (('buy', anchor['high']), ('sell', anchor['low'])):
-            body = row['open'] <= level < row['close'] if side == 'buy' else row['close'] < level <= row['open']
+            body = rules.body_purge(row['open'], row['high'], row['low'], row['close'], level, side == 'buy')
             wick = (row['high'] > level and max(row['open'], row['close']) <= level) if side == 'buy' else (
                     row['low'] < level and min(row['open'], row['close']) >= level)
             if not body and not wick:
@@ -219,7 +221,7 @@ def lifecycle_review(bars, anchor, mapped, end, step, invalid_at=None):
         'local_function_objectives preserves later delivery and timing versus Model 1 invalidation; '
         'it never restores CRT validity or cleanliness. Stop at the selected-range cutoff. '
         'super_soup.status distinguishes pre-CSD from same-close confirmation. Inside bars may precede Soup. '
-        'Canonical V1–V6 apply to Model 1 own CRT; completed opposing delivery survives its later outside close.')
+        'Canonical V1–V6 apply to the Super Soup range (the Model 1 candle); completed opposing delivery survives its later outside close.')
     complete = all(row['complete'] for row in rows)
     result.update(identified_count=total, observation_complete=complete,
                   window_start_ny=stamp(start), window_end_ny=stamp(end))
@@ -237,6 +239,20 @@ def super_soup_performance_summary(body):
     remains visible without retroactively calling the nested CRT valid or a win.
     """
     structure = body['super_soup_structure']
+    if structure.get('follow_through'):
+        from gbop_voice_web.soup_followthrough import description, measurement_text
+        record = structure['follow_through']
+        target = structure['parent_range_objectives']['opposing_liquidity']
+        text = 'Super Soup: ' + description(record) + '. '
+        if record['function_status'] == 'parent_objective_delivered':
+            text += f"{target['spoken_label']} reached"
+            if target.get('evidence'):
+                event = target['evidence']
+                text += ' in ' + candle_label(event['bar_open_ny'], source_timeframe(event.get('precision_seconds')))
+            text += '. '
+        else:
+            text += f"The tracked parent objective is {target['spoken_label']}. "
+        return text + measurement_text(record)
     targets = structure['local_function_objectives']
     full, midpoint = targets['opposing_liquidity'], targets['midpoint']
     delivered = full if full['status'] == 'observed_after_purge' else (
@@ -281,7 +297,7 @@ def super_soup_performance_summary(body):
         if (delivered is full and delivered['relative_to_model1_invalidation'] == 'after_model1_invalidation'
                 and earlier_midpoint['status'] == 'observed_after_purge'):
             text += f" Before invalidation, it had reached {earlier_midpoint['spoken_label']} in {touch(earlier_midpoint)}."
-        text += (' Completed own-CRT delivery remains recorded.'
+        text += (' Completed Super Soup range delivery remains recorded.'
                  if structure.get('variant_status') == 'distribution_observed' else
                  ' Any later physical delivery does not restore CRT validity.')
     parent = structure['parent_range_objectives']

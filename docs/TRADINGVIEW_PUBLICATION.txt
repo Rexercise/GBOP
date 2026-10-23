@@ -1,0 +1,54 @@
+TITLE: GTOP Butterfly Tool
+PUBLICATION: Public / Open-source
+VERSION: Shared GTOP rules 1.3.0
+STATUS: Prepared, not published. On October 15, 2026, TradingView identified the signed-in Rexercise account as Basic. Public script publishing requires a paid plan. The exact source is saved privately as "GTOP Butterfly 1.3.0 - CISD and Spotlight", version 2.
+
+DESCRIPTION TO PASTE
+
+[b]Purpose[/b]
+GTOP Butterfly Tool organizes candle ranges, their pending opposing objectives, and the lower-timeframe evidence associated with each range. It combines a multi-timeframe range view with an evidence panel so a range's identity, developing or confirmed state, variant, and confirmation candles stay together.
+
+This is a chart-context indicator, not an order-placement system or a strategy backtest. An observed objective delivery describes price behavior, not an assumed entry or profit.
+
+[b]Ranges and sessions[/b]
+Each source candle supplies its full high-to-low range. Price must trade strictly beyond an edge to purge it. A later source-timeframe close strictly inside confirms a return; a close exactly on an edge stays pending. A close strictly outside invalidates that source range. The opposing edge is the full objective; the midpoint is a separate milestone.
+
+Automatic Butterfly context shows the current source layer and up to three higher ladder layers, subject to history and display limits. Relevant ranges retain a pending opposing objective. Developing ranges are identified separately, and retired history is optional.
+
+Hourly origins are restricted to the 08:00-11:00 and 20:00-23:00 candles in New York time. Those ranges can qualify or update after the shift ends. GTOP H4 defaults to New York windows beginning at 01:00, 05:00, 09:00, 13:00, 17:00 and 21:00, with signature session names. The separate Chart H4 option uses the symbol's native four-hour candles, which may have different boundaries.
+
+[b]Reading variants[/b]
+V1 describes a source range, manipulation in candle 2, and distribution in candle 3; V3 allows later distribution. V4 has one inside candle before manipulation, and V5 has two or more. V2 requires evidenced manipulation and opposing delivery within candle 2. V6 requires a second purge of the first manipulation's extreme before full delivery while the range remains valid. Required inside returns and event order still apply. "Potential" is not a completed outcome. Ambiguous ordering remains unverified.
+
+[b]Model 1, CISD and Super Soup[/b]
+The normal source-to-evidence mappings are Monthly to Daily, Weekly to H4, Daily to H1, H4 to M15, and H1 to M5.
+
+Model 1 identifies an outward body purge on the assigned timeframe. This includes a body crossing the selected boundary, or an outside opening that strictly retests through the boundary and closes farther outward. Wick-only purges and inward-returning bodies do not establish that identity.
+
+CISD validates the identified Model 1 through a later assigned-timeframe close strictly beyond its full opposing extreme. The body candle and confirmation candle have separate callouts. A retained Model 1 can have a verified later CISD while its earliest identity remains unverified because earlier history is missing. Gaps after that Model 1 still block an unproven confirmation.
+
+Super Soup evaluates the Model 1 candle as its own range. Its callout requires closed-candle evidence of the relevant purge-and-return or ordered delivery, not an outside close alone. Once established, a later strict re-purge of the original Super Soup wick degrades cleanliness. An exact touch, or a close outside Model 1 that remains within that wick, does not. Parent-objective delivery is tracked separately. Adverse extension starts beyond the Super Soup wick and is shown in points and as a percentage of the original Model 1 high-to-low range. No universal tolerance is implied.
+
+[b]Display controls[/b]
+[list]
+[*]Quick display separates range boxes, the evidence panel, and individual Model 1, CISD and Super Soup callouts. Hiding boxes keeps evidence active.
+[*]Range names and variants are red for identification; red is not a bearish signal. Other context lists its ranges separately.
+[*]Range spotlight selects a numbered panel range and highlights its matching eligible box and title. Numbers follow the current panel order; this is a settings selection, not a hover hyperlink.
+[*]Return details are available on range hover without an extra chart callout.
+[*]Sticky notes accept up to six personal lines. Their background defaults to transparent, their text remains visible, and nine screen positions are available.
+[/list]
+
+[b]Use and limitations[/b]
+Start with standard candles, Automatic evidence focus and Butterfly context. Move down the timeframe ladder to inspect the assigned evidence. Use the source labels and "closed through" time when comparing charts. Manual anchors and source overrides remain explicit.
+
+Confirmed events use completed candles, and labels are placed on the candle where the event occurred after its close becomes known. Developing ranges can change. Loaded history, intrabar coverage, broker sessions, chart timeframe and resource limits affect what can be verified; a missing observation is not proof that an event never happened. The indicator's bounded single-symbol evidence does not establish paired-asset SMT or every intrabar sequence. This publication implements the stated GTOP conventions rather than claiming that every convention is a universal rule.
+
+PUBLICATION CHECKLIST
+
+1. Open the exact indicators/GTOP_Butterfly_Tool.pine source in Pine Editor.
+2. Use a clean standard-candle chart with symbol, timeframe and indicator status lines visible. Keep only visuals explained above. Show default settings and representative live evidence, without unrelated drawings or other scripts.
+3. Publish indicator: title above, description above, Public privacy and Open-source visibility. Suggested relevant categories: Support and Resistance; Candlestick Analysis.
+4. Review the actual publication form, source and chart before submission. Verify the resulting script URL and public/source visibility afterward.
+5. Share that verified URL with the group. A private saved script is not a public listing.
+
+Official account limitation: https://www.tradingview.com/support/solutions/43000549935-tips-for-script-authors/

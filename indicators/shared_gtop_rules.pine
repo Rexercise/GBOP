@@ -1,0 +1,62 @@
+// BEGIN GENERATED GTOP RULES
+// Generated from rules/gtop_rules.json. Do not edit this block.
+string GTOP_RULESET_VERSION = "1.3.0"
+string GTOP_RULESET_SHA256 = "2a9f4ec9b85b58f1c8103d8782ac4e696cee4277237195578148bc59a0af9980"
+
+// GTOP-EVIDENCE-005; caller establishes confirmed timeframe and coverage.
+f_gtop_chart_contiguous(int expected, int starts, int previous_close, int projected_open) =>
+    (((starts == expected)) or (((previous_close == expected)) and ((projected_open == starts)) and ((starts > previous_close))))
+
+// GTOP-RANGE-002; caller establishes confirmed timeframe and coverage.
+f_gtop_inside(float c, float hi, float lo) =>
+    ((lo < c) and (c < hi))
+
+// GTOP-RANGE-003; caller establishes confirmed timeframe and coverage.
+f_gtop_outside(float c, float hi, float lo) =>
+    (((c > hi)) or ((c < lo)))
+
+// GTOP-RANGE-002; caller establishes confirmed timeframe and coverage.
+f_gtop_at_boundary(float c, float hi, float lo) =>
+    (((c == hi)) or ((c == lo)))
+
+// GTOP-RANGE-001; caller establishes confirmed timeframe and coverage.
+f_gtop_purged(float h, float l, float level, bool buy_side) =>
+    (buy_side ? ((h > level)) : ((l < level)))
+
+// GTOP-MODEL1-001; caller establishes confirmed timeframe and coverage.
+f_gtop_body_purge(float o, float h, float l, float c, float level, bool buy_side) =>
+    (buy_side ? (((o <= level) and (level < c)) or ((l < level) and (level < o) and (o < c))) : (((c < level) and (level <= o)) or ((c < o) and (o < level) and (level < h))))
+
+// GTOP-CISD-001; caller establishes confirmed timeframe and coverage.
+f_gtop_cisd(float c, float model_hi, float model_lo, bool bearish) =>
+    (bearish ? ((c < model_lo)) : ((c > model_hi)))
+
+// GTOP-VARIANT-004; caller establishes confirmed timeframe and coverage.
+f_gtop_inside_bar(float h, float l, float hi, float lo) =>
+    (((h <= hi)) and ((l >= lo)))
+
+// GTOP-VARIANT-V6-EXCLUSIVE; caller establishes confirmed timeframe and coverage.
+f_gtop_v6_before_full(bool initial_return, bool swept_extreme, bool full_before, bool full_same_bar) =>
+    (initial_return and swept_extreme and (not full_before) and (not full_same_bar))
+
+// GTOP-SOUP-001; caller establishes confirmed timeframe and coverage.
+f_gtop_soup_confirmation(float o, float h, float l, float c, float hi, float lo, bool bearish) =>
+    (bearish ? (((h > hi)) and ((((lo < c) and (c < hi)) and ((l >= lo))) or (((lo < o) and (o < hi)) and ((c < lo))))) : (((l < lo)) and ((((lo < c) and (c < hi)) and ((h <= hi))) or (((lo < o) and (o < hi)) and ((c > hi))))))
+
+// GTOP-SOUP-003; caller establishes confirmed timeframe and coverage.
+f_gtop_adverse_extension(float h, float l, float hi, float lo, bool bearish) =>
+    (bearish ? (((h > hi)) ? (h - hi) : 0.0) : (((l < lo)) ? (lo - l) : 0.0))
+
+// GTOP-SOUP-003; caller establishes confirmed timeframe and coverage.
+f_gtop_extension_percent(float points, float hi, float lo) =>
+    (((hi > lo)) ? ((100.0 * points) / (hi - lo)) : 0.0)
+
+f_gtop_assigned_tf(string sourceTF) =>
+    switch sourceTF
+        "1M" => "1D"
+        "1W" => "240"
+        "1D" => "60"
+        "240" => "15"
+        "60" => "5"
+        => ""
+// END GENERATED GTOP RULES

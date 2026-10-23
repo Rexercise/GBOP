@@ -4,7 +4,7 @@ import json
 
 from gbop_voice_web.candle_evidence import parse_time
 from gbop_voice_web.voice_runtime import compact_voice_tool_result
-from gbop_voice_web.voice_payload import _bounded_error, _factor_review, _paired, _pick, _voice_market_context
+from gbop_voice_web.voice_payload import _compact_interval_tables, _bounded_error, _factor_review, _paired, _pick, _voice_market_context
 from gbop_voice_web.directional_evidence import directional_candidate_evidence
 from gbop_voice_web.variant_explanation import variant_clause
 
@@ -277,7 +277,8 @@ def _secondary_reversal_outcome(value):
         if not source:
             continue
         result = out[phase] = _pick(source, ('status', 'direction', 'window_start_ny',
-            'window_end_ny', 'validity_cutoff_ny', 'coverage', 'earlier_delivery_preserved_after_invalidation'))
+            'window_end_ny', 'validity_cutoff_ny', 'coverage', 'objective_side', 'objective_level',
+            'earlier_delivery_preserved_after_invalidation'))
         result['objectives'] = {}
         for name, target in source.get('objectives', {}).items():
             fact = result['objectives'][name] = _pick(target, ('level', 'status', 'distance_price_points',
@@ -285,19 +286,18 @@ def _secondary_reversal_outcome(value):
             key = 'evidence' if target.get('evidence') else 'closest_source_interval'
             if target.get(key):
                 fact[key] = _pick(target[key], ('bar_open_ny', 'bar_close_ny', 'precision_seconds'))
-    out['detail_omissions'] = ('Secondary reversal outcome/confirmation only. Price-path audit and additional '
+    out['detail_omissions'] = ('Secondary reversal outcome/confirmation only. Omitted price-path audit and additional '
         'identity detail require double_purge_detail_request; omission is not absence.')
     return out
 
 
 def _factor_intervals(out):
-    """Share short repeated source intervals with short, resolvable pointers."""
+    """Share repeated facts/text with short, resolvable evidence pointers."""
     from collections import Counter
     counts, examples = Counter(), {}
     def scan(value):
         if isinstance(value, dict):
-            if ('bar_open_ny' in value and 'bar_close_ny' in value
-                    and 'same_evidence_as' not in value):
+            if value and 'same_evidence_as' not in value:
                 encoded = json.dumps(value, sort_keys=True, separators=(',', ':'))
                 counts[encoded] += 1
                 examples[encoded] = value
@@ -306,26 +306,31 @@ def _factor_intervals(out):
         elif isinstance(value, list):
             for child in value:
                 scan(child)
+        elif isinstance(value, str) and len(value) > 64:
+            encoded = json.dumps(value)
+            counts[encoded] += 1
+            examples[encoded] = value
     scan(out['review'])
     pool, refs = [], {}
     for encoded, count in counts.items():
-        ref = {'same_evidence_as': '#/review/shared_intervals/' + str(len(pool))}
+        ref = {'same_evidence_as': '#/review/shared_evidence/' + str(len(pool))}
         if count > 1 and (len(encoded) * (count - 1) >
                           len(json.dumps(ref, separators=(',', ':'))) * count + 2):
             refs[encoded] = ref
             pool.append(deepcopy(examples[encoded]))
     def replace(value):
-        if isinstance(value, dict):
+        if isinstance(value, (dict, str)):
             encoded = json.dumps(value, sort_keys=True, separators=(',', ':'))
             if encoded in refs:
                 return deepcopy(refs[encoded])
+        if isinstance(value, dict):
             return {key: replace(child) for key, child in value.items()}
         if isinstance(value, list):
             return [replace(child) for child in value]
         return value
     if pool:
         candidate = replace(out['review'])
-        candidate['shared_intervals'] = pool
+        candidate['shared_evidence'] = pool
         if len(json.dumps(candidate, separators=(',', ':'))) < len(json.dumps(out['review'], separators=(',', ':'))):
             out['review'] = candidate
 
@@ -455,6 +460,15 @@ def crt_voice_detail(result):
         # Repeated pair narrative is not the requested lifecycle evidence.
         view.pop('recap', None)
         view.pop('limits', None)
+        # Parent-event summaries repeat structured assigned identity and OHLC;
+        # keep the selected lifecycle card exact, including its full metrics.
+        for event in view.get('events', []):
+            assigned = event.get('assigned_purge', {})
+            assigned.pop('spoken_summary', None)
+            candle = assigned.get('assigned_candle', {})
+            for key in ('high_last_seen', 'low_last_seen', 'high_occurrences', 'low_occurrences'):
+                candle.pop(key, None)
+        out['voice_detail_page']['parent_event_detail_omitted'] = 'Repeated prose/last extrema; identity, OHLC, first extremes and coverage retained.'
         # Scope, target, direction and ordering fields remain authoritative;
         # their repeated policy prose is already stated by the page contract.
         view.get('directional_outcome', {}).pop('response_contract', None)
@@ -549,19 +563,21 @@ def crt_voice_detail(result):
                           if card.get('bar_open_ny') == candle.get('bar_open_ny')
                           and card.get('purged_side') == candle.get('purged_side')), None)
             if match is not None:
-                kept = _pick(candle, ('bar_open_ny', 'body_cross_and_close_through_level'))
+                kept = _pick(candle, ('bar_open_ny', 'body_cross_and_close_through_level', 'body_purge_form'))
                 kept['lifecycle_evidence'] = {'same_evidence_as':
                     '#/review/candle_lifecycle/purge_candles/' + str(match)}
                 candle.clear()
                 candle.update(kept)
         out['voice_detail_page']['note'] = (
-            'Exact lifecycle; same_evidence_as resolves here. Keep scope/cutoff and target scopes. '
-            'Query identities by detail_candle_start_ny or next_request. backend_remaining_from_ny '
-            'marks unavailable deeper records, not a cursor. Raw/BT cursors differ. '
-            'Omission is not absence; OHLC cannot prove tick order or fills.')
+            'Exact lifecycle; resolve same_evidence_as here. Keep scope/cutoff. Query next_request or named identity. '
+            'backend_remaining_from_ny marks unavailable deeper records, not a cursor. '
+            'Omitted is not absent; OHLC proves no tick order/fills.')
         before_factoring = deepcopy(out)
-        _factor_review(out)
         _factor_intervals(out)
+        _factor_review(out)
+        if len(json.dumps(out, separators=(',', ':'))) > DETAIL_COMPACTION_TARGET_CHARS:
+            out.setdefault('voice_view', {})
+            _compact_interval_tables(out)
         if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:
             secondary = before_factoring['review'].get('double_purge', {})
             if secondary.get('double_purge_detail_request'):
@@ -585,8 +601,10 @@ def crt_voice_detail(result):
                             target['closest_source_interval'] = _pick(target['closest_source_interval'],
                                 ('bar_open_ny', 'bar_close_ny', 'precision_seconds'))
                     approach['detail_omissions'] = 'Completed-target boundary price audit omitted; verified target status, zero gap and source interval retained.'
-                _factor_review(candidate)
                 _factor_intervals(candidate)
+                _factor_review(candidate)
+                candidate.setdefault('voice_view', {})
+                _compact_interval_tables(candidate)
                 if len(json.dumps(candidate, separators=(',', ':'))) < len(json.dumps(out, separators=(',', ':'))):
                     out = candidate
     if len(json.dumps(out, separators=(',', ':'))) > DETAIL_CHARACTER_BUDGET:

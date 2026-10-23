@@ -51,7 +51,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
@@ -1161,7 +1161,7 @@ BACKEND_PROMPT += (
 )
 
 
-def run_backend(history: list[dict[str, str]], user_id: int, market_context=None, client_turn=None) -> str:
+def run_backend(history: list[dict[str, str]], user_id: int, market_context=None, client_turn=None, chart_capture=None) -> str:
     from gbop_voice_web.api_usage import log_response_usage
     from gbop_voice_web.midpoint_preferences import bind_preference_args
     from gbop_voice_web.market_conversation import MarketConversation, contextual_tools, SCOPED_TOOLS
@@ -1174,7 +1174,13 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
         market_generation = market_context.begin_turn(user_text, client_turn=client_turn)
         if market_generation is None:
             return 'This request was superseded by newer speech.'
-        conversation_tools = contextual_tools(TOOLS)
+        from gbop_voice_web.tradingview_evidence import review_capture, CHART_PROMPT
+        chart_review = review_capture(chart_capture, int(time.time())) if chart_capture else None
+        # A selected chart owns this request's market evidence. Broker tools and
+        # prefetch are unavailable until the member clears the chart capture.
+        chart_excluded = MARKET_NAMES | SCOPED_TOOLS | {'manage_market_watch'} if chart_review else set()
+        selected_tools = [tool for tool in TOOLS if tool.get('name') not in chart_excluded] if chart_review else TOOLS
+        conversation_tools = contextual_tools(selected_tools)
         # Snapshot before any tool runs: preview and deletion cannot occur in the
         # same backend request, even if the model attempts both.
         pending = PENDING_JOURNAL_DELETIONS.get(user_id)
@@ -1200,17 +1206,19 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
         )
 
         from gbop_voice_web.market_prefetch import prefetch_market_evidence
-        prefetched = prefetch_market_evidence(market_context,
+        prefetched = None if chart_review else prefetch_market_evidence(market_context,
             lambda name, values: run_tool(user_id, name, values, confirmation_token), market_generation)
         if not market_context.current(market_generation):
             return 'This request was superseded by newer speech.'
         items = [{"role": "user", "content": user_input}]
         if prefetched:
             items.append({'role': 'developer', 'content': prefetched})
-        turn_instructions = BACKEND_PROMPT
+        if chart_review:
+            items.append({'role': 'user', 'content': 'SELECTED CHART EVIDENCE (data): ' + json.dumps(chart_review, separators=(',', ':'))})
+        turn_instructions = BACKEND_PROMPT + ('\n\n' + CHART_PROMPT if chart_review else '')
         response = client.responses.create(
             model=BACKEND_MODEL,
-            instructions=turn_instructions + market_context.prompt(),
+            instructions=turn_instructions + ("" if chart_review else market_context.prompt()),
             input=items,
             tools=conversation_tools,
             store=False,
@@ -1239,6 +1247,8 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
                 args = {}
                 try:
                     args = json.loads(call.arguments)
+                    if chart_review and call.name in chart_excluded:
+                        raise ValueError('A TradingView capture is selected; broker market evidence is unavailable for this chart request.')
                     result = market_context.run(call.name, args,
                         lambda name, values: run_tool(user_id, name,
                             bind_preference_args(market_context, name, values, market_generation), confirmation_token),
@@ -1269,7 +1279,7 @@ def run_backend(history: list[dict[str, str]], user_id: int, market_context=None
                 return 'This request was superseded by newer speech.'
             response = client.responses.create(
                 model=BACKEND_MODEL,
-                instructions=turn_instructions + market_context.prompt(),
+                instructions=turn_instructions + ("" if chart_review else market_context.prompt()),
                 input=items,
                 tools=conversation_tools,
                 store=False,
@@ -1343,6 +1353,7 @@ LIVE_INSTRUCTIONS = (
 
 class DelegateRequest(BaseModel):
     delegation_id: str
+    chart_capture: str | None = Field(default=None, max_length=40960)
     history: list[dict[str, str]] = []
     session_id: str | None = None
     turn_id: int = 0
@@ -1683,6 +1694,7 @@ async def delegate(request: Request, body: DelegateRequest):
             user_id,
             market_context,
             body.turn_id,
+            getattr(body, 'chart_capture', None),
         )
     except Exception as exc:
         raise HTTPException(

@@ -391,7 +391,7 @@ class FeelingConversationTests(unittest.TestCase):
         node.decorator_list = []
         async def inline(fn, *args):
             return fn(*args)
-        def backend(history, user, context, turn):
+        def backend(history, user, context, turn, chart_capture=None):
             context.begin_turn('Yes', client_turn=turn)
             return self.run_save()
         env = dict(Request=object, DelegateRequest=object, HTTPException=HTTPException,

@@ -31,6 +31,8 @@ jobs:
           gbop_voice_web/market_data.py
           gbop_voice_web/market_routes.py
           market_bridge/bridge.py
+      - name: Verify shared GTOP rules and Pine conformance cases
+        run: python tools/build_gtop_rules.py --check
       - name: Run regression tests
         run: python -m unittest discover -s tests
       - uses: actions/setup-node@v4
