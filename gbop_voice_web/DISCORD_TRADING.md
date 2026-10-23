@@ -153,11 +153,15 @@ restarts is not implemented.
    normal Render restart loads it; no new worker, VM or plan is required by code.
 4. Run `/gbop action:status` and confirm two bot identities are ready. Existing
    private rooms reopen without editing permissions when access is already correct.
-   If a room predates the helper, grant the primary bot **Manage Permissions** in
-   that channel (Edit Channel → Permissions), then `/gbop action:room` can update
-   bot access. Discord uses the `manage_roles` permission for this channel setting.
-   Creating a room requires Manage Channels; changing its access requires the
-   separate permission. Administrator is not needed.
+   Both `/meet` and the private-room button check Discord's stored channels and
+   member-specific permissions, including after reconnects/restarts. If duplicates
+   already exist, GBOP reuses the member's current safe room or the oldest safe
+   room; it does not remove older rooms or their messages. A room with unknown or
+   shared access is never reused. If none of the member's existing rooms is safe,
+   creation is blocked until the owner restores the private permissions.
+   If a room predates the helper, the owner must restore that helper's access in
+   Edit Channel → Permissions. Reopening a room never silently changes access.
+   Creating a room requires Manage Channels; Administrator is not needed.
 5. Both members use `/meet`. If not already in voice, each joins the linked private
    room. GBOP joins automatically using an
    available bot. The helper runs only voice transport; the main bot continues

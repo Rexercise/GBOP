@@ -1,5 +1,6 @@
 """Member-facing Discord voice controls; no network or credentials."""
 import re
+import discord
 
 
 VOICE_HELP = (
@@ -49,20 +50,23 @@ def private_room_owner(channel):
     if not getattr(channel, 'name', '').startswith('gbop-private-'):
         return None
     owners = [target.id for target, permissions in channel.overwrites.items()
-              if hasattr(target, 'bot') and not target.bot
+              if ((hasattr(target, 'bot') and not target.bot)
+                  or (isinstance(target, discord.Object)
+                      and target.type in (discord.User, discord.abc.User, discord.Member)))
               and permissions.view_channel is True and permissions.connect is True]
     return owners[0] if len(owners) == 1 else None
 
 
 def private_room_autojoin_allowed(member, channel):
     """Only the room owner entering a still-private room may start auto voice."""
-    if not channel or member.bot or private_room_owner(channel) != member.id:
+    if (not channel or member.bot or private_room_owner(channel) != member.id
+            or getattr(getattr(channel, 'guild', None), 'id', member.guild.id) != member.guild.id):
         return False
     base = channel.overwrites_for(member.guild.default_role)
     if base.view_channel is not False or base.connect is not False:
         return False
     return not any(
-        target != member and not getattr(target, 'bot', False)
+        target.id != member.id and not getattr(target, 'bot', False)
         and (permissions.view_channel is True or permissions.connect is True)
         for target, permissions in channel.overwrites.items()
     )

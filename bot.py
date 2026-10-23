@@ -23,6 +23,7 @@ from gbop_voice_web.discord_controls import (
     private_room_autojoin_allowed,
 )
 from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
+from gbop_voice_web.private_room_reuse import select_private_room, PrivateRoomAccessError
 from gbop_voice_web.command_feedback import (
     DiscordCooldown, acknowledge_private_meeting, is_discord_rate_limit,
     report_command_error, run_private_meeting,
@@ -8263,7 +8264,7 @@ def gbop_private_voice_view(room=None):
             url=f"https://discord.com/channels/{room.guild.id}/{room.id}",
         ))
     else:
-        create_room = discord.ui.Button(label="Create my private Discord room", style=discord.ButtonStyle.primary)
+        create_room = discord.ui.Button(label="Open my private Discord room", style=discord.ButtonStyle.primary)
         async def open_room(interaction):
             await gbop_control.callback(interaction, action="room")
         create_room.callback = open_room
@@ -8276,51 +8277,26 @@ def gbop_private_voice_view(room=None):
 
 
 async def gbop_private_room(interaction, *, announce=True, prefer_temporary=False):
+    # Keep the old keyword for callers; temporary preference never overrides reuse.
     guild, member = interaction.guild, interaction.user
     async with gbop_voice_control_lock(guild.id):
-        candidates = [channel for channel in guild.voice_channels
-                      if private_room_owner(channel) == member.id
-                      and channel.id not in GBOP_PRIVATE_ROOMS.deleted]
-        tracked = [channel for channel in candidates
-                   if (record := GBOP_PRIVATE_ROOMS.rooms.get(channel.id)) is not None
-                   and record.guild_id == guild.id and record.owner_id == member.id]
-        room = next(iter(candidates), None)
-        legacy_fallback = False
-        if prefer_temporary:
-            GBOP_PRIVATE_ROOMS.preserved_rooms[(guild.id, member.id)] = {
-                channel.id for channel in candidates if channel not in tracked}
-            if tracked:
-                room = tracked[0]
-            elif guild.me.guild_permissions.manage_channels:
-                # A fresh voice-only room allows hang-up cleanup without ever
-                # deleting, hiding or changing an older room's message history.
-                room = None
-            else:
-                legacy_fallback = room is not None
-                if legacy_fallback:
-                    GBOP_PRIVATE_ROOMS.notices[(guild.id, member.id)] = (
-                        "Using your existing room because GBOP needs **Manage Channels** "
-                        "to create a temporary one. This room stays after hang-up.")
+        # The gateway cache and cleanup provenance can both be empty after a
+        # reconnect/restart. Recheck Discord's stored channels before every
+        # serialized request instead of depending on gateway cache delivery.
+        channels = await asyncio.wait_for(guild.fetch_channels(), timeout=10)
+        bot_members = [bot_member for bot in GBOP_VOICE_CLIENTS
+                       if bot.user and (bot_member := guild.get_member(bot.user.id)) is not None]
+        try:
+            room = select_private_room(channels, guild, member, bot_members, GBOP_PRIVATE_ROOMS)
+        except PrivateRoomAccessError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+            return
         if room is None and not guild.me.guild_permissions.manage_channels:
             await interaction.followup.send(
                 "Creating a private Discord room needs the GBOP bot role to have **Manage Channels**. "
                 "The server owner can enable that; browser voice is available now.",
                 view=gbop_private_voice_view(), ephemeral=True)
             return
-        if room:
-            # Refuse to silently repurpose a room made visible to a wider audience.
-            for target, overwrite in room.overwrites.items():
-                allowed_target = target == member or getattr(target, 'bot', False)
-                if not allowed_target and (overwrite.view_channel is True or overwrite.connect is True):
-                    await interaction.followup.send(
-                        "Your existing GBOP room has shared access. Ask the owner to restore its private permissions first.",
-                        ephemeral=True)
-                    return
-            base = room.overwrites_for(guild.default_role)
-            if base.view_channel is not False or base.connect is not False:
-                await interaction.followup.send(
-                    "Your existing GBOP room needs private permissions restored by the server owner.", ephemeral=True)
-                return
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
             member: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, use_voice_activation=True),
@@ -8329,27 +8305,6 @@ async def gbop_private_room(interaction, *, announce=True, prefer_temporary=Fals
             if bot.user and (bot_member := guild.get_member(bot.user.id)) is not None:
                 overwrites[bot_member] = discord.PermissionOverwrite(
                     view_channel=True, connect=True, speak=True, use_voice_activation=True)
-        # Reopening an existing room is a read, not a permission update.
-        # Discord requires Manage Permissions (manage_roles) when ACLs change.
-        needs_update = bool(room and any(
-            getattr(room.overwrites_for(target), field, None) != getattr(expected, field, None)
-            for target, expected in overwrites.items()
-            for field in ('view_channel', 'connect', 'speak', 'use_voice_activation')
-        ))
-        if needs_update and legacy_fallback:
-            await interaction.followup.send(
-                "GBOP needs **Manage Channels** to create a temporary meeting room. "
-                "Your existing room also needs bot access restored, so it was kept unchanged. "
-                "Ask the server owner to check its permissions, then run `/meet` again.",
-                ephemeral=True)
-            return
-        if needs_update and not room.permissions_for(guild.me).manage_roles:
-            await interaction.followup.send(
-                f"Your room {room.mention} exists, but GBOP needs **Manage Permissions** in that room "
-                "to update bot access. The server owner can enable it in **Edit Channel → Permissions** "
-                "for GTOP Bot, then run `/gbop action:room` again. Your room stays private.",
-                view=gbop_private_voice_view(room), ephemeral=True)
-            return
         try:
             if room is None:
                 # Temporary rooms are voice-only: member records/photos stay in
@@ -8366,26 +8321,14 @@ async def gbop_private_room(interaction, *, announce=True, prefer_temporary=Fals
                 room = await guild.create_voice_channel(
                     name=name, overwrites=overwrites, reason="Member requested a private GBOP room")
                 GBOP_PRIVATE_ROOMS.created(room, member)
-            elif needs_update:
-                # Preserve text/history and unrelated settings in existing rooms.
-                updates = dict(room.overwrites)
-                for target, expected in overwrites.items():
-                    current = room.overwrites_for(target)
-                    for field in ('view_channel', 'connect', 'speak', 'use_voice_activation'):
-                        value = getattr(expected, field, None)
-                        if value is not None:
-                            setattr(current, field, value)
-                    updates[target] = current
-                room = await room.edit(overwrites=updates, reason="Member refreshed their private GBOP room")
             else:
-                print("[GBOP-PRIVATE-ROOM] Reused existing private room without editing permissions.", flush=True)
+                print("[GBOP-PRIVATE-ROOM] Reused verified private room without editing permissions.", flush=True)
         except discord.Forbidden:
-            print("[GBOP-PRIVATE-ROOM] Discord denied private room creation or permission update.", flush=True)
+            print("[GBOP-PRIVATE-ROOM] Discord denied private room creation.", flush=True)
             await interaction.followup.send(
                 "Discord blocked GBOP from setting up the private room. The server owner should check "
                 "GTOP Bot's **Manage Channels**, **View Channel**, **Connect**, **Speak** and "
-                "**Use Voice Activity** permissions. Updating an existing room also needs "
-                "**Manage Permissions** on that room. Then run `/gbop action:room` again.",
+                "**Use Voice Activity** permissions. Then run `/gbop action:room` again.",
                 view=gbop_private_voice_view(room), ephemeral=True)
             return
         GBOP_PRIVATE_ROOMS.reserve(room, member)
@@ -8525,7 +8468,10 @@ async def gbop_control(
         return
     await interaction.response.defer(ephemeral=True, thinking=False)
     if action == "room":
-        await gbop_private_room(interaction)
+        key = (interaction.guild.id, interaction.user.id)
+        await run_private_meeting(
+            interaction, gbop_private_room,
+            GBOP_MEETING_LOCKS.setdefault(key, asyncio.Lock()), GBOP_DISCORD_COOLDOWN)
     elif action == "private":
         await interaction.followup.send(
             "Open your own browser voice session below and sign in with **your own Discord account**. "

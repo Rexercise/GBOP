@@ -6,6 +6,8 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 from gbop_voice_web.private_room_cleanup import PrivateRoomCleanup
+from gbop_voice_web.private_room_reuse import select_private_room, PrivateRoomAccessError
+import discord as actual_discord
 from gbop_voice_web.discord_controls import pick_voice_guild, private_room_owner, in_voice_channel
 
 SOURCE = Path(__file__).resolve().parents[1] / 'bot.py'
@@ -93,6 +95,7 @@ class PrivateVoiceTests(unittest.IsolatedAsyncioTestCase):
         room = NS(id=10, mention='#gbop-private-rexercise', name='gbop-private-rexercise', overwrites=acl,
                   overwrites_for=lambda target: acl.get(target, NS()),
                   permissions_for=lambda target: NS(manage_roles=allow_edit), edit=AsyncMock())
+        room.type = actual_discord.ChannelType.voice
         room.edit.return_value = room
         guild = NS(id=123, me=primary, default_role=everyone, voice_channels=[room] if existing else [],
                    get_member=lambda i: {99: primary, 100: helper}.get(i),
@@ -101,8 +104,11 @@ class PrivateVoiceTests(unittest.IsolatedAsyncioTestCase):
             guild.create_voice_channel.side_effect = PermissionError('Missing Permissions')
             room.edit.side_effect = PermissionError('Missing Permissions')
         owner.guild = guild
+        room.guild = guild
+        guild.fetch_channels = AsyncMock(side_effect=lambda: list(guild.voice_channels))
+        room.permissions_for = lambda person: NS(view_channel=True, connect=(not missing_helper or person.id != helper.id), speak=True, manage_roles=allow_edit)
         interaction = NS(guild=guild, user=owner, followup=NS(send=AsyncMock()))
-        ns = dict(asyncio=asyncio, GBOP_PRIVATE_ROOMS=PrivateRoomCleanup(), re=__import__('re'), private_room_owner=private_room_owner,
+        ns = dict(select_private_room=select_private_room, PrivateRoomAccessError=PrivateRoomAccessError, asyncio=asyncio, GBOP_PRIVATE_ROOMS=PrivateRoomCleanup(), re=__import__('re'), private_room_owner=private_room_owner,
                   gbop_voice_control_lock=lambda _: asyncio.Lock(), gbop_private_voice_view=lambda *args: None,
                   discord=NS(PermissionOverwrite=lambda **kw: NS(**kw), Forbidden=PermissionError),
                   GBOP_VOICE_CLIENTS=[NS(user=primary), NS(user=helper)])
@@ -143,23 +149,19 @@ class PrivateVoiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_helper_acl_requires_explicit_channel_permission(self):
         guild, _, _, _, _, interaction = await self.room_request(existing=True, missing_helper=True)
         guild.voice_channels[0].edit.assert_not_awaited()
-        self.assertIn('Manage Permissions', interaction.followup.send.await_args.args[0])
+        self.assertIn('permissions restored', interaction.followup.send.await_args.args[0])
 
-    async def test_changed_acl_is_updated_when_authorized(self):
+    async def test_missing_bot_access_is_not_silently_broadened_even_with_manage_roles(self):
         guild, _, _, _, helper, interaction = await self.room_request(
             existing=True, missing_helper=True, allow_edit=True)
-        room = guild.voice_channels[0]
-        room.edit.assert_awaited_once()
-        self.assertTrue(room.edit.await_args.kwargs['overwrites'][helper].connect)
-        self.assertIn('Open it below', interaction.followup.send.await_args.args[0])
+        guild.voice_channels[0].edit.assert_not_awaited()
+        guild.create_voice_channel.assert_not_awaited()
+        self.assertIn('kept unchanged', interaction.followup.send.await_args.args[0])
 
-    async def test_forbidden_creation_and_refresh_return_actionable_guidance(self):
-        for existing in (False, True):
-            with self.subTest(existing=existing):
-                _, _, _, _, _, interaction = await self.room_request(
-                    existing=existing, missing_helper=True, allow_edit=True, forbidden=True)
-                self.assertIn('Discord blocked', interaction.followup.send.await_args.args[0])
-                self.assertTrue(interaction.followup.send.await_args.kwargs['ephemeral'])
+    async def test_forbidden_creation_returns_actionable_guidance(self):
+        _, _, _, _, _, interaction = await self.room_request(forbidden=True)
+        self.assertIn('Discord blocked', interaction.followup.send.await_args.args[0])
+        self.assertTrue(interaction.followup.send.await_args.kwargs['ephemeral'])
 
     async def test_shared_room_does_not_skip_privacy_checks_or_change_permissions(self):
         guild, _, _, _, _, interaction = await self.room_request(existing=True, shared=True)
