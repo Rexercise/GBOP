@@ -10,7 +10,7 @@ import math
 import random
 import time
 
-READ_ONLY_RECOVERY_NAMES = frozenset({
+READ_ONLY_RECOVERY_NAMES = frozenset({'get_journal_day',
     'prepare_journal_discard', 'review_post_shift_followthrough', 'get_journal_story', 'review_market_contexts', 'select_market_context', 'review_other_market_ranges', 'review_current_market', 'get_delivery_status', 'get_trade_state', 'get_journal_history', 'get_risk_profile', 'get_midpoint_preference', 'get_member_plan',
     'get_member_dashboard', 'get_shift_plans', 'get_performance_review',
     'find_journal_setups', 'get_activity_check', 'get_ss_review', 'get_weekly_structure_study', 'get_ss_symbols', 'get_trade_assist',
@@ -24,7 +24,7 @@ RECOVERY_NAMES = READ_ONLY_RECOVERY_NAMES | PRIVATE_DELIVERY_NAMES | frozenset({
 
 # These actions can create or append journal/trade records. A new call ID is
 # never sufficient evidence that an interrupted write should be repeated.
-JOURNAL_WRITE_NAMES = frozenset({
+JOURNAL_WRITE_NAMES = frozenset({'stage_journal_day','save_journal_day',
     'discard_journal_story', 'restore_journal_story', 'open_trade', 'add_entry', 'save_journal_entry', 'stage_journal_story', 'save_journal_story', 'close_trade',
     'record_trade_event', 'edit_journal', 'record_trade_feeling',
     'record_trade_self_grade', 'save_ss_review',

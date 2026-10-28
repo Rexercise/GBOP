@@ -13,7 +13,7 @@ from gbop_voice_web.journal_numbers import resolve_journal_selector
 from gbop_voice_web.trade_photos import schema, STR, NUM
 
 STORY_NAMES = {'stage_journal_story', 'get_journal_story', 'save_journal_story'}
-FIELDS = {'asset','direction','play','trade_date','session','context_notes','thesis_invalidation','invalidation_boundary','reported_outcome','objective','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone','result_r'}
+FIELDS = {'asset','direction','play','trade_date','session','context_notes','thesis_invalidation','invalidation_boundary','reported_outcome','objective','objective_status','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone','result_r'}
 ENTRY_FIELDS = {'entry_index','entry_model','candle_label','risk_r','risk_text','objective','status','pnl_text','notes','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text'}
 STORY_PROMPT = """
 PROGRESSIVE PRIVATE JOURNALING
@@ -177,8 +177,20 @@ def begin_story_turn(context,text,*,generation=None):
             with context._lock:
                 if context.current(ticket):context._journal_capture_error='Recording is paused; the earlier saved journal remains unchanged.'
     if is_discard_request(text, context):return
+    # The daily organizer owns setup attribution. Never pour a multi-trade
+    # passage into the single-trade inference path on the next turn.
+    if draft and draft.get('kind') == 'journal_day':return
     # Audio has no local transcript; its first stage tool records the passage.
     if not _journaling_request(text) or not getattr(context,'auth_provider',None):return
+    if re.search(r'\b(?:my|the|whole|trading) day\b|\b(?:multiple|several|all my) trades\b',text,re.I):
+        from gbop_voice_web.journal_day import stage_day
+        db,guild,user=context.auth_provider
+        try:
+            stage_day(db,guild,user,{'day_json':'{}','_journal_binding':JournalBinding(context,ticket)})
+        except Exception:
+            with context._lock:
+                if context.current(ticket):context._journal_capture_error='The daily narration was not retained. Retry capture before claiming it is saved.'
+        return
     if len(text.split())<8 and not re.search(r'\b(?:resume|continue|NAS(?:100)?|NASDAQ|SPX|US30|XAUUSD|BTCUSD|EURUSD|9ate8|bought|sold|shorted|entered)\b',text,re.I):return
     if _new_trade_request(text):return
     db,guild,user=context.auth_provider
@@ -257,6 +269,9 @@ def story_prompt_context(context):
         return '\nJOURNAL STORAGE NOTICE: '+context._journal_capture_error
     draft=getattr(context,'_journal_story',None)
     if not draft or draft.get('owner')!=(*context.owner[:2],context.session_id):return ''
+    if draft.get('kind') == 'journal_day':
+        from gbop_voice_web.journal_day import prompt_context
+        return prompt_context(draft)
     if draft.get('draft_status')=='finalized':return ''
     return '\nCURRENT UNFINISHED PRIVATE JOURNAL: '+json.dumps({
         'draft_id':draft['id'],'persisted':draft.get('persisted',False),
@@ -308,6 +323,8 @@ def _patch(value):
     validate_reported(value)
     if value.get('reported_outcome') not in (None,'open','win','loss','breakeven','stopped_out','unknown'):
         raise ValueError('Use an explicitly reported overall outcome or unknown.')
+    if value.get('objective_status') not in (None,'pending','delivered','unknown'):
+        raise ValueError('Objective status must be pending, delivered, or unknown; it is separate from position status.')
     entries = value.get('entries',[])
     if not isinstance(entries,list) or len(entries)>12:
         raise ValueError('Use at most twelve distinct reported entries.')
@@ -325,8 +342,8 @@ def _patch(value):
         risk=entry.get('risk_r')
         if risk is not None and (isinstance(risk,bool) or not isinstance(risk,(int,float)) or not math.isfinite(risk) or risk<0):
             raise ValueError('Entry risk must be reported finite nonnegative R or null.')
-        if entry.get('status') not in (None,'open','closed','partially_closed','unknown'):
-            raise ValueError('Entry status must be open, closed, partially_closed, or unknown.')
+        if entry.get('status') not in (None,'open','closed','partially_closed','pending_order','cancelled_order','unknown'):
+            raise ValueError('Entry status must distinguish open/closed positions from pending_order/cancelled_order or unknown.')
     clears=value.get('clear_fields',[])
     if not isinstance(clears,list) or any(not isinstance(k,str) or not re.fullmatch(r'[a-z_]+|entries\.(?:[1-9]|1[0-2])\.[a-z_]+',k) for k in clears):
         raise ValueError('clear_fields must explicitly name corrected draft fields.')
@@ -342,6 +359,7 @@ def render_story(values):
     for key,label in (('reported_entry_at','Reported entry'),('reported_exit_at','Reported exit'),('reported_entry_time_text','Reported entry wording'),('reported_exit_time_text','Reported exit wording')):
         if values.get(key):parts.append(label+': '+values[key])
     if values.get('objective'):parts.append('Reported/inferred context objective: '+values['objective'])
+    if values.get('objective_status'):parts.append('Reported objective status: '+values['objective_status'])
     if values.get('context_notes'): parts.append(values['context_notes'])
     parts.append('Reported entry sequence (candle labels are not exact fill times):')
     for entry in values.get('entries',[]):
@@ -434,6 +452,8 @@ def stage_story(db,guild,user,args):
     with journal_transaction(db,args,guild,user,serialize=True) as conn:
         first_draft = not getattr(context,'_journal_story',None) and not journal_drafts.read(conn,guild,user)
         draft=None if args.get('new_draft') is True else _load_owned(conn,context,args,guild,user)
+        if draft and draft.get('kind') == 'journal_day':
+            raise ValueError('Use stage_journal_day for this daily recap, keeping each setup under its own trade_key.')
         if args.get('new_draft') is True or draft is None:
             if args.get('draft_id') is not None:raise ValueError('Start a new draft without an old draft_id.')
             draft={'id':uuid4().hex,'owner':(guild,user,context.session_id),'values':{'entries':[]},'asked':[],
@@ -608,6 +628,12 @@ def get_story(db,guild,user,args):
                     'instruction':'Which unfinished journal should we continue? Keep their existing identities; page with next_offset as offset if needed.'}
         draft=_load_owned(conn,context,{**args,'_refresh':True},guild,user)
         if draft is None:return {'ok':True,'status':'no_unfinished_journal','drafts':[]}
+        if draft.get('kind') == 'journal_day':
+            from gbop_voice_web.journal_day import public, _saved_receipts
+            if public(draft)['saved'] and _saved_receipts(conn,guild,user,draft) is None:
+                return {'ok':False,'saved':False,'error':'A linked journal changed. Read current trade history.'}
+            _bind_loaded(context,draft)
+            return public(draft,args.get('raw_offset') or 0)
         _bind_loaded(context,draft)
         from gbop_voice_web.journal_range import resume as resume_range
         resume_range(context,draft)
@@ -683,6 +709,8 @@ def save_story(db,guild,user,args):
     with journal_transaction(db,args,guild,user,serialize=True) as conn:
         current=_load_owned(conn,context,args,guild,user)
         if current is None:raise ValueError('Read the unfinished journal before finalizing it.')
+        if current.get('kind') == 'journal_day':
+            raise ValueError('Use save_journal_day to finalize this daily recap together; do not save it as one trade.')
         source=getattr(context,'_client_text',None)
         audio_intent=getattr(context,'_journal_audio_intent',{})
         if source is None and audio_intent.get('generation')==context.generation:

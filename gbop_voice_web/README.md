@@ -462,3 +462,42 @@ Read-only acceptance: request the full performance review, SELF type counts and
 ungraded trades, linked-versus-legacy totals, and all record numbers without
 providing IDs. Confirm unknown R remains unknown and no records are created or
 modified. Repeat the index with multiple pages and another authenticated member.
+
+## Daily journaling trial
+
+`stage_journal_day`, `get_journal_day`, and `save_journal_day` are available through
+both the browser backend and Discord's private voice tool routing. A daily recap
+holds separate setups with stable entry identities, day reflections, and the
+original narration. Single-trade tools remain available for single-setup work.
+No schema migration is required: recaps and child drafts use the existing private
+`journal_story_drafts` table. Existing member access and lockdown rules still apply.
+
+Daily finalization is one member transaction. Each setup gets its own canonical
+Trade journal, while the parent recap retains the whole-day reflection and text.
+A failed child save rolls back the complete operation. Retrying a completed save
+verifies and reuses those journals. Interrupted saves use a read-only receipt
+check before reporting success. Journal narration does not create execution rows,
+close positions, infer fills, or calculate unstated P/L.
+
+Quality test (use an explicitly described mock to avoid actual journal records):
+
+1. Describe a morning NAS100 9ate8 Turtle Wick Soup from the 8 AM low to its high,
+   then two filled short entries (Model 1 and Super Soup) on the 11 AM range,
+   targeting sell-side with that objective still pending.
+2. Correct an initially stated 10:15 entry: it was the first Turtle Wick Soup,
+   and the exact fill time is not given. Expect only that entry to change.
+3. Say “back to the morning one” and add a second entry or a feeling. Expect it
+   to stay with the morning setup, without rewriting the 11 AM setup.
+4. Ask for one short recap. Initially expect two setups, three filled entries,
+   one closed and two open. A pending objective must not become a pending order.
+5. An explicit mock must remain a preview even after “save it.” For a real
+   authorized daily journal, “save it” saves all reviewed setups and the recap;
+   one receipt names the resulting Trade numbers. Retry must not duplicate them.
+6. Reconnect and ask for that day's recap. Its reflection and individual entries
+   should be retained. Named market references are separate from exact fill times;
+   unavailable broker evidence must not prevent saving the member's own story.
+
+Automated synthetic checks: `python -m unittest discover -s tests -p test_journal_day.py`.
+A passing synthetic check does not verify a deployed voice conversation. Confirm
+the service revision and conduct the private spoken trial before calling the
+feature ready for members. Alert changes are a separate release.
