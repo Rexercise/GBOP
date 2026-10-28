@@ -4,6 +4,8 @@ Only a strict later boundary purge followed by this parent's own-timeframe
 return opens another observed leg. A target touch alone is not a new reversal.
 This is bounded by the review cutoff/invalidation and closed source coverage.
 """
+
+from gbop_voice_web import shared_gtop_rules as rules
 from gbop_voice_web.candle_evidence import interval, next_boundary, parse_time, stamp, summarize
 from gbop_voice_web.double_purge import _objectives, _selected_return
 
@@ -20,14 +22,18 @@ def _resoup_manner(anchor, bars, confirmation, target, direction, step):
         return None
     bearish = direction == 'bearish'
     cursor = end
+    pending_sweep = None
     while next_boundary(cursor, anchor['timeframe']) <= stop:
         end = next_boundary(cursor, anchor['timeframe'])
         candle = summarize(bars, cursor, end, step)
         if not candle['complete']:
             return None
-        if ((candle['high'] > first['high'] if bearish else candle['low'] < first['low'])
-                and anchor['low'] <= candle['close'] <= anchor['high']):
-            return {'code': 'V6', 'name': 're-soup', 'acting_candle_start_ny': stamp(cursor),
+        if rules.outside(candle['close'], anchor['high'], anchor['low']):
+            return None
+        if pending_sweep is None and (candle['high'] > first['high'] if bearish else candle['low'] < first['low']):
+            pending_sweep = cursor
+        if pending_sweep is not None and rules.inside(candle['close'], anchor['high'], anchor['low']):
+            return {'code': 'V6', 'name': 're-soup', 'acting_candle_start_ny': stamp(pending_sweep),
                     'first_manipulation_start_ny': confirmation['bar_open_ny'],
                     'known_at_ny': stamp(end)}
         cursor = end
@@ -90,7 +96,7 @@ def continuation_legs(review, bars, end, step):
             if key == 'opposing_liquidity' and manner:
                 leg['variant'] = manner
         returned = next((b for b in rows if b['time'] >= purge['time'] and
-                         b['time'] + step <= known and anchor['low'] <= b['close'] <= anchor['high']), None)
+                         b['time'] + step <= known and rules.inside(b['close'], anchor['high'], anchor['low'])), None)
         if returned:
             development, _ = _objectives(rows, anchor, direction, returned, known, False, step)
             if any(t['status'] in ('observed_after_return', 'observed_touch_validity_unverified',

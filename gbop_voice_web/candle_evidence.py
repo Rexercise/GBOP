@@ -5,8 +5,10 @@ import re
 from zoneinfo import ZoneInfo
 from gbop_voice_web.candle_naming import candle_label, range_label, source_timeframe, objective_identity
 
-NY = ZoneInfo('America/New_York')
-ASSIGNED = {'MN1': 'D1', 'W1': 'H4', 'D1': 'H1', 'H4': 'M15', 'H1': 'M5'}
+from gbop_voice_web import shared_gtop_rules as rules
+
+NY = ZoneInfo(rules.TIMEZONE)
+ASSIGNED = rules.ASSIGNED
 
 
 def stamp(t):
@@ -215,7 +217,7 @@ def assigned_purge_evidence(bars, anchor, mapped, purge, side, end, step):
     level = anchor['high'] if side == 'buy' else anchor['low']
     qualification = 'unverified_incomplete_assigned_candle'
     if candle['complete']:
-        body = candle['open'] <= level < candle['close'] if side == 'buy' else candle['close'] < level <= candle['open']
+        body = rules.body_purge(candle['open'], candle['high'], candle['low'], candle['close'], level, side == 'buy')
         wick = max(candle['open'], candle['close']) <= level if side == 'buy' else min(candle['open'], candle['close']) >= level
         qualification = 'model1_body_purge' if body else 'wick_only' if wick else 'outside_or_returning_body'
     text = (f"The assigned {candle_label(candle['start_ny'], mapped)[4:]} contains the {side}-side purge of "
@@ -228,8 +230,8 @@ def assigned_purge_evidence(bars, anchor, mapped, purge, side, end, step):
 def model1_evidence(bars, anchor, mapped, end, step):
     """Identify body-purging candles, not future CSD or a member's execution.
 
-    Only complete assigned-timeframe bodies crossing and closing through the
-    anchor boundary qualify. Gaps do not erase other fully observed candles;
+    Only complete assigned-timeframe body purges under the shared rule qualify,
+    including an outside open with a strict retest and outward close. Gaps do not erase other fully observed candles;
     they do prevent a claim that no Model 1 occurred in the entire window.
     """
     result = {'definition_version': 'model1-candle-identity-2026-10-03',
@@ -276,8 +278,8 @@ def model1_evidence(bars, anchor, mapped, end, step):
             cursor = stop
             continue
         complete_count += 1
-        side = ('buy' if candle['open'] <= anchor['high'] < candle['close'] else
-                'sell' if candle['close'] < anchor['low'] <= candle['open'] else None)
+        side = ('buy' if rules.body_purge(candle['open'], candle['high'], candle['low'], candle['close'], anchor['high'], True) else
+                'sell' if rules.body_purge(candle['open'], candle['high'], candle['low'], candle['close'], anchor['low'], False) else None)
         if side:
             level = anchor['high'] if side == 'buy' else anchor['low']
             purge = next(b for b in following[left:index] if
@@ -292,7 +294,8 @@ def model1_evidence(bars, anchor, mapped, end, step):
                     'purged_side': side, 'purged_level': level,
                     'purge_source_interval': interval(purge, step),
                     'direction': 'bearish' if side == 'buy' else 'bullish',
-                    'body_cross_and_close_through_level': True,
+                    'body_cross_and_close_through_level': (candle['open'] <= level < candle['close'] if side == 'buy' else candle['close'] < level <= candle['open']),
+                    **({} if min(candle['open'], candle['close']) <= level <= max(candle['open'], candle['close']) else {'body_purge_form': 'outside_open_retest'}),
                     'source_resolution_seconds': step, 'exact_tick_time_known': False}
             result['identified_count'] += 1
             # Bound tool payloads without silently losing the remaining matches.
@@ -323,7 +326,7 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
               else summarize(bars, start, anchor_end, step))
     anchor['timeframe'] = tf
     mapped = timeframe(confirmation_tf) if confirmation_tf else ASSIGNED.get(tf)
-    result = {'anchor_timeframe': tf, 'assigned_timeframe': mapped, 'anchor': anchor,
+    result = {'ruleset': dict(rules.RULESET), 'anchor_timeframe': tf, 'assigned_timeframe': mapped, 'anchor': anchor,
               'timezone': 'America/New_York', 'entry_confirmed': False,
               'execution_status': 'not_assessed',
               'entry_confirmed_scope': 'Legacy execution flag; not Model 1 candle formation or CSD/Super Soup assessment.',
@@ -359,7 +362,7 @@ def crt_review(bars, start, end, tf, step, confirmation_tf=None,
                 'native_ohlc_provenance': candle.get('native_ohlc_provenance')}
             result['validity_evidence_through_ny'] = stamp(cursor)
             break
-        if candle['complete'] and (candle['close'] > high or candle['close'] < low):
+        if candle['complete'] and rules.outside(candle['close'], high, low):
             invalid_at = stop
             events.append({'kind': 'range_invalidated', 'candle_open_ny': stamp(cursor),
                            'confirmed_at_ny': stamp(stop), 'close': candle['close'], 'timeframe': tf})

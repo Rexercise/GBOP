@@ -1,4 +1,6 @@
 """Chronological GTOP shift evidence, reconstructed from closed source bars."""
+
+from gbop_voice_web import shared_gtop_rules as rules
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from gbop_voice_web.candle_naming import objective_identity
@@ -57,7 +59,7 @@ def review_shift(bars, day, shift, step=300, native_h1=None):
                     if crossed and not in_excursion:
                         count += 1
                         in_excursion = True
-                    if in_excursion and anchor['low'] <= bar['close'] <= anchor['high']:
+                    if in_excursion and rules.inside(bar['close'], anchor['high'], anchor['low']):
                         if first_return is None:
                             first_return = stamp(bar['time'] + step)
                         in_excursion = False

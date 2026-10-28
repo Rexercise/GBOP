@@ -31,4 +31,42 @@ def market_router(db, authenticate):
         await authenticate(request)
         return await asyncio.to_thread(market_tool, db, 'get_market_price', {'asset': asset})
 
+    @router.post('/api/market/chart-context/compare')
+    async def compare_chart(request: Request):
+        await authenticate(request)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 8192:
+                raise HTTPException(413, 'Chart context is too large.')
+        try:
+            value = json.loads(body)
+            if not isinstance(value, dict) or set(value) != {'asset', 'snapshot_json'}:
+                raise ValueError('Expected asset and snapshot_json.')
+            result = await asyncio.to_thread(market_tool, db, 'compare_butterfly_context', value)
+            if not result.get('ok'):
+                raise ValueError(result.get('error', 'Chart context unavailable.'))
+            return result
+        except (ValueError, TypeError, UnicodeDecodeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @router.post('/api/market/chart-context/read')
+    async def read_chart(request: Request):
+        await authenticate(request)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 65536:
+                raise HTTPException(413, 'Chart evidence is too large.')
+        try:
+            value = json.loads(body)
+            if not isinstance(value, dict) or set(value) != {'snapshot_json'}:
+                raise ValueError('Expected snapshot_json.')
+            result = await asyncio.to_thread(market_tool, db, 'review_tradingview_chart', value)
+            if not result.get('ok'):
+                raise ValueError(result.get('error', 'Chart evidence unavailable.'))
+            return result
+        except (ValueError, TypeError, UnicodeDecodeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     return router

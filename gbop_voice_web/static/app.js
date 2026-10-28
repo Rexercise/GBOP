@@ -13,7 +13,45 @@ const els = {
   endButton: document.getElementById("endButton"),
   transcript: document.getElementById("transcript"),
   remoteAudio: document.getElementById("remoteAudio"),
+  clearChartButton: document.getElementById("clearChartButton"),
+  chartSnapshot: document.getElementById("chartSnapshot"),
+  compareChartButton: document.getElementById("compareChartButton"),
+  chartComparison: document.getElementById("chartComparison"),
 };
+
+let selectedChartCapture = null;
+let chartCaptureGeneration = 0;
+async function compareButterflyContext() {
+  const generation = ++chartCaptureGeneration;
+  const snapshot = els.chartSnapshot.value;
+  selectedChartCapture = null;
+  els.compareChartButton.disabled = true;
+  els.chartComparison.textContent = "Reading your TradingView candles and Butterfly interpretation…";
+  try {
+    const response = await authFetch("/api/market/chart-context/read", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({snapshot_json: snapshot}),
+    });
+    const result = await response.json();
+    if (generation !== chartCaptureGeneration) return;
+    if (!response.ok || !result.ok) throw new Error(result.detail || result.error || "Comparison unavailable.");
+    selectedChartCapture = snapshot;
+    els.chartComparison.textContent = result.spoken_summary + "\n\n" + result.discrepancies.join("\n");
+  } catch (error) {
+    if (generation === chartCaptureGeneration) els.chartComparison.textContent = error.message || "Chart capture unavailable.";
+  } finally {
+    els.compareChartButton.disabled = false;
+  }
+}
+els.compareChartButton.addEventListener("click", compareButterflyContext);
+function clearChartCapture() {
+  chartCaptureGeneration++;
+  selectedChartCapture = null;
+  els.chartSnapshot.value = "";
+  els.chartComparison.textContent = "No chart capture selected.";
+}
+els.clearChartButton.addEventListener("click", clearChartCapture);
+els.chartSnapshot.addEventListener("input", () => { chartCaptureGeneration++; selectedChartCapture = null; });
 
 let pc = null;
 let dc = null;
@@ -130,11 +168,13 @@ async function refreshAuthState() {
       return true;
     }
 
+    clearChartCapture();
     els.voiceCard.classList.add("hidden");
     els.loginCard.classList.remove("hidden");
     if (data.detail) els.loginError.textContent = data.detail;
     return false;
   } catch (err) {
+    clearChartCapture();
     els.voiceCard.classList.add("hidden");
     els.loginCard.classList.remove("hidden");
     els.loginError.textContent = "Could not check Discord login.";
@@ -147,6 +187,7 @@ function login() {
 }
 
 async function logout() {
+  clearChartCapture();
   cleanup("Signed out");
   await authFetch("/auth/logout", { method: "POST" });
   window.location.href = "/";
@@ -391,6 +432,7 @@ async function handleDelegation(delegationId) {
       body: JSON.stringify({
         delegation_id: delegationId,
         history: timeline,
+        chart_capture: selectedChartCapture,
         session_id: requestSession,
         turn_id: requestTurn,
         continuation: Boolean(delivered && reply),

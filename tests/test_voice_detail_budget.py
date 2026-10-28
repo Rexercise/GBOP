@@ -63,7 +63,21 @@ class VoiceDetailBudgetTests(unittest.TestCase):
                         expected_card = next(x for x in full['review']['candle_lifecycle']['purge_candles']
                                              if (x['bar_open_ny'], x['purged_side']) == key)
                         self.assertEqual(actual, expected_card)
-                    self.assertEqual(page['review']['events'], full['review']['events'])
+                    # A bounded detail page may omit only repeated parent-event
+                    # prose/last-extreme audit. Every selected lifecycle card
+                    # above (including all Soup metrics) must remain exact.
+                    def event_facts(value):
+                        if isinstance(value, list):
+                            return [event_facts(v) for v in value]
+                        if isinstance(value, dict):
+                            audit = {'spoken_summary', 'high_last_seen', 'low_last_seen',
+                                     'high_occurrences', 'low_occurrences'}
+                            return {k: event_facts(v) for k,v in value.items() if k not in audit}
+                        return value
+                    if page['voice_detail_page'].get('parent_event_detail_omitted'):
+                        self.assertEqual(event_facts(page['review']['events']), event_facts(full['review']['events']))
+                    else:
+                        self.assertEqual(page['review']['events'], full['review']['events'])
                     for key, value in page['review']['anchor'].items():
                         self.assertEqual(value, full['review']['anchor'][key])
                     if page['voice_detail_page'].get('coverage_extrema_omitted'):

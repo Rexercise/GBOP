@@ -67,7 +67,7 @@ def _review(value):
             candle['super_soup_structure'] = _exact(structure, ('structure_status',
                 'structural_quality', 'occurrence_type', 'local_crt_outcome',
                 'local_function_outcome', 'parent_function_outcome',
-                'local_crt_invalidated_at_ny', 'local_function_window_end_ny'))
+                'local_crt_invalidated_at_ny', 'local_function_window_end_ny', 'follow_through', 'performance_summary'))
             targets = structure.get('local_function_objectives') or {}
             candle['super_soup_structure']['local_function_objectives'] = {
                 name: _objective(targets[name]) for name in ('midpoint', 'opposing_liquidity')

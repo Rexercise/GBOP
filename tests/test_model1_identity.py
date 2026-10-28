@@ -97,6 +97,17 @@ class Model1IdentityTests(unittest.TestCase):
         result = crt_review(anchor_bars() + [bar(t, 101, 103, 100, 102)], START, t + 300, 'H1', 300)
         self.assertEqual(result['model1']['identified_count'], 0)
 
+    def test_outside_open_strict_retest_is_identified_in_both_directions(self):
+        t = START + 3600
+        for side, prices in [('buy', (101, 104, 99, 103)), ('sell', (89, 91, 86, 87))]:
+            with self.subTest(side=side):
+                result = crt_review(anchor_bars() + [bar(t, *prices)], START, t + 300, 'H1', 300)
+                candle = result['model1']['candles'][0]
+                self.assertEqual(candle['purged_side'], side)
+                self.assertFalse(candle['body_cross_and_close_through_level'])
+                self.assertEqual(candle['body_purge_form'], 'outside_open_retest')
+                self.assertEqual(candle['bar_open_ny'], stamp(t))
+
     def test_missing_anchor_is_unverified_not_absent(self):
         t = START + 3600
         result = crt_review(anchor_bars()[1:] + [body(t)], START, t + 300, 'H1', 300)

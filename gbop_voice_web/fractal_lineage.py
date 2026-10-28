@@ -5,6 +5,7 @@ subsequent validity and objectives are evaluated independently of its parent.
 This is a tree of evidenced relations, never an assertion that lower Model 1
 and higher Super Soup are interchangeable identities.
 """
+from gbop_voice_web import shared_gtop_rules as rules
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -102,8 +103,8 @@ def _objectives(bars, anchor, direction, purge, invalid_at, end, step):
 def _model_fact(row, parent, mapped, step):
     if not row['complete']:
         return None
-    side = ('buy' if row['open'] <= parent['high'] < row['close'] else
-            'sell' if row['close'] < parent['low'] <= row['open'] else None)
+    side = ('buy' if rules.body_purge(row['open'], row['high'], row['low'], row['close'], parent['high'], True) else
+            'sell' if rules.body_purge(row['open'], row['high'], row['low'], row['close'], parent['low'], False) else None)
     if side is None:
         return None
     level = parent['high'] if side == 'buy' else parent['low']
@@ -116,7 +117,8 @@ def _model_fact(row, parent, mapped, step):
             'direction': 'bearish' if side == 'buy' else 'bullish',
             'purged_side': side, 'purged_level': level,
             'purged_range_start_ny': parent['start_ny'], 'purged_range_end_ny': parent['end_ny'],
-            'body_cross_and_close_through_level': True,
+            'body_cross_and_close_through_level': min(row['open'], row['close']) <= level <= max(row['open'], row['close']),
+            **({} if min(row['open'], row['close']) <= level <= max(row['open'], row['close']) else {'body_purge_form': 'outside_open_retest'}),
             'purge_source_interval': interval(purge, step),
             'source_resolution_seconds': step, 'exact_tick_time_known': False}
 

@@ -152,11 +152,16 @@ def candidate_lifecycle_card(fact):
         'variants', 'variant_status', 'variant_explanation', 'completion_known_at_ny',
         'completion_preserved_after_outside_close', 'structure_known_at_ny', 'csd_same_assigned_close',
         'local_crt_outcome', 'local_function_outcome', 'parent_function_outcome',
-        'local_crt_invalidated_at_ny', 'local_function_window_end_ny')))
+        'local_crt_invalidated_at_ny')))
+    if card['super_soup'].get('csd_same_assigned_close') is False:
+        card['super_soup'].pop('csd_same_assigned_close')  # pre_csd_status already carries this fact.
+    if structure.get('follow_through'):
+        card['super_soup']['follow_through'] = _pick(structure['follow_through'], (
+            'cleanliness', 'function_status'))
     if structure.get('variants'):
         # Reasons remain in variant_explanation; scope is shared by the labels.
         card['super_soup']['variants'] = [_pick(v, ('code', 'name')) for v in structure['variants']]
-        card['super_soup']['variant_scope'] = 'Model 1 own CRT'
+        card['super_soup']['variant_scope'] = 'Super Soup range (Model 1 candle)'
     detail = card['super_soup'].get('variant_explanation', {})
     if not structure.get('variants') and not detail.get('candidates') and detail.get('status') in ('unverified', 'not_established'):
         card['super_soup'].pop('variant_explanation', None)
@@ -219,7 +224,7 @@ def directional_candidate_evidence(review, asset=None, *, max_cards=1,
     # Model 1 and lifecycle have independent backend caps. A lifecycle cap may
     # precede a later body identity already supplied by the Model 1 index.
     for body in review.get('model1', {}).get('candles', []):
-        if body.get('body_cross_and_close_through_level') is not True:
+        if body.get('body_cross_and_close_through_level') is not True and body.get('body_purge_form') != 'outside_open_retest':
             continue
         fact = {**body, 'purge_type': 'body_soup', 'lifecycle_detail_available': False}
         if identity_key(fact) not in available:

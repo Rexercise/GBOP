@@ -9,8 +9,9 @@ from gbop_voice_web.candle_evidence import parse_time, stamp, summarize, timefra
 from gbop_voice_web.candle_naming import closure_label
 from gbop_voice_web.crt_variant_clock import variant_clock, containing_index
 
-NAMES = {'V1': 'Textbook', 'V2': 'Pattern Trader’s Kryptonite', 'V3': 'extended distribution',
-         'V4': 'one inside bar', 'V5': 'multiple inside bars', 'V6': 're-soup'}
+from gbop_voice_web import shared_gtop_rules as rules
+
+NAMES = rules.VARIANT_NAMES
 
 
 def clock(value):
@@ -75,7 +76,7 @@ def variant_explanation(row, bars, end, step, *, candle_timeframe=None):
     count = distribution_index + 1 if distribution_index is not None else None
     man = summarize(bars, manipulation, closes, step)
     man_complete = closes <= end and man['complete']
-    man_inside = man_complete and anchor['low'] <= man['close'] <= anchor['high']
+    man_inside = man_complete and rules.inside(man['close'], anchor['high'], anchor['low'])
     range_name, man_name = clock(anchor['start_ny']), clock(stamp(manipulation))
     pending_resoup = None
     if man_inside and not invalid and not internal_gap and not any(v['code'] == 'V6' for v in labels):
@@ -87,9 +88,11 @@ def variant_explanation(row, bars, end, step, *, candle_timeframe=None):
             partial = summarize(bars, t, min(stop, prefix, end), step)
             swept = (partial.get('high', man['high']) > man['high'] if direction == 'bearish'
                      else partial.get('low', man['low']) < man['low'])
-            if swept and stop > prefix and completion_start >= stop:
+            boundary_pending = partial.get('complete') and stop <= prefix and rules.at_boundary(partial['close'], anchor['high'], anchor['low'])
+            if swept and (stop > prefix or boundary_pending) and completion_start >= stop:
                 pending_resoup = {'code': 'V6', 'name': NAMES['V6'],
-                    'requires': f"{clock(stamp(t))} {tf} must close inside before full opposing-liquidity delivery after sweeping {man_name}'s extreme."}
+                    'requires': (f"A later {tf} must close inside before full opposing-liquidity delivery after {clock(stamp(t))} swept {man_name}'s extreme and closed on the boundary."
+                                 if boundary_pending else f"{clock(stamp(t))} {tf} must close inside before full opposing-liquidity delivery after sweeping {man_name}'s extreme.")}
                 break
     reasons = {}
     if labels:
@@ -101,14 +104,17 @@ def variant_explanation(row, bars, end, step, *, candle_timeframe=None):
         reasons['V4'] = f'{inside_names} was inside before {man_name} manipulation returned inside'
         reasons['V5'] = f'{inside_names} were {len(inside)} inside candles before {man_name} manipulation returned inside'
         resoup = evidence.get('resoup_hour_ny')
+        resoup_confirmation = evidence.get('resoup_confirmation_hour_ny', resoup)
         reasons['V6'] = (f'{clock(resoup)} swept {man_name}\'s extreme and closed inside before full opposing-liquidity delivery'
                          if resoup else '')
+        if resoup and resoup_confirmation != resoup:
+            reasons['V6'] = f"{clock(resoup)} swept {man_name}'s extreme; {clock(resoup_confirmation)} confirmed the strict-inside return before full opposing-liquidity delivery"
         result['reason'] = '; '.join(reasons[v['code']] for v in labels if reasons.get(v['code']))
         result['status'] = 'completed' if target and evidence.get('status') == 'distribution_observed' else 'structure_observed'
         known = [distribution_end for v in labels if v['code'] in ('V1', 'V2', 'V3') and distribution is not None]
         known += [closes for v in labels if v['code'] in ('V4', 'V5')]
         if any(v['code'] == 'V6' for v in labels) and resoup:
-            known.append(clock_rows[containing_index(clock_rows, parse_time(resoup))][1])
+            known.append(clock_rows[containing_index(clock_rows, parse_time(resoup_confirmation))][1])
         result['known_at_ny'] = stamp(max(known))
         if tf != 'H1':
             result['known_timeframe'] = tf
@@ -125,6 +131,9 @@ def variant_explanation(row, bars, end, step, *, candle_timeframe=None):
         return _compact(result)
     if invalid:
         result.update(status='not_established', reason='The range invalidated before a variant was established.')
+        return _compact(result)
+    if evidence.get('pending_resoup_hour_ny') and target:
+        result['reason'] = 'Full delivery ended the window before the pending re-soup received an own-timeframe inside close.'
         return _compact(result)
     full_objective = next((o for o in row.get('objectives', []) if o['objective'] == 'opposing_liquidity'), {})
     if full_objective.get('status') in ('same_bar_order_unknown', 'touch_in_invalidating_bar_order_unresolved'):

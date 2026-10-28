@@ -1,0 +1,12 @@
+
+// Temporary native diagnostic only; not part of the deliverable indicator.
+var table nativeTrace = table.new(position.bottom_left, 1, 2, force_overlay=true)
+if barstate.islast
+    table.clear(nativeTrace, 0, 0, 0, 1)
+    if not na(visibleH4)
+        for traceRange in visibleH4
+            bool oldRecord = traceRange.begins == timestamp("America/New_York", 2026, 10, 12, 9, 0)
+            bool currentRecord = traceRange.begins == timestamp("America/New_York", 2026, 10, 14, 21, 0)
+            if oldRecord or currentRecord
+                string trace = (oldRecord ? "Historical Oct 12 GCT" : "Current Oct 14 Asia Open") + " | own TF " + traceRange.sourceTF + " | bounds " + f_json_price(traceRange.lo) + "–" + f_json_price(traceRange.hi) + "\nOwn candle " + f_evidence_clock(traceRange.lastSourceOpen) + " → " + f_evidence_clock(traceRange.lastSourceClose) + " | close " + f_json_price(traceRange.lastSourcePrice) + "\nParent invalidated at " + f_evidence_clock(traceRange.invalidAt) + " | retirement " + str.tostring(traceRange.retiredReason)
+                table.cell(nativeTrace, 0, oldRecord ? 0 : 1, trace, text_color=color.black, bgcolor=color.white, text_size=size.small)

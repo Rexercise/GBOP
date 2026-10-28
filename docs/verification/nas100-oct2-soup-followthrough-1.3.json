@@ -1,0 +1,62 @@
+{
+  "ruleset": {
+    "version": "1.3.0",
+    "sha256": "2a9f4ec9b85b58f1c8103d8782ac4e696cee4277237195578148bc59a0af9980"
+  },
+  "source": {
+    "kind": "retained_broker_history",
+    "fixture": "tests/fixtures/market_replays/friday_2026_10_02_m1.json",
+    "instruments_sha256": "1236436b4e3dc8326ac867ab76f6c4c9c9a0b73780e6426e0e15253d24d6ac78",
+    "symbol": "USTECm",
+    "precision_seconds": 60
+  },
+  "scope": {
+    "asset": "NAS100",
+    "parent_start_ny": "2026-10-02T09:00:00-04:00",
+    "parent_timeframe": "H1",
+    "parent_high": 30995.59,
+    "parent_low": 30829.47,
+    "model1_start_ny": "2026-10-02T10:00:00-04:00",
+    "soup_start_ny": "2026-10-02T10:05:00-04:00"
+  },
+  "summary": "Super Soup: Degraded \u00b7 Parent objective delivered. sell-side of the 9:00 AM H1 range reached in the 11:12 AM M1 candle. Maximum adverse extension beyond the Super Soup extreme: 25.6% of the original Model 1 range (24.50 points).",
+  "follow_through": {
+    "cleanliness": "degraded",
+    "function_status": "parent_objective_delivered",
+    "window_start": 1790950200,
+    "window_end": 1790953980,
+    "parent_target": 30829.47,
+    "target_open": 1790953920,
+    "target_at": 1790953980,
+    "degraded_at": 1790950740,
+    "repurge_open": 1790950680,
+    "equal_touch_at": null,
+    "max_adverse_points": 24.5,
+    "max_adverse_percent": 25.641025641025838,
+    "max_close_points": 25.950000000000728,
+    "max_close_percent": 27.15855572998527,
+    "model_boundary_points": 29.700000000000728,
+    "model_boundary_percent": 31.08320251177494,
+    "outside_close_count": 3,
+    "coverage_complete": true,
+    "terminal_bar_bound": false,
+    "measurement_basis": "closed_source_ohlc",
+    "model_high": 31026.14,
+    "model_low": 30930.59,
+    "model_range_height": 95.54999999999927,
+    "soup_extreme": 31031.34
+  },
+  "times_ny": {
+    "window_start": "2026-10-02T10:10:00-04:00",
+    "window_end": "2026-10-02T11:13:00-04:00",
+    "target_open": "2026-10-02T11:12:00-04:00",
+    "target_at": "2026-10-02T11:13:00-04:00",
+    "degraded_at": "2026-10-02T10:19:00-04:00",
+    "repurge_open": "2026-10-02T10:18:00-04:00"
+  },
+  "limits": [
+    "This is retained broker data, not a native TradingView chart capture.",
+    "The original Model 1 high-low height is the percentage denominator; the Super Soup wick is the measurement origin.",
+    "No tolerance, stop survival, trade entry or profit inferred."
+  ]
+}
