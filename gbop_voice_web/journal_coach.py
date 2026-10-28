@@ -16,6 +16,7 @@ from gbop_voice_web.journal_context import (REPORTED_KEYS, validate_reported, bi
 
 from gbop_voice_web.journal_discard import DISCARD_PROMPT, DISCARD_TOOLS, prepare_discard, discard_story, restore_story
 from gbop_voice_web.journal_story import STORY_PROMPT, STORY_TOOLS, stage_story, get_story, save_story
+from gbop_voice_web.journal_day import DAY_PROMPT, DAY_TOOLS, stage_day, get_day, save_day
 
 from gbop_voice_web.trade_self_grades import SELF_GRADE_PROMPT, SELF_GRADE_TOOLS, record_self_grade, self_grade_summary, self_grade_counts
 
@@ -557,6 +558,8 @@ COACH_TOOLS=[
 ]
 COACH_TOOLS.extend(SELF_GRADE_TOOLS)
 COACH_TOOLS.extend(STORY_TOOLS)
+COACH_TOOLS.extend(DAY_TOOLS)
+COACH_PROMPT += DAY_PROMPT
 COACH_TOOLS.extend(DISCARD_TOOLS)
 COACH_PROMPT += DISCARD_PROMPT
 COACH_NAMES={t['name'] for t in COACH_TOOLS}
@@ -566,6 +569,7 @@ def coach_tool(db,guild,user,name,args):
     if not allowed(db,guild,user):
         return {'ok':False,'error':'Your GBOP access is inactive or revoked.'}
     handlers={'prepare_journal_discard':prepare_discard,'discard_journal_story':discard_story,'restore_journal_story':restore_story,
+              'stage_journal_day':stage_day,'get_journal_day':get_day,'save_journal_day':save_day,
               'stage_journal_story':stage_story,'get_journal_story':get_story,'save_journal_story':save_story,
               'record_trade_feeling':record_feeling,'save_journal_entry':save_entry,'find_journal_setups':find_setups,
               'get_performance_review':performance,'save_shift_plan':save_plan,'get_shift_plans':get_plans,

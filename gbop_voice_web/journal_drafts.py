@@ -259,7 +259,11 @@ def substantive_content(draft):
                  and any(key!='entry_index' and value not in (None,'',[],{}) for key,value in entry.items())]
         if entries:values['entries']=entries
         else:values.pop('entries',None)
-    return {'values':values,'narration':[p['text'] for p in substantive_raw_passages(draft)]}
+    content={'values':values,'narration':[p['text'] for p in substantive_raw_passages(draft)]}
+    if draft.get('kind')=='journal_day':
+        content.update(setups={k:t['values'] for k,t in draft.get('day_trades',{}).items()},
+                       reflection=draft.get('day_reflection'))
+    return content
 
 def write(conn, guild, user, draft, *, expected_revision=None, finalized=False, journal_id=None, thesis_id=None):
     """Optimistic version check complements the shared per-member transaction lock."""
