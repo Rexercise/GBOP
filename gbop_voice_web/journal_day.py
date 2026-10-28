@@ -6,6 +6,7 @@ database permissions. Entries, objectives and finalization have separate states.
 from copy import deepcopy
 from contextlib import contextmanager
 from datetime import date
+import hashlib
 import json
 import re
 from uuid import uuid4, uuid5, NAMESPACE_URL
@@ -44,12 +45,24 @@ day, including its reflections and separate journals, with one verified receipt.
 Only ask about save scope when genuinely ambiguous. Do not finalize unrelated
 old drafts. Mock/example-only conversations stay unsaved. After a save, later
 updates keep the same setup journals and do not duplicate entries or total R.
+Infer known play/entry fields from the member's actual words: 'Super Soup on the
+988' supplies play=9ate8 and entry_model=Super Soup; do not ask those again.
+It does not supply a fill price/time, position status, direction, R or an outcome.
+For photos in a daily recap, or a new photo-backed narration, use photo_sources
+on the relevant setup (one setup is allowed). Keep visible transcription separate
+from the member's words; mark [unclear], never infer dates from upload time.
+Use uploaded photo IDs from the trusted turn. A page section has one stable
+entry_index; several fills in that section still belong to that one setup.
+A photo can support a new journal or an explicitly selected existing Trade #.
+If the link is ambiguous, analyze the photo and ask once before linking. Keep
+existing fills/results until the member corrects them. Save the reviewed story
+and its photos together with save_journal_day, not separate silent finalizations.
 A casual trade discussion can invite journaling once; it does not authorize an
 automatic journal or alert. Do not offer alerts that are not actually available.
 """
 
 DAY_TOOLS = [
-    schema('stage_journal_day', 'Capture/correct one daily narration before questions. day_json: trade_date (YYYY-MM-DD), reflection (member wording), trades array. Each trade: stable trade_key, story (same fields as stage_journal_story), narration (exact excerpt of raw_story), optional range_reference (member named range), trade_number (verified existing journal) or separate_trade (explicit new trade). Entries retain stable entry_index. Null preserves; story.clear_fields retracts mistaken facts. No fabricated fill times. Other drafts do not block this recap.',
+    schema('stage_journal_day', 'Capture/correct one daily narration before questions. day_json: trade_date (YYYY-MM-DD), reflection (member wording), trades array. Each trade: stable trade_key, story (same fields as stage_journal_story), narration (exact excerpt of raw_story), optional range_reference (member named range), trade_number (verified existing journal) or separate_trade (explicit new trade). Entries retain stable entry_index. Optional photo_sources per setup: [{photo_id, entry_index (page section, not fill), transcription}]. Uploaded owned images only; supported visible facts in story, uncertain text marked unclear. Null preserves; story.clear_fields retracts mistaken facts. No fabricated fill times. Other drafts do not block this recap.',
            {'draft_id':STR, 'raw_story':STR, 'day_json':{'type':'string'}}),
     schema('get_journal_day', 'Read this member’s daily recap, its separate setups, filled/open/closed counts and verified save status. Resume by trade_date without asking about unrelated drafts. raw_offset pages the full original narration.',
            {'draft_id':STR, 'trade_date':STR, 'raw_offset':NUM}),
@@ -60,6 +73,19 @@ DAY_TOOLS = [
 
 def is_day(draft):
     return isinstance(draft, dict) and draft.get('kind') == 'journal_day'
+
+
+def _selected_journal(conn, guild, user, journal_id):
+    return conn.execute('''SELECT j.description,j.result_r,d.metadata FROM journals j
+        LEFT JOIN journal_details d ON d.journal_id=j.id AND d.guild_id=j.guild_id AND d.user_id=j.user_id
+        WHERE j.id=? AND j.guild_id=? AND j.user_id=?''', (journal_id, guild, user)).fetchone()
+
+
+def _journal_fingerprint(row):
+    if row is None:
+        return None
+    values = [row[k] for k in ('description', 'result_r', 'metadata')]
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
 
 
 def _load(conn, context, args, guild, user):
@@ -116,6 +142,7 @@ def public(day, raw_offset=0):
                            range_reference=trade.get('range_reference'),
                            range_status=(trade.get('journal_range') or {}).get('status'),
                            journal_range=range_summary(trade.get('journal_range')),
+                           photo_sources=deepcopy(trade.get('photo_sources', [])),
                            verified_candle=deepcopy((trade.get('journal_range') or {}).get('market_review',{}).get('selected_candle'))))
     saved = bool(trades) and all(t['saved'] for t in trades) and day.get('saved_revision') == day['revision']
     return dict(ok=True, kind='journal_day', draft_id=day['id'], revision=day['revision'],
@@ -132,6 +159,11 @@ def public(day, raw_offset=0):
 def prompt_context(day):
     value = public(day)
     value.pop('raw_story_text', None)
+    # Keep source identities in every turn, but retrieve long transcriptions
+    # through get_journal_day only when needed instead of repeating image text.
+    for trade in value['trades']:
+        for source in trade['photo_sources']:
+            source['transcription_chars'] = len(source.pop('transcription', ''))
     return '\nCURRENT PRIVATE DAILY JOURNAL: ' + json.dumps(value, ensure_ascii=False)
 
 
@@ -264,7 +296,7 @@ def _stage_day(db, guild, user, args):
             day['day_reflection'] = change['reflection']
         keys = set()
         for item in updates:
-            if not isinstance(item, dict) or set(item)-{'trade_key','story','narration','trade_number','separate_trade','range_reference'}:
+            if not isinstance(item, dict) or set(item)-{'trade_key','story','narration','trade_number','separate_trade','range_reference','photo_sources'}:
                 raise ValueError('Each setup needs trade_key, story and optional narration or existing trade_number.')
             key = item.get('trade_key')
             if not isinstance(key, str) or not re.fullmatch(r'[a-z0-9_-]{1,48}', key) or key in keys:
@@ -275,6 +307,9 @@ def _stage_day(db, guild, user, args):
                 raise ValueError('A trade’s narration must be an exact excerpt of the member’s passage.')
             trade = day['day_trades'].setdefault(key, dict(values={'entries': []}, revision=0, passages=[], corrections=[]))
             old_trade=deepcopy(trade)
+            if item.get('photo_sources') is not None:
+                from gbop_voice_web.journal_media import merge_sources
+                trade['photo_sources'] = merge_sources(conn, guild, user, trade.get('photo_sources'), item['photo_sources'])
             old = deepcopy(trade['values'])
             clears=item.get('story',{}).get('clear_fields',[])
             r_only=all(k=='result_r' or re.fullmatch(r'entries\.(?:[1-9]|1[0-2])\.risk_r',k) for k in clears)
@@ -300,6 +335,31 @@ def _stage_day(db, guild, user, args):
                     raise ValueError('That Trade number now names a different record. Read history before proceeding.')
                 if any(k!=key and t.get('trade_number')==number for k,t in day['day_trades'].items()):
                     raise ValueError('Two setups cannot overwrite the same journal. Clarify their grouping first.')
+                if not trade.get('selected_key'):
+                    # Adding a picture to a saved trade must not replace its story
+                    # with an otherwise empty new recap or erase its earlier photos.
+                    from gbop_voice_web.journal_story import _story_value, FIELDS
+                    detail = _selected_journal(conn, guild, user, identity[0])
+                    trade['selected_fingerprint'] = _journal_fingerprint(detail)
+                    metadata = json.loads(detail['metadata'] or '{}') if detail else {}
+                    saved_values = _story_value(detail['metadata']) if detail else None
+                    base = {k:deepcopy(v) for k,v in (saved_values or metadata).items() if k in FIELDS or k == 'entries'}
+                    if not saved_values and detail:
+                        if detail['description']:
+                            base.setdefault('context_notes', detail['description'])
+                        if detail['result_r'] is not None:
+                            base.setdefault('result_r', detail['result_r'])
+                    if (base.get('trade_date') and day['values'].get('trade_date')
+                            and base['trade_date'] != day['values']['trade_date']):
+                        raise ValueError('That saved trade belongs to another day; keep its photo with the correct recap.')
+                    trade['values'] = _merge(_merge(base, old), item.get('story', {}))
+                    if not trade['values'].get('trade_date') and day['values'].get('trade_date'):
+                        trade['values']['trade_date'] = day['values']['trade_date']
+                    if day['values'].get('trade_date') and trade['values'].get('trade_date') != day['values']['trade_date']:
+                        raise ValueError('That saved trade belongs to another day; keep its photo with the correct recap.')
+                    if metadata.get('journal_photo_sources'):
+                        from gbop_voice_web.journal_media import merge_sources
+                        trade['photo_sources'] = merge_sources(conn, guild, user, metadata['journal_photo_sources'], trade.get('photo_sources', []))
                 trade['trade_number'] = number
                 trade['selected_key'] = identity
             if item.get('separate_trade') is True:
@@ -318,6 +378,13 @@ def _stage_day(db, guild, user, args):
                 trade['revision'] += 1
                 if trade['values'] != old and old != {'entries': []}:
                     trade['corrections'].append(dict(before=old, after=deepcopy(trade['values']), at=journal_drafts.stamp()))
+        photo_owners = {}
+        for key, trade in day['day_trades'].items():
+            for source in trade.get('photo_sources', []):
+                photo_key = (source['photo_id'], source['entry_index'])
+                if photo_key in photo_owners and photo_owners[photo_key] != key:
+                    raise ValueError('That photo page entry belongs to another setup in this recap; clarify the intended setup.')
+                photo_owners[photo_key] = key
         if len(day['day_trades']) > 12:
             raise ValueError('This daily recap already contains twelve setups. No existing story was truncated.')
         if raw not in [p['text'] for p in day['raw_story']]:
@@ -368,6 +435,9 @@ def _saved_receipts(conn,guild,user,day):
         row=_saved_story_row(conn,guild,user,child_id)
         expected={'draft_id':child_id,'revision':trade['revision'],**trade['values']}
         if not row or _story_value(row['metadata'])!=expected or row['id'] not in display:
+            return None
+        from gbop_voice_web.journal_media import sources_saved
+        if not sources_saved(conn, guild, user, row['id'], trade.get('photo_sources', [])):
             return None
         shown=display[row['id']]
         receipts.append(dict(trade_key=key,trade_number=shown['trade_number'],
@@ -448,6 +518,10 @@ def save_day(db, guild, user, args):
 
 def _save_setup(db,conn,guild,user,args,context,capability,day,key,trade,child_id,receipts):
     from gbop_voice_web.journal_story import save_story, _bind_loaded
+    if trade.get('saved_revision') is None and trade.get('selected_fingerprint'):
+        current = _selected_journal(conn, guild, user, trade['selected_key'][0])
+        if _journal_fingerprint(current) != trade['selected_fingerprint']:
+            raise ValueError('That saved journal changed after this recap was prepared. Read its current story before adding the photo or correction.')
     existing=journal_drafts.read(conn,guild,user,child_id)
     child=existing[0] if existing else dict(id=child_id,values={'entries':[]},asked=[],revision=0,
         raw_story=[],provenance={},corrections=[],new_trade=trade.get('new_trade',False),
@@ -472,6 +546,11 @@ def _save_setup(db,conn,guild,user,args,context,capability,day,key,trade,child_i
     if not result.get('ok'):
         raise ValueError('The day was not finalized; no setup from this save committed. '
                          +str(result.get('error') or 'Read the existing trade before retrying.'))
+    from gbop_voice_web.journal_story import _saved_story_row
+    from gbop_voice_web.journal_media import attach_sources
+    if trade.get('photo_sources'):
+        saved_row = _saved_story_row(conn, guild, user, child_id)
+        attach_sources(conn, guild, user, saved_row['id'], trade['photo_sources'])
     trade.update(saved_revision=trade['revision'],trade_number=result['trade_number'])
     stored=journal_drafts.read(conn,guild,user,child_id)[0]
     trade['selected_key']=stored['selected_key']
@@ -508,7 +587,7 @@ def prepare_day_finalization(db,guild,user,args):
     capability,context=_context(args,guild,user)
     def facts(day):
         return {'date':day['values'].get('trade_date'),'reflection':day.get('day_reflection'),
-                'trades':{k:{'values':t['values'],'revision':t['revision']} for k,t in day['day_trades'].items()},
+                'trades':{k:{'values':t['values'],'revision':t['revision'],'photo_sources':t.get('photo_sources',[])} for k,t in day['day_trades'].items()},
                 'raw_story':day['raw_story']}
     with journal_transaction(lambda:_bounded_connection(db),args,guild,user,serialize=True) as conn:
         day=_load(conn,context,args,guild,user)

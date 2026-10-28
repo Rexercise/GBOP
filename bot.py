@@ -6620,7 +6620,7 @@ async def on_message(message: discord.Message):
                 await message.reply(str(exc))
             except Exception:
                 await message.reply("I couldn't save that picture. Please resend it.")
-        content = content or "Analyze and journal the attached trade pictures."
+        content = content or "Help me understand these pictures. Ask before starting a trade journal."
         if message.attachments and not photos and not message.content.strip():
             return
         try:

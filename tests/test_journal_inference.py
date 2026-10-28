@@ -12,6 +12,18 @@ class JournalInferenceTests(unittest.TestCase):
     def infer(self, text, **kwargs):
         return infer_story_context(text, **kwargs)
 
+    def test_spoken_play_aliases_do_not_invent_execution_fields(self):
+        for alias, expected in [('988','9ate8'),('9-8-8','9ate8'),('nine eight eight','9ate8'),('GCT','GCT'),('CBDR','CBDR')]:
+            with self.subTest(alias=alias):
+                value = self.infer(f'I am about to trade the {alias} Super Soup.')['values']
+                self.assertEqual(value['play'], expected)
+                for key in ('reported_entry_at','reported_entry_time_text','direction','result_r','risk_r'):
+                    self.assertNotIn(key, value)
+
+    def test_play_alias_keeps_word_boundaries_and_ambiguity(self):
+        self.assertNotIn('play', self.infer('The price was 1988.')['values'])
+        self.assertNotIn('play', self.infer('I traded the 988 and GCT.')['values'])
+
     def test_canonical_asset_exact_play_title_and_raw_source(self):
         source = 'Journal my NAS trade today. I entered short with the nine ate eight play.'
         report = self.infer(source, now=self.NOW, timezone_name='America/New_York')

@@ -23,8 +23,10 @@ _ASSETS = {
     'WTI': r'WTI',
 }
 _PLAYS = {
-    '9ate8': r'9\s*ate\s*8|nine\s+ate\s+eight',
+    '9ate8': r'9\s*ate\s*8|nine\s+ate\s+eight|9[ -]?8[ -]?8|nine[ -]+eight[ -]+eight',
     'Young Lefty': r'young\s+lefty',
+    'GCT': r'GCT',
+    'CBDR': r'CBDR',
 }
 _NON_ACTUAL = re.compile(
     r"\b(?:if|would|could|might|should|hypothetical|example|imagine|suppose|pretend|"
