@@ -93,6 +93,44 @@ class JournalDayTests(unittest.TestCase):
         draft=self.call('stage_journal_day',{'day_json':json.dumps(DAY)},'Mock journal: pretend I traded the morning and 11 AM setups.')
         self.assertTrue(draft['ok'],draft);self.assertFalse(draft['persisted']);self.assertFalse(self.save(draft)['ok'])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM journals').fetchone()[0],0)
+    def test_live_mock_readback_counts_and_correction_remain_session_only(self):
+        raw = ("Hypothetical mock only, do not save: I traded NAS 9ate8, bought "
+               "Turtle Wick Soup at the first purge of the 8 AM low and closed at "
+               "the 8 AM high. Then I shorted the 11 AM buy-side with Model 1 at "
+               "12:15 and Super Soup. Both entries are filled and open; sell-side "
+               "objective pending. I felt tense holding the 11 AM setup.")
+        before = list(self.conn.iterdump())
+        draft = self.call('stage_journal_day', {'raw_story': raw, 'day_json': json.dumps(DAY)}, raw)
+        self.assertTrue(draft['ok'], draft)
+        self.assertFalse(draft['persisted'])
+        self.assertEqual(draft['counts'], dict(trades=2, filled_entries=3,
+            open_entries=2, closed_entries=1, pending_orders=0, unknown_entries=0))
+        eleven = draft['trades'][1]['story']
+        self.assertEqual(eleven['play'], '11 AM range')
+        self.assertNotIn('reported_entry_time_text', eleven['entries'][1])
+        correction = {'trades': [{'trade_key': 'morning_988', 'story': {'entries': [
+            {'entry_index': 2, 'entry_model': 'Super Soup', 'status': 'closed'}]}}]}
+        updated = self.call('stage_journal_day', {'draft_id': draft['draft_id'],
+            'day_json': json.dumps(correction)},
+            'Still a mock: back to the morning one, I also took a Super Soup entry; both closed at the high.')
+        self.assertTrue(updated['ok'], updated)
+        self.assertFalse(updated['persisted'])
+        self.assertEqual(updated['counts']['trades'], 2)
+        self.assertEqual(updated['counts']['filled_entries'], 4)
+        self.assertEqual(updated['counts']['closed_entries'], 2)
+        self.assertEqual(updated['trades'][1]['story'], eleven)
+        self.assertEqual(before, list(self.conn.iterdump()))
+
+    def test_multiple_evidence_names_do_not_create_multiple_fills(self):
+        one = deepcopy(DAY)
+        one['trades'] = [one['trades'][1]]
+        one['trades'][0]['story']['entries'] = [{'entry_index': 1,
+            'entry_model': 'Model 1 and Super Soup confluence', 'status': 'open'}]
+        result = self.stage(one)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['counts']['filled_entries'], 1)
+        self.assertEqual(result['counts']['trades'], 1)
+
     def test_saved_deleted_child_does_not_get_recreated(self):
         draft=self.stage();self.assertTrue(self.save(draft)['ok'])
         self.conn.execute('DELETE FROM journals WHERE id=1');self.conn.commit()

@@ -32,7 +32,13 @@ and ask just one question before assigning the detail. Never guess the target.
 Use reflection for feelings about the day; use context_notes or entry notes for
 feelings/reasoning tied to a setup/entry. Preserve the member's words, no diagnosis.
 Order pending, position open, objective pending, and journal saved are different.
-Two setups with one plus two filled entries means two trades, three entries.
+Count setups separately from filled entries, even in a mock. Never merge explicitly
+separate fills into one "Model 1 + Super Soup" entry. Example: morning 9ate8
+Turtle Wick Soup closed, then 11 AM Model 1 and Super Soup BOTH filled/open =
+2 setups, 3 filled entries, 1 closed, 2 open. The 11 AM setup is not another
+9ate8 unless stated; a time attached to Model 1 is not Super Soup's fill time.
+Multiple evidence names alone do not prove multiple fills; "both entries" does.
+Before readback, reconcile totals from each setup's entries (tool counts when staged).
 An objective reaching its level does not prove the member exited or made money.
 range_reference identifies each setup's named range. Resolve it with
 resolve_market_range and restage the SAME trade_key to attach verified context.
