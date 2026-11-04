@@ -46,6 +46,12 @@ to claim anything saved. Never treat a planned, studied or hypothetical trade as
 executed. Mark such entries kind=study or reflection; only kind=trade enters stats.
 Use save_shift_plan/get_shift_plans for pre-shift planning: range, thesis,
 invalidation, target, chosen risk budget, personal trade limit and stop time.
+For a post-session comparison, use review_journal_against_plan for the selected
+Trade #. It returns only that member's journal and the exact dated day/night plan.
+If date/shift is missing, ask only that scope question; never use logging date.
+Compare the recorded decision and stated plan in plain language. Distinguish
+reported adherence, source evidence, and outcome. A currently saved plan is not
+proof of the original pre-trade version; keep that limitation explicit when relevant.
 Use get_performance_review for comparisons or weekly coaching (days=7). Report
 sample size, missing outcomes, total/average R and one evidence-based adjustment.
 The summary counts review entries, which may include standalone legacy journals.
@@ -419,6 +425,52 @@ def get_plans(db,guild,user,args):
     return {'ok':True,'plans':[dict(r) for r in rows if not args.get('session_date') or r['session_date']==args['session_date']]}
 
 
+def review_against_plan(db,guild,user,args):
+    """Read one owned canonical journal and exact saved plan; never infer a grade."""
+    number = args.get('trade_number')
+    if type(number) is not int or number < 1:
+        return {'ok':False,'error':'Select a displayed Trade # from your journal history.'}
+    with db() as conn:
+        selected=resolve_journal_selector(conn,guild,user,trade_number=number)
+        if not selected.get('ok'): return selected
+        row=conn.execute('''SELECT j.description,j.result_r,j.rule_adherence,d.metadata,t.session
+            FROM journals j LEFT JOIN journal_details d
+              ON d.journal_id=j.id AND d.guild_id=j.guild_id AND d.user_id=j.user_id
+            LEFT JOIN theses t ON t.id=j.thesis_id AND t.guild_id=j.guild_id AND t.user_id=j.user_id
+            WHERE j.id=? AND j.guild_id=? AND j.user_id=?''',
+            (selected.get('record_id'),guild,user)).fetchone()
+        if not row:
+            return {'ok':False,'status':'journal_unavailable','error':'This trade has no saved journal to compare yet. Resume its owned unfinished journal if available.'}
+        meta=json.loads(row['metadata'] or '{}')
+        stored_day=meta.get('trade_date')
+        stored_shift=str(meta.get('session') or row['session'] or '').lower()
+        if stored_shift not in ('day','night'): stored_shift=None
+        day=args.get('session_date') or stored_day
+        shift=args.get('shift') or stored_shift
+        if args.get('session_date') and stored_day and args['session_date'] != stored_day:
+            return {'ok':False,'error':'The selected plan date differs from this journal’s reported date. Correct the journal first if that date is wrong.'}
+        if args.get('shift') and stored_shift and args['shift'] != stored_shift:
+            return {'ok':False,'error':'The selected plan shift differs from this journal’s reported shift.'}
+        missing=[key for key,value in (('session_date',day),('shift',shift)) if not value]
+        if missing:
+            return {'ok':True,'status':'plan_scope_required','trade_number':number,'missing_essentials':missing,
+                    'next_question':'Which '+('date and day/night shift' if len(missing)==2 else 'date' if missing==['session_date'] else 'day/night shift')+' should I compare with this journal?'}
+        day=date.fromisoformat(day).isoformat()
+        if shift not in ('day','night'): raise ValueError('Use day or night for the plan comparison.')
+        plan=conn.execute('SELECT plan,updated_at FROM gbop_shift_plans WHERE guild_id=? AND user_id=? AND session_date=? AND shift=?',
+                          (guild,user,day,shift)).fetchone()
+    from gbop_voice_web.journal_story import _story_value, compact_review
+    from gbop_voice_web.journal_review import review_dimensions
+    story=_story_value(row['metadata']) or meta
+    adherence=review_dimensions({'metadata':meta,'result_r':row['result_r'],'rule_adherence':row['rule_adherence']})
+    return {'ok':True,'status':'ready_to_compare' if plan else 'no_saved_plan','trade_number':number,
+            'session_date':day,'shift':shift,'scope_basis':'reported journal facts, supplemented only by explicit requested scope',
+            'saved_plan':dict(plan) if plan else None,'journal_review':compact_review(story),
+            'recorded_description':(row['description'] or '')[:6000], 'description_omitted':len(row['description'] or '')>6000,
+            'review_dimensions':adherence,'pre_trade_plan_version_verified':False,
+            'instruction':'Compare only these saved facts. Do not infer plan adherence from profit/loss or market delivery. The plan is its currently saved version; original pre-trade version is unverified. No record was changed.'}
+
+
 def summarize(rows):
     results=[float(r['result_r']) for r in rows if r['result_r'] is not None and math.isfinite(float(r['result_r']))]
     wins=sum(x>0 for x in results)
@@ -555,6 +607,8 @@ COACH_TOOLS=[
     schema('save_shift_plan','Save the member’s stated plan for a date and day/night shift. Does not open trades or change risk settings.',
            {'session_date':{'type':'string'},'shift':{'type':'string'},'plan':{'type':'string'}}),
     schema('get_shift_plans','Read saved pre-shift plans to compare with execution and reflections.',{'session_date':STR}),
+    schema('review_journal_against_plan','Read one owned Trade # journal alongside its exact dated day/night plan. Use recorded scope first; ask only for missing date/shift. No grading, inferred outcome or write.',
+           {'trade_number':{'type':'integer','minimum':1},'session_date':STR,'shift':{'type':['string','null'],'enum':['day','night',None]}}),
 ]
 COACH_TOOLS.extend(SELF_GRADE_TOOLS)
 COACH_TOOLS.extend(STORY_TOOLS)
@@ -573,6 +627,7 @@ def coach_tool(db,guild,user,name,args):
               'stage_journal_story':stage_story,'get_journal_story':get_story,'save_journal_story':save_story,
               'record_trade_feeling':record_feeling,'save_journal_entry':save_entry,'find_journal_setups':find_setups,
               'get_performance_review':performance,'save_shift_plan':save_plan,'get_shift_plans':get_plans,
+              'review_journal_against_plan':review_against_plan,
               'get_activity_check':activity_check,'get_community_review':community_review,
               'record_trade_self_grade':record_self_grade}
     try:

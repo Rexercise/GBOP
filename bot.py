@@ -298,7 +298,19 @@ intents = discord.Intents.default()
 intents.members = True
 
 client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+
+
+class GBOPCommandTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction):
+        from gbop_voice_web.member_access import maintenance_access_error
+        denial = maintenance_access_error(interaction.user.id, GTOP_OWNER_USER_ID)
+        if denial:
+            await interaction.response.send_message(denial, ephemeral=True)
+            return False
+        return True
+
+
+tree = GBOPCommandTree(client)
 # A helper is a separate Discord bot identity, sharing this process and database.
 # Never reuse the primary token: that would compete for the same voice connection.
 GBOP_VOICE_HELPER_TOKEN = os.getenv("GBOP_VOICE_HELPER_TOKEN", "").strip()
@@ -424,6 +436,11 @@ def has_member_role(member):
 
 async def require_member(interaction: discord.Interaction):
     member = interaction.user
+    from gbop_voice_web.member_access import maintenance_access_error
+    denial = maintenance_access_error(member.id, GTOP_OWNER_USER_ID)
+    if denial:
+        await interaction.response.send_message(denial, ephemeral=True)
+        return False
 
     if not isinstance(member, discord.Member):
         await interaction.response.send_message(
@@ -453,7 +470,7 @@ async def require_member(interaction: discord.Interaction):
         )
         return False
 
-    if not record["activated"]:
+    if not record["activated"] or not record["leadership_ack"]:
         await interaction.response.send_message(
             "You need to activate your GBOP profile first.\nUse `/activate agree:true`.",
             ephemeral=True
@@ -2507,6 +2524,9 @@ async def save_member_trade(
     tier,
     risk_r
 ):
+    # A modal can remain open after activation, consent or access changes.
+    if not await require_member(interaction):
+        return
     # Create thesis behind the scenes.
     from gbop_voice_web.journal_context import journal_transaction
     with journal_transaction(db, {}, GTOP_GUILD_ID, interaction.user.id, serialize=True) as conn:
@@ -2858,6 +2878,9 @@ async def save_additional_entry(
     tier,
     risk_r
 ):
+    # Recheck at submission, including forms opened before a pause/revocation.
+    if not await require_member(interaction):
+        return
     trade_row = get_thesis(
         trade_id,
         interaction.user.id
@@ -4859,12 +4882,18 @@ async def _send_forex_news_alerts(now_eastern):
         if not pending:
             continue
 
+        member = await _authorized_scheduled_member(member.id)
+        if member is None:
+            continue
         try:
             trading_plan, risk_plan, personal_rule = await asyncio.to_thread(
                 _member_binary_event_reminders,
                 member.id,
                 pending[0],
             )
+            member = await _authorized_scheduled_member(member.id)
+            if member is None:
+                continue
             message = await member.send(
                 format_red_folder_alert(
                     pending,
@@ -6516,6 +6545,9 @@ async def on_message(message: discord.Message):
     GBOP_PRIVATE_ROOMS.message_seen(message.channel.id)
     if message.author.bot:
         return
+    from gbop_voice_web.member_access import maintenance_access_error
+    if maintenance_access_error(message.author.id, GTOP_OWNER_USER_ID):
+        return
 
     # An explicit owner composer takes precedence over journaling and check-ins.
     if await _consume_owner_message_capture(message):
@@ -6706,6 +6738,10 @@ _GBOP_VOICE_ACCESS_CACHE_TTL = 15.0
 _GBOP_VOICE_ACCESS_CACHE_LOCK = threading.Lock()
 
 def gbop_voice_member_allowed(member):
+    from gbop_voice_web.member_access import maintenance_access_error
+    denial = maintenance_access_error(member.id, GTOP_OWNER_USER_ID)
+    if denial:
+        return False, denial
     if is_owner(member):
         return True, None
 
@@ -6732,9 +6768,9 @@ def gbop_voice_member_allowed(member):
             allowed = False
             reason = "GBOP access is revoked."
 
-        elif not record["activated"]:
+        elif not record["activated"] or not record["leadership_ack"]:
             allowed = False
-            reason = "GBOP profile is not activated."
+            reason = "GBOP activation and privacy acknowledgement are required."
 
         else:
             allowed = True

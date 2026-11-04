@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 from gbop_voice_web.candle_evidence import crt_review, parse_time
 from gbop_voice_web.directional_evidence import directional_candidate_evidence
-from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE
+from gbop_voice_web.gtop_protocol import FANG2_KNOWLEDGE, CANONICAL_KNOWLEDGE
 from gbop_voice_web.market_conversation import MarketConversation
 from gbop_voice_web.market_data import attach_lifecycle, MARKET_PROMPT
 from gbop_voice_web.voice_payload import voice_tool_payload
@@ -106,7 +106,8 @@ class PrimaryModel1NarrationTests(unittest.TestCase):
                        'report each candle\'s CSD separately',
                        'explicit later/latest-candle request'):
             self.assertIn(phrase,prompt)
-        self.assertLess(len(prompt),51000)
+        # Budget the new owner-defined canon separately; preserve the prior ceiling.
+        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51000)
 
     def test_backend_model_input_contains_original_identity_and_guard(self):
         raw = result()

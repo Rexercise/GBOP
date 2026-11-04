@@ -129,7 +129,9 @@ def poll_watches(db, guild_id, owner_id, now=None, evaluator=None, feed_reader=N
     return queued
 
 
-async def deliver_alerts(db,guild_id,owner_id,sender,role_check,now=None):
+async def deliver_alerts(db,guild_id,owner_id,sender,role_check,now=None,feed_reader=None):
+    from gbop_voice_web.market_data import read_feed
+    feed_reader = feed_reader or read_feed
     now=int(time.time() if now is None else now)
     def pending():
         with db() as conn:
@@ -140,6 +142,25 @@ async def deliver_alerts(db,guild_id,owner_id,sender,role_check,now=None):
         user_id=row['user_id']
         denial=await asyncio.to_thread(member_access_error,db,guild_id,user_id,owner_id)
         allowed=not denial and await role_check(user_id)
+        def delivery_feed_status():
+            with db() as conn:
+                watch=conn.execute('SELECT spec,state,expires_at FROM gbop_market_watches WHERE id=? AND guild_id=? AND user_id=?',
+                                   (row['watch_id'],guild_id,user_id)).fetchone()
+            if not allowed or not watch or watch['state']!='active' or watch['expires_at']<now-120 or row['event_at']<now-600:
+                return None  # Existing claim path cancels revoked/expired/cancelled work.
+            try:
+                feed=feed_reader(db,json.loads(watch['spec'])['asset'],now)
+                return 'paused_missing_feed' if not feed.get('ok') else 'paused_stale_feed' if not feed.get('is_live') else None
+            except Exception:
+                return 'paused_feed_check_unavailable'
+        pause=await asyncio.to_thread(delivery_feed_status)
+        if pause:
+            def mark_paused():
+                with db() as conn:
+                    conn.execute("UPDATE gbop_market_watches SET last_status=?,last_checked_at=? WHERE id=? AND guild_id=? AND user_id=? AND state='active'",
+                                 (pause,now,row['watch_id'],guild_id,user_id))
+            await asyncio.to_thread(mark_paused)
+            continue  # Re-evaluate only while the event and watch are still timely.
         def claim():
             with db() as conn:
                 watch=conn.execute('SELECT state,expires_at FROM gbop_market_watches WHERE id=? AND guild_id=? AND user_id=?',(row['watch_id'],guild_id,user_id)).fetchone()
@@ -360,11 +381,21 @@ def start_watch_runtime(client,db,guild_id,owner_id,member_role_id):
     async def run():
         fingerprints={}
         weekly_checked={}
+        feed_state=None
         await client.wait_until_ready()
         while not client.is_closed():
             try:
                 now=int(time.time())
                 if await asyncio.to_thread(runtime_lease,db,instance,now):
+                    from gbop_voice_web.feed_operations import operations_health, log_transition
+                    try:
+                        report=await asyncio.to_thread(operations_health,db,now)
+                        feed_state=log_transition(feed_state,report,log)
+                    except Exception:
+                        # Keep the independent watch authorization/expiry path running.
+                        if feed_state != 'unavailable':
+                            log.warning('[GBOP-FEED] Feed health check unavailable; freshness is unverified')
+                        feed_state='unavailable'
                     await asyncio.to_thread(poll_watches,db,guild_id,owner_id,now)
                     await deliver_alerts(db,guild_id,owner_id,sender,role_check)
                     prepared=await asyncio.to_thread(prepare_next_shift,db,fingerprints)

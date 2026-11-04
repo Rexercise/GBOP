@@ -191,6 +191,9 @@ def _cleanup_auth_state():
 
 
 def _member_is_allowed(user_id: int, role_ids: list[str]) -> bool:
+    from gbop_voice_web.member_access import maintenance_access_error
+    if maintenance_access_error(user_id, OWNER_USER_ID):
+        return False
     if int(user_id) == int(OWNER_USER_ID):
         return True
     return str(GTOP_MEMBER_ROLE_ID) in {str(r) for r in role_ids}
@@ -257,6 +260,7 @@ async def _refresh_member_session(sid: str, session: dict) -> dict:
 
 
 async def require_authenticated_user(request: Request) -> dict:
+    from gbop_voice_web.member_access import maintenance_access_error
     _cleanup_auth_state()
 
     sid = request.cookies.get(SESSION_COOKIE)
@@ -274,6 +278,13 @@ async def require_authenticated_user(request: Request) -> dict:
         AUTH_SESSIONS.pop(sid, None)
         raise HTTPException(status_code=401, detail="Discord session expired. Sign in again.")
 
+    denial = maintenance_access_error(int(session['user_id']), OWNER_USER_ID)
+    if denial:
+        context = session.get('market_context')
+        if context is not None:
+            context.close()
+        AUTH_SESSIONS.pop(sid, None)
+        raise HTTPException(status_code=403, detail=denial)
     session = await _refresh_member_session(sid, session)
     # Check the persistent GBOP gate on every protected request, not just login
     # or the cached Discord role check. Revocation applies across interfaces.
@@ -1566,6 +1577,21 @@ async def health(request: Request):
         "live_model": LIVE_MODEL,
         "backend_model": BACKEND_MODEL,
     }
+
+
+@app.get("/api/operations/feed-health")
+async def owner_feed_health(request: Request):
+    session = await require_authenticated_user(request)
+    if int(session['user_id']) != OWNER_USER_ID:
+        raise HTTPException(status_code=403, detail='Owner access required.')
+    from gbop_voice_web.feed_operations import operations_health
+    try:
+        report = await asyncio.to_thread(operations_health, db)
+    except Exception:
+        return JSONResponse({'ok': False, 'status': 'unverified',
+                             'notice': 'Feed health could not be checked. Freshness is unverified.'},
+                            status_code=503, headers={'Cache-Control': 'no-store'})
+    return JSONResponse(report, headers={'Cache-Control': 'no-store'})
 
 
 @app.post("/api/live/session")

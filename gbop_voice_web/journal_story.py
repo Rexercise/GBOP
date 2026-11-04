@@ -13,7 +13,7 @@ from gbop_voice_web.journal_numbers import resolve_journal_selector
 from gbop_voice_web.trade_photos import schema, STR, NUM
 
 STORY_NAMES = {'stage_journal_story', 'get_journal_story', 'save_journal_story'}
-FIELDS = {'asset','direction','play','trade_date','session','context_notes','thesis_invalidation','invalidation_boundary','reported_outcome','objective','objective_status','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone','result_r'}
+FIELDS = {'asset','direction','play','trade_date','session','context_notes','evidence_notes','decision_notes','thesis_invalidation','invalidation_boundary','reported_outcome','objective','objective_status','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone','result_r'}
 ENTRY_FIELDS = {'entry_index','entry_model','candle_label','risk_r','risk_text','objective','status','pnl_text','notes','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text'}
 STORY_PROMPT = """
 PROGRESSIVE PRIVATE JOURNALING
@@ -34,6 +34,13 @@ clarification when needed. Missing/unsupported market data must never block savi
 the narrative. Replace a saved range only on explicit correction of that same
 Trade #; preserve other records and the returned range correction history.
 Read back supported asset/date/play/title/direction briefly and invite correction.
+Use evidence_notes for the member's stated reasons/evidence and decision_notes for
+what they chose and why. Preserve uncertainty; reported evidence is not verified
+market evidence. Never invent a decision from a later price move or an outcome.
+Before finalizing, read the returned review_before_finalize compactly and invite
+corrections. If it has already been read and is unchanged, do not repeat it or ask
+for a second confirmation. Durable unfinished capture happens first; distinguish
+that from the later finalized Trade #. Optional missing fields never block saving.
 NAS means NAS100; keep the exact name 9ate8. A context downside target alone is
 not proof of the member's short, especially for a hedge/countertrend entry. Infer
 position direction from the member's words or trustworthy chart/setup evidence
@@ -361,6 +368,8 @@ def render_story(values):
     if values.get('objective'):parts.append('Reported/inferred context objective: '+values['objective'])
     if values.get('objective_status'):parts.append('Reported objective status: '+values['objective_status'])
     if values.get('context_notes'): parts.append(values['context_notes'])
+    for key,label in (('evidence_notes','Evidence as reported'),('decision_notes','Decision as reported')):
+        if values.get(key): parts.append(label+': '+values[key])
     parts.append('Reported entry sequence (candle labels are not exact fill times):')
     for entry in values.get('entries',[]):
         text=f"Entry {entry['entry_index']}: "+(entry.get('entry_model') or 'entry model unknown')
@@ -376,6 +385,23 @@ def render_story(values):
     result=values.get('result_r')
     parts.append('Overall result: '+(f'{result:g}R' if result is not None else 'R unknown'))
     return '\n'.join(parts)
+
+
+def compact_review(values):
+    """A bounded readback; full narration and evidence remain in the same draft."""
+    def excerpt(value):
+        text = str(value).strip() if value is not None else ''
+        return text if len(text) <= 280 else text[:280] + '… [read full draft for remainder]'
+    entries = values.get('entries') or []
+    decision = values.get('decision_notes')
+    if not decision:
+        decision = '; '.join(e['notes'] for e in entries if e.get('notes')) or None
+    return {'asset': values.get('asset') or 'unknown', 'play': values.get('play') or 'unknown',
+            'reported_evidence': excerpt(values.get('evidence_notes') or values.get('context_notes')) or 'not reported',
+            'reported_decision': excerpt(decision) or 'not reported',
+            'reported_outcome': values.get('reported_outcome') or 'unknown',
+            'result_r': values.get('result_r'), 'reported_entry_count': len(entries),
+            'instruction': 'Read this brief summary before finalizing; invite corrections. Unknowns stay unknown. This is a readback, not a setup grade or a save receipt.'}
 
 
 def _question(draft):
@@ -421,7 +447,7 @@ def _public(draft, context,raw_offset=0):
             'trade_number':draft.get('trade_number'),'story':deepcopy(draft['values']),
             'journal_range':range_summary(draft.get('journal_range')),'range_question':draft.get('range_question'),
             'range_next_tool':('resolve_market_range' if getattr(context,'_journal_range_request',None) else None),
-            'draft_summary':render_story(draft['values']),'next_question':question,**_raw_page(draft,raw_offset),
+            'draft_summary':render_story(draft['values']),'review_before_finalize':compact_review(draft['values']),'next_question':question,**_raw_page(draft,raw_offset),
             'validation_issue':draft.get('validation_issue'),'ready_to_finalize':not bool(draft.get('validation_issue') or draft.get('new_trade_confirmation_required')),
             'direction_status':draft.get('direction_status','known' if draft['values'].get('direction') else 'missing'),
             'raw_instruction':'Read every raw narration page before asking for facts that may already be reported. Continue get_journal_story with the same draft_id and next_raw_offset while raw_has_more.',

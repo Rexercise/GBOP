@@ -12,6 +12,9 @@ class FangKnowledgeTests(unittest.TestCase):
     def test_shared_knowledge_includes_owner_definition_once(self):
         text = (Path(__file__).resolve().parents[1] / 'gbop_voice_web/gtop_fang2.txt').read_text().strip()
         self.assertEqual(CANONICAL_KNOWLEDGE.count(text), 1)
+        # Keep the newly requested definition bounded without repeating the
+        # existing general journaling policy or truncating earlier GTOP canon.
+        self.assertLessEqual(len(text), 1200)
         for phrase in ('after Super Soup, before CISD', 'CREATE an imbalance',
                        'WITHIN that candle', 'risk tier has been specified',
                        'Concept questions alone never start a journal'):

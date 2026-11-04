@@ -13,7 +13,43 @@ const els = {
   endButton: document.getElementById("endButton"),
   transcript: document.getElementById("transcript"),
   remoteAudio: document.getElementById("remoteAudio"),
+  ownerFeedCard: document.getElementById("ownerFeedCard"),
+  ownerFeedStatus: document.getElementById("ownerFeedStatus"),
+  ownerFeedCheck: document.getElementById("ownerFeedCheck"),
 };
+
+let ownerFeedGeneration = 0;
+let ownerFeedEnabled = false;
+
+function setOwnerFeedAccess(enabled) {
+  ownerFeedGeneration += 1;
+  ownerFeedEnabled = enabled;
+  if (!els.ownerFeedCard) return;
+  if (enabled) els.ownerFeedCard.classList.remove("hidden");
+  else els.ownerFeedCard.classList.add("hidden");
+  els.ownerFeedStatus.textContent = "";
+  if (enabled) refreshOwnerFeedHealth();
+}
+
+async function refreshOwnerFeedHealth() {
+  if (!ownerFeedEnabled || !els.ownerFeedStatus) return;
+  const generation = ++ownerFeedGeneration;
+  els.ownerFeedStatus.textContent = "Checking market feeds…";
+  try {
+    const response = await authFetch("/api/operations/feed-health");
+    const data = await response.json();
+    if (generation !== ownerFeedGeneration || !ownerFeedEnabled) return;
+    if (!response.ok || !data.ok) throw new Error("Feed health unavailable");
+    const checked = new Date(data.checked_at * 1000).toISOString().slice(0, 19).replace("T", " ");
+    els.ownerFeedStatus.textContent = `${data.notice} Checked ${checked} UTC.`;
+  } catch (err) {
+    if (generation === ownerFeedGeneration && ownerFeedEnabled) {
+      els.ownerFeedStatus.textContent = "Feed health could not be checked. Freshness is unverified.";
+    }
+  }
+}
+
+if (els.ownerFeedCheck) els.ownerFeedCheck.addEventListener("click", refreshOwnerFeedHealth);
 
 let pc = null;
 let dc = null;
@@ -121,6 +157,7 @@ async function refreshAuthState() {
     const data = await response.json();
 
     if (data.authenticated) {
+      setOwnerFeedAccess(data.user.is_owner === true);
       els.loginCard.classList.add("hidden");
       els.voiceCard.classList.remove("hidden");
       els.memberName.textContent = data.user.is_owner
@@ -131,10 +168,12 @@ async function refreshAuthState() {
     }
 
     els.voiceCard.classList.add("hidden");
+    setOwnerFeedAccess(false);
     els.loginCard.classList.remove("hidden");
     if (data.detail) els.loginError.textContent = data.detail;
     return false;
   } catch (err) {
+    setOwnerFeedAccess(false);
     els.voiceCard.classList.add("hidden");
     els.loginCard.classList.remove("hidden");
     els.loginError.textContent = "Could not check Discord login.";
@@ -147,6 +186,7 @@ function login() {
 }
 
 async function logout() {
+  setOwnerFeedAccess(false);
   cleanup("Signed out");
   await authFetch("/auth/logout", { method: "POST" });
   window.location.href = "/";

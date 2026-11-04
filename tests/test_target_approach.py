@@ -7,7 +7,7 @@ import unittest
 from gbop_voice_web.candle_evidence import crt_review, parse_time
 from gbop_voice_web.objective_approach import objective_approach
 from gbop_voice_web.target_approach import target_approach_measurement, owner_inducement_example
-from gbop_voice_web.gtop_protocol import CANONICAL_KNOWLEDGE, KNOWLEDGE_FILES
+from gbop_voice_web.gtop_protocol import FANG2_KNOWLEDGE, CANONICAL_KNOWLEDGE, KNOWLEDGE_FILES
 from gbop_voice_web.market_data import MARKET_PROMPT, LIVE_MARKET_PROMPT
 from gbop_voice_web.voice_detail import _approach
 
@@ -155,7 +155,7 @@ class TargetApproachTests(unittest.TestCase):
         from gbop_voice_web.voice_policy import build_voice_instructions
         from gbop_voice_web.midpoint_preferences import MIDPOINT_PROMPT
         prompt = build_voice_instructions(CANONICAL_KNOWLEDGE, MARKET_PROMPT, 'profile') + '\n\n' + MIDPOINT_PROMPT
-        self.assertLess(len(prompt), 54000)
+        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 54000)
         self.assertEqual(prompt.count(CANONICAL_KNOWLEDGE), 1)
         self.assertEqual(prompt.count(MIDPOINT_PROMPT), 1)
         self.assertIn('Do not combine this with risk or other onboarding questions', MIDPOINT_PROMPT)

@@ -1,0 +1,165 @@
+GBOP operational optimizations — release candidate, 2026-11-03
+
+LOCAL IMPLEMENTATION ONLY. Nothing in this packet has been pushed or deployed.
+The existing Discord pause remains. No member messages or access changes occurred.
+The earlier seven-file owner/pilot privacy patch is included exactly once.
+
+CAPABILITY AUDIT
+Pinned deployed revision: 41066b4d63532a687975a083d41c700900b1c61f.
+Render live deployment: dep-dbh0ldq9lscs7398749g; rechecked November 3.
+
+Already in that revision:
+- Collector retries capture/upload failures with backoff up to 300 seconds;
+  normal cadence 30 seconds. Windows task restarts failures every minute, up to
+  999 retries, ignores duplicate starts, runs at login as Interactive / Limited.
+- Feed reads require both capture and original quote ages between 0 and 120
+  seconds. They distinguish recent uploads from old quotes and keep broker
+  closure unknown without a verified session calendar.
+- Durable owned unfinished journal capture, reconnect recovery, explicit
+  finalization, returned persistence receipts, corrections, execution separation,
+  optional R, dated shift plans and review dimensions already exist.
+- Existing opt-in watch lifecycle, expiry, cancellation and ambiguous-send
+  handling exist. No new alert subscription or sender is needed.
+
+Previously prepared, still undeployed:
+- Owner/pilot audience gates across Discord/browser/shared tools, additional
+  privacy acknowledgement checks, fresh pending-save authorization and consent/
+  revocation checks before news personalization and delivery. See the existing
+  controlled-pilot patch and its evidence. These are not proven live protections.
+
+Implemented in this candidate:
+- Recheck current feed immediately before claiming a queued market alert.
+  Hold stale/missing/unverifiable data; retain only timely pending events; cancel
+  expired work through the existing lifecycle. Fresh-at-queue is insufficient.
+- One bounded metadata query for all nine assets. Owner-only no-cache endpoint
+  /api/operations/feed-health; owner browser card at login and manual refresh.
+  Browser responses are fenced across logout and out-of-order requests.
+- Existing leased monitor checks health each cycle (30-second sleep plus work),
+  logging state transitions without repeated external messages. Over 120-second
+  capture = delayed; over 300 seconds/missing = collector attention. Fresh upload
+  with old quote remains unavailable, not an assertion that the market is closed.
+  No DM, webhook, automation, new credential or new persistent process is added.
+- Optional reported evidence_notes and decision_notes in the existing durable
+  story. Compact review includes asset, play, evidence, decision, outcome and
+  unknown R. Prompt requests review before finalization; this is guidance to the
+  conversational model, not proof that a spoken readback occurred. Live acceptance
+  must confirm the behavior and actual returned save receipt.
+- Read-only review_journal_against_plan selects the authenticated member's Trade #
+  and exact dated day/night plan. It asks only for missing date/shift, rejects
+  conflicting scope, preserves unknowns, and never grades from P/L. Plans are
+  currently saved versions; original pre-trade plan version is NOT established.
+  The tool is included in the existing safe read-only interruption recovery list.
+
+No schema migration, dependency, cloud resource, credential, broker trade, member
+record mutation or recurring external communication is part of the candidate.
+
+AZURE RECOVERY AND REBOOT LIMIT
+November 3 07:43 UTC: subscription Active; existing VM Running; user logged into
+Windows; MT5 connected in Read Only mode. Two all-nine captures advanced from
+07:42:29 to 07:43:00, quote ages 24–26 seconds on the latter check. This proves
+recovery after login, not unattended reboot or complete historical gap coverage.
+No collector reinstall or duplicate watchdog was necessary.
+
+Keep the current logged-in session for the limited pilot; disconnect the remote
+view rather than signing out. A reboot ends that session. The current at-login
+Interactive task requires a user already logged on. S4U avoids stored passwords
+but lacks network/encrypted-file access, so it is not a drop-in solution.
+MetaTrader5 initialize may start a terminal; its documentation does not establish
+that this broker/session works unattended in a Windows service context.
+
+Safe maintenance rehearsal, pending a coordinated window:
+1. Reserve 15 minutes with Rex available to use existing Windows/Bastion sign-in.
+   Record all nine source/capture/receipt times, task state and MT5 connection.
+2. Reboot ONLY when that specific disruption/window is approved. No reboot was
+   performed for this optimization work; no password/autologin changes proposed.
+3. Observe task/session state before login, then let Rex sign in normally.
+4. Confirm the one existing task/collector and Read Only MT5 connection. Verify
+   two successive all-nine captures and original quote progression. Document
+   closed-market old quotes separately; do not label them fresh from new uploads.
+5. Confirm owner status recovery and no duplicate alerts/collector processes.
+
+If unattended reboot is required, pause that claim until a supported noninteractive
+MT5/collector design is demonstrated in an approved test environment. Any new
+service identity, credential storage or security configuration needs its own
+concrete review. No insecure autologin/plaintext password is acceptable.
+Sources:
+https://learn.microsoft.com/en-us/windows/win32/taskschd/principal-logontype
+https://www.mql5.com/en/docs/python_metatrader5/mt5initialize_py
+
+RELEASE ORDER AND EXACT AUTHORIZATION STILL NEEDED
+Target is the existing My Workspace / tea-daord860tbcc73fcq41g, service
+srv-daorig60tbcc73fdd230 (https://gbop.onrender.com), repository Rexercise/GBOP.
+No purchase, resize, migration or public indicator publication is part of release.
+
+Approval scope to present after reviewing the patch:
+Apply the reviewed GBOP-pilot-optimizations.patch to reconciled current main and
+release it to the existing Render GBOP service in OWNER mode in a short agreed
+restart window; preserve other settings and all existing secrets. This authorizes
+that code publication/deployment and the listed owner-mode configuration only.
+It does not authorize a broad opening, tester permission expansion, messages,
+new subscriptions, new credentials or indicator publication.
+
+Before executing:
+- Re-read remote main and live deploy SHA. On drift, reconcile in an isolated
+  branch; do not blindly overwrite. Auto-deploy is enabled on main; a push can
+  release immediately. Coordinate code/config ordering before pushing.
+- Record current non-secret owner/mode settings and existing Discord pause.
+- Proposed config: GTOP_OWNER_USER_ID=247478049811988480, GBOP_OWNER_ONLY=0,
+  GBOP_ACCESS_MODE=owner, GBOP_PILOT_USER_IDS empty. Verify any existing
+  GBOP_VOICE_USER_ID matches the owner; do not silently override an identity.
+- Preserve Discord lockdown during promotion. Old unpatched source ignores new
+  audience variables; setting env before installing code is not full isolation.
+- Confirm no excluded issued browser audio remains. HTTP denial alone does not
+  prove termination of an already active external audio connection.
+- Capture actual live SHA/deploy ID, both bot readiness, errors and feed cadence.
+
+OWNER ACCEPTANCE BEFORE TESTER ACCESS
+Use participant-authorized, clearly labeled non-sensitive fixtures. Record UTC,
+actor ID, deployed SHA, expected/observed result and redacted receipt. Do not copy
+real members' private text into evidence or impersonate another account.
+1. Anonymous denied; authenticated non-owner cannot access owner feed endpoint;
+   owner health reports actual current source/capture/receipt times. Verify logout
+   hides the card and a late response cannot repaint it.
+2. Narrate an actual consented journal or an explicitly designated disposable
+   fixture. Capture draft_id/persisted receipt. Reconnect and recover same draft;
+   evidence/decision and unknown outcome survive. Read compact summary, correct
+   a fact, explicitly finalize once, then recall returned Trade #. Repeat safely
+   and verify no duplicate. No invented execution, fill or R.
+3. Read selected owned journal with exact plan/date/shift. Unknown date asks once;
+   absent plan stays absent; losing outcome must not imply rule violation.
+4. Existing browser/native/DM/tool consent and revocation boundaries, stale
+   forms, duplicate-room behavior and privacy checklist must pass live. Prior
+   local test success is not production acceptance.
+5. Test stale-send and closed-market behavior with isolated fixture tests. Do not
+   inject synthetic prices, events or stale payloads into production. Any live
+   opt-in watch needs its own explicit request and observed real event.
+
+LIMITED PILOT AFTER OWNER ACCEPTANCE
+Confirmed tester: vctiv_ / 731653127559839827, guild 1266909944901533766.
+Inspect actual membership/roles, activation, acknowledgement, revocation, private
+room and integration ACLs first. Historical room 1557458927619153993 is a candidate,
+not proof of current permissions. Present exact saved before/after per-user ACL
+changes and pilot allowlist for approval before access expansion. No broad role
+restore. No invitation is needed merely because channel access was hidden.
+Pilot allowlist then contains only 731653127559839827; owner remains permitted.
+See the local pilot/9ate8-study.svg and pilot/vctiv-onboarding.txt packet.
+One owner plus one ordinary member does not prove symmetric two-ordinary-member
+isolation. That acceptance requires another existing authorized standard test
+principal; keep the row blocked if unavailable. No new credentials/accounts.
+
+ROLLBACK AND STOP PROCEDURE
+- First containment is owner mode (or the tested GBOP_OWNER_ONLY override) on this
+  gate-bearing version, preserving Discord pause. Coordinate service restart;
+  terminate excluded audio through its supported authorized lifecycle.
+- Keep the final code deployed while investigating, with member access paused.
+  Preserve journals/receipts; use a reviewed forward fix if a defect is found.
+- Never roll back to unpatched 41066b4: it does not enforce owner/pilot variables.
+- The incremental patch reverses cleanly to the seven-file privacy candidate as
+  a source operation. It is NOT an automatically safe production rollback after
+  new evidence/decision story fields have been persisted: the older reader does
+  not recognize those fields. Retain the compatible story reader/rendering or
+  review a forward repair. Do not drop/rewrite member data to make old code work.
+- A deploy failure before any new writes may use a separately validated gate-
+  bearing known-good revision/config. The old privacy candidate is locally tested,
+  not an already deployed known-good release. Do not overstate rollback proof.
+- No automated schema/data downgrade or account/security mutation is included.
