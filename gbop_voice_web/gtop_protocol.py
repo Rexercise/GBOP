@@ -3,13 +3,14 @@ from pathlib import Path
 import re
 
 TIER_LIMITS = {1: 0.60, 2: 0.30, 3: 0.10}
-KNOWLEDGE_FILES = ("gtop_knowledge.txt", "gtop_boneless.txt", "gtop_lifecycle.txt", "gtop_super_soup.txt", "gtop_tab.txt", "gtop_targets.txt", "gtop_soupier_soup.txt")
+KNOWLEDGE_FILES = ("gtop_knowledge.txt", "gtop_boneless.txt", "gtop_lifecycle.txt", "gtop_super_soup.txt", "gtop_tab.txt", "gtop_targets.txt", "gtop_soupier_soup.txt", "gtop_fang2.txt")
 CANONICAL_KNOWLEDGE = "\n\n".join(
     Path(__file__).with_name(name).read_text(encoding="utf-8").strip()
     for name in KNOWLEDGE_FILES
 )
 SOUPIER_SOUP_NAME = "Soupieror Soup"
 _SOUPIER_SOUP_PATTERN = re.compile(r"\b(?:soupier(?:or)?|s\s+o\s+u\s+p\s+i\s+e\s+r(?:\s+o\s+r)?)\s+soup\b", re.IGNORECASE)
+_FANG_TWO_PATTERN = re.compile(r"\bfang[\s_-]*(?:2|two)\b", re.IGNORECASE)
 
 
 def recognize_soupier_soup(text):
@@ -30,7 +31,7 @@ def infer_tier(entry_model, supplied=None):
     # Its concept includes "Super Soup", but no tier or entry rules were given.
     # Preserve an explicitly supplied tier rather than inferring from that
     # embedded wording (or other model names in an explanation of the term).
-    if recognize_soupier_soup(entry_model):
+    if recognize_soupier_soup(entry_model) or _FANG_TWO_PATTERN.search(entry_model or ""):
         return supplied if supplied in TIER_LIMITS else None
     name = re.sub(r"[_-]+", " ", (entry_model or "").strip().lower())
     # Specific late-stage KOD wins over embedded body/super-soup wording.
