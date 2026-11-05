@@ -146,7 +146,8 @@ class VoiceReleaseTests(unittest.TestCase):
         # The owner-approved range-language canon adds bounded definitions/examples.
         # Operations overhead stays separately bounded; response payload caps are unchanged.
         # Budget the new owner-defined canon separately; preserve the prior ceiling.
-        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51000)
+        # 500-character allowance for reviewed GCT/Young Lefty wording and account routing.
+        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51500)
         self.assertEqual(prompt.count(CANONICAL_KNOWLEDGE), 1)
         self.assertEqual(prompt.count(MARKET_PROMPT), 1)
 

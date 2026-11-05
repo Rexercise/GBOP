@@ -1551,6 +1551,27 @@ async def api_me(request: Request):
     }
 
 
+@app.get("/api/journal/accounts")
+async def api_journal_accounts(request: Request):
+    session = await require_authenticated_user(request)
+    from gbop_voice_web.journal_accounts import get_accounts
+    result = await asyncio.to_thread(get_accounts, db, GTOP_GUILD_ID, int(session['user_id']), {})
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/journal/performance")
+async def api_journal_performance(request: Request, account_id: str | None = None,
+                                  start_at: str | None = None, end_at: str | None = None):
+    session = await require_authenticated_user(request)
+    from gbop_voice_web.journal_accounts import get_performance
+    try:
+        result = await asyncio.to_thread(get_performance, db, GTOP_GUILD_ID, int(session['user_id']),
+            dict(account_id=account_id, start_at=start_at, end_at=end_at))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Select an available account and valid time interval.")
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
 @app.post("/auth/logout")
 async def auth_logout(request: Request):
     sid = request.cookies.get(SESSION_COOKIE)

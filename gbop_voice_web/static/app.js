@@ -22,6 +22,7 @@ let ownerFeedGeneration = 0;
 let ownerFeedEnabled = false;
 
 function setOwnerFeedAccess(enabled) {
+  if (!enabled) window.dispatchEvent(new Event("gbop-account-logout"));
   ownerFeedGeneration += 1;
   ownerFeedEnabled = enabled;
   if (!els.ownerFeedCard) return;

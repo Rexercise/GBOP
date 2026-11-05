@@ -59,6 +59,18 @@
         </div>
       </section>
 
+      <details id="journalPerformance" class="card">
+        <summary>My journal performance</summary>
+        <p>Closed and realized results from your saved journals.</p>
+        <label for="journalAccount">Account</label>
+        <select id="journalAccount" aria-label="Journal account"></select>
+        <button id="journalRefresh" class="text-button" type="button">Refresh</button>
+        <p id="journalSummary" role="status">Open to load your accounts.</p>
+        <dl id="journalMetrics" class="journal-metrics"></dl>
+        <svg id="journalCurve" viewBox="0 0 520 180" role="img" aria-label="Journal-tracked realized balance, not live equity" hidden></svg>
+        <p id="journalCoverage" class="hint"></p>
+      </details>
+
       <div class="disclosure">
         Voice is AI-generated. While connected, microphone audio is sent directly to OpenAI Live.
         GBOP does not intentionally store raw microphone audio.
@@ -68,5 +80,6 @@
 
   <audio id="remoteAudio" autoplay playsinline></audio>
   <script src="/static/app.js"></script>
+  <script src="/static/journal-performance.js"></script>
 </body>
 </html>

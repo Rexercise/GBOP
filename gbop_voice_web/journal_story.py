@@ -9,11 +9,12 @@ from uuid import uuid4
 
 from gbop_voice_web.journal_context import binding, JournalTarget, JournalThesisTarget, JournalBinding, journal_transaction
 from gbop_voice_web import journal_drafts
+from gbop_voice_web.journal_accounting import closeout as account_closeout
 from gbop_voice_web.journal_numbers import resolve_journal_selector
 from gbop_voice_web.trade_photos import schema, STR, NUM
 
 STORY_NAMES = {'stage_journal_story', 'get_journal_story', 'save_journal_story'}
-FIELDS = {'asset','direction','play','trade_date','session','context_notes','evidence_notes','decision_notes','thesis_invalidation','invalidation_boundary','reported_outcome','objective','objective_status','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone','result_r'}
+FIELDS = {'accounting','asset','direction','play','trade_date','session','context_notes','evidence_notes','decision_notes','thesis_invalidation','invalidation_boundary','reported_outcome','objective','objective_status','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone','result_r'}
 ENTRY_FIELDS = {'entry_index','entry_model','candle_label','risk_r','risk_text','objective','status','pnl_text','notes','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text'}
 STORY_PROMPT = """
 PROGRESSIVE PRIVATE JOURNALING
@@ -73,7 +74,7 @@ known required facts, never substitutes for narrative capture.
 R IS OPTIONAL: save single-entry and multi-entry journals immediately with or
 without risk or result R. Say "R unknown" when absent, never zero. Do not ask for
 R as a prerequisite to saving. Later reported risk amounts go in entry risk_text
-with units; profit/loss amounts go in pnl_text. Use result_r only for an explicitly
+with units; profit/loss amounts go in pnl_text. Also structure explicitly supplied account/risk/cash facts in accounting using the account tools. Use result_r only for an explicitly
 reported overall R result; never calculate it from an assumed risk budget.
 To retract a reported R, use clear_fields: entries.1.risk_r for entry 1 risk,
 result_r for the overall result. These corrections also work on a saved journal
@@ -318,9 +319,12 @@ def _patch(value):
     value = json.loads(value) if isinstance(value,str) else value
     if not isinstance(value,dict) or set(value)-FIELDS-{'entries','clear_fields'} or len(json.dumps(value))>16000:
         raise ValueError('Use a bounded journal story object with documented fields.')
-    for key in FIELDS-{'result_r'}:
+    for key in FIELDS-{'result_r','accounting'}:
         if key in value:
             _text(value[key],key)
+    if value.get('accounting') is not None:
+        from gbop_voice_web.journal_accounting import validate
+        validate(value['accounting'], trusted=True)
     result=value.get('result_r')
     if result is not None and (isinstance(result,bool) or not isinstance(result,(int,float)) or not math.isfinite(result)):
         raise ValueError('Result R must be a reported finite number or null.')
@@ -409,7 +413,7 @@ def _question(draft):
     if draft.get('new_trade_confirmation_required'):
         candidates.append(('identity:trade','Is this a separate new trade, or which existing Trade # should I update?'))
     if draft.get('validation_issue'):
-        candidates.append(('validation:'+draft['validation_issue'],'The narration is saved, but the reported times conflict. What is the corrected entry or exit date and time?'))
+        candidates.append(('validation:'+draft['validation_issue'],('The narration is saved. Confirm or leave unknown the account facts that need clarification: '+draft['accounting_issue']) if draft.get('accounting_issue') else 'The narration is saved, but the reported times conflict. What is the corrected entry or exit date and time?'))
     if not values.get('asset'):
         candidates.append(('identity:asset','What asset should this journal use?'))
     if not values.get('direction') or draft.get('direction_status','').startswith('conflicting'):
@@ -447,7 +451,7 @@ def _public(draft, context,raw_offset=0):
             'trade_number':draft.get('trade_number'),'story':deepcopy(draft['values']),
             'journal_range':range_summary(draft.get('journal_range')),'range_question':draft.get('range_question'),
             'range_next_tool':('resolve_market_range' if getattr(context,'_journal_range_request',None) else None),
-            'draft_summary':render_story(draft['values']),'review_before_finalize':compact_review(draft['values']),'next_question':question,**_raw_page(draft,raw_offset),
+            'draft_summary':render_story(draft['values']),'review_before_finalize':compact_review(draft['values']),'account_closeout':account_closeout(draft['values']),'next_question':question,**_raw_page(draft,raw_offset),
             'validation_issue':draft.get('validation_issue'),'ready_to_finalize':not bool(draft.get('validation_issue') or draft.get('new_trade_confirmation_required')),
             'direction_status':draft.get('direction_status','known' if draft['values'].get('direction') else 'missing'),
             'raw_instruction':'Read every raw narration page before asking for facts that may already be reported. Continue get_journal_story with the same draft_id and next_raw_offset while raw_has_more.',
@@ -557,8 +561,16 @@ def stage_story(db,guild,user,args):
             draft['provenance']=deepcopy(inferred['provenance'])
         if (patch.get('play') is not None or 'play' in patch.get('clear_fields',[])) and not patch.get('objective') and (draft['provenance'].get('objective') or {}).get('source')=='contextual_target_default':
             values.pop('objective',None);draft['provenance'].pop('objective',None)
-        for key in FIELDS:
+        for key in FIELDS-{'accounting'}:
             if patch.get(key) is not None:values[key]=patch[key]
+        financial_issue=draft.get('accounting_issue')
+        if patch.get('accounting') is not None:
+            from gbop_voice_web.journal_accounts import prepare_accounting
+            try:
+                values['accounting']=prepare_accounting(conn,guild,user,before.get('accounting'),patch['accounting'],raw)
+                financial_issue=None
+            except ValueError as exc:
+                financial_issue=str(exc)
         entries={e['entry_index']:deepcopy(e) for e in values.get('entries',[])}
         for entry in patch.get('entries',[]):
             target=entries.setdefault(entry['entry_index'],{'entry_index':entry['entry_index']})
@@ -586,6 +598,10 @@ def stage_story(db,guild,user,args):
             draft.pop('validation_issue',None)
         except ValueError as exc:
             draft['validation_issue']=str(exc)
+        if 'accounting' in patch.get('clear_fields',[]):financial_issue=None
+        draft['accounting_issue']=financial_issue
+        if financial_issue:
+            draft['validation_issue']='Account facts need clarification: '+financial_issue
         if len(json.dumps(values))>16000:
             raise ValueError('This draft is too long; split separate trade stories instead of truncating details.')
         if values!=before:
@@ -760,7 +776,10 @@ def save_story(db,guild,user,args):
             draft=journal_drafts.write(conn,guild,user,draft,expected_revision=draft.get('storage_revision'))
             _bind_loaded(context,draft)
     values=draft['values']
-    if not values.get('entries') and not values.get('context_notes') and not draft.get('raw_story'):
+    accounting=values.get('accounting') or {}
+    financial_story=bool((values.get('asset') or values.get('play')) and
+                         (accounting.get('realizations') or accounting.get('initial_risk') or accounting.get('risk_pct')))
+    if not values.get('entries') and not values.get('context_notes') and not draft.get('raw_story') and not financial_story:
         raise ValueError('Capture the reported story before saving an empty draft.')
     target=None;thesis_target=None;number=draft.get('trade_number')
     with db() as conn:
@@ -824,9 +843,11 @@ def save_story(db,guild,user,args):
     return result
 
 
+from gbop_voice_web.journal_accounts import ACCOUNTING_SCHEMA
+
 STORY_TOOLS=[
-    schema('stage_journal_story','FIRST capture/correct single-entry or multi-entry narration as a durable editable journal before follow-up questions. R is optional: unknown stays null, never zero. story_json keys: '+', '.join(sorted(FIELDS))+'; entries is an array with '+', '.join(sorted(ENTRY_FIELDS))+'. result_r is numeric overall reported R; entry risk_text and pnl_text preserve cash amounts with units. Patch only new facts; null preserves known values. clear_fields retracts unfinished fields; result_r and entries.1.risk_r may also be cleared on saved/selected narratives without deleting records. new_trade=true only for an explicitly separate trade; new_draft starts a separate story. Select existing displayed trade_number after reading current state.',
-           {'draft_id':STR,'raw_story':STR,'story_json':{'type':'string'},'trade_number':NUM,'new_draft':{'type':['boolean','null']},'new_trade':{'type':['boolean','null']}}),
+    schema('stage_journal_story','FIRST capture/correct single-entry or multi-entry narration as a durable editable journal before follow-up questions. R is optional: unknown stays null, never zero. story_json keys: '+', '.join(sorted(FIELDS))+'; entries is an array with '+', '.join(sorted(ENTRY_FIELDS))+'. result_r is numeric overall reported R; entry risk_text and pnl_text preserve cash amounts with units. accounting is a structured object per ACCOUNT AND RISK JOURNALING instructions; it never supplies model-calculated result_r. Patch only new facts; null preserves known values. clear_fields retracts unfinished fields; result_r and entries.1.risk_r may also be cleared on saved/selected narratives without deleting records. new_trade=true only for an explicitly separate trade; new_draft starts a separate story. Select existing displayed trade_number after reading current state.',
+           {'draft_id':STR,'raw_story':STR,'story_json':{'type':'string','description':ACCOUNTING_SCHEMA},'trade_number':NUM,'new_draft':{'type':['boolean','null']},'new_trade':{'type':['boolean','null']}}),
     schema('get_journal_story','Use view=discarded to list archived draft titles/revisions for explicit restoration. Otherwise resume the same member-owned unfinished journal after pauses/reconnects; read known facts and choose from titles when several remain. No write.',{'draft_id':STR,'raw_offset':NUM,'offset':NUM,'view':{'type':['string','null'],'enum':['unfinished','discarded',None]}}),
     schema('save_journal_story','Explicitly FINALIZE a saved unfinished narrative only when the member asks to save/finalize/finish; for voice quote the actual current request in confirmation_text. Null for typed requests. Preserves reported multi-entry details without inventing execution/risk/P&L rows. Reconciles existing Trade # and same draft retries; does not delete records.',{'draft_id':{'type':'string'},'confirmation_text':STR}),
 ]

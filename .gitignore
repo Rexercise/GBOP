@@ -36,3 +36,6 @@ gbop.db
 
 # Local MT5 bridge credential
 market_bridge/config.json
+
+# Supabase CLI local state
+supabase/.temp/

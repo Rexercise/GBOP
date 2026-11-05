@@ -35,7 +35,7 @@ def contextual_tools(tools):
     """Copy schemas so global market/watch tools and nonconversation users stay intact."""
     result = deepcopy(tools)
     for tool in result:
-        if tool.get('name') in WRITE_TOOLS and tool.get('name') not in {'stage_journal_day','get_journal_day','save_journal_day','save_ss_review','stage_journal_story','get_journal_story','save_journal_story','prepare_journal_discard','discard_journal_story','restore_journal_story'}:
+        if tool.get('name') in WRITE_TOOLS and tool.get('name') not in {'get_journal_accounts','update_journal_account','get_account_performance','stage_journal_day','get_journal_day','save_journal_day','save_ss_review','stage_journal_story','get_journal_story','save_journal_story','prepare_journal_discard','discard_journal_story','restore_journal_story'}:
             params = tool['parameters']
             params['properties']['market_reference'] = {'type': ['string', 'null'], 'enum': ['selected_review', 'selected_candle', 'none', None]}
             params['required'].append('market_reference')
@@ -1170,7 +1170,7 @@ class MarketConversation:
     def _run_journal(self, name, arguments, runner, ticket, operation_id=None):
         args = {key: value for key, value in dict(arguments).items() if not key.startswith('_')}
         reference = args.pop('market_reference', None)
-        if name in {'stage_journal_day','get_journal_day','save_journal_day','stage_journal_story','get_journal_story','save_journal_story','prepare_journal_discard','discard_journal_story','restore_journal_story'} and reference not in (None,'none'):
+        if name in {'get_journal_accounts','update_journal_account','get_account_performance','stage_journal_day','get_journal_day','save_journal_day','stage_journal_story','get_journal_story','save_journal_story','prepare_journal_discard','discard_journal_story','restore_journal_story'} and reference not in (None,'none'):
             return {'ok':False,'error':'Story drafts preserve member-reported narrative, not a market-review binding. Use the existing contextual journal flow for verified candle provenance.'}
         if reference not in (None, 'none', 'selected_review', 'selected_candle'):
             return {'ok': False, 'error': 'Use market_reference selected_review, selected_candle, none, or null.'}
@@ -1179,7 +1179,7 @@ class MarketConversation:
                 if not self.current(ticket):
                     return self._stale(write_not_started=True)
                 wants_review = self._journal_reference is True or (reference in {'selected_review', 'selected_candle'} and self._journal_reference is None)
-                existing_journal = (name in {'stage_journal_day', 'get_journal_day', 'save_journal_day', 'stage_journal_story', 'get_journal_story', 'save_journal_story', 'prepare_journal_discard', 'discard_journal_story', 'restore_journal_story', 'edit_journal', 'record_trade_feeling', 'record_trade_self_grade', 'save_ss_review'} or name == 'save_journal_entry' and
+                existing_journal = (name in {'get_journal_accounts','update_journal_account','get_account_performance','stage_journal_day', 'get_journal_day', 'save_journal_day', 'stage_journal_story', 'get_journal_story', 'save_journal_story', 'prepare_journal_discard', 'discard_journal_story', 'restore_journal_story', 'edit_journal', 'record_trade_feeling', 'record_trade_self_grade', 'save_ss_review'} or name == 'save_journal_entry' and
                     any(args.get(key) is not None for key in ('journal_number', 'trade_number', 'legacy_journal_number'))
                     or name == 'open_trade' and args.get('trade_id') is not None)
                 if existing_journal:
@@ -1200,7 +1200,7 @@ class MarketConversation:
                         return {'ok': False, 'status': 'journal_candle_required',
                                 'error': 'Which candle opening and timeframe was your entry? Several or unverified candle identities remain in this review.'}
                 story_revision = (getattr(self, '_journal_story', None) or {}).get('revision') if name in {'save_journal_story','save_journal_day'} else None
-                cache_result = name not in {'stage_journal_day','get_journal_day','stage_journal_story','get_journal_story','prepare_journal_discard','discard_journal_story','restore_journal_story'}
+                cache_result = name not in {'get_journal_accounts','update_journal_account','get_account_performance','stage_journal_day','get_journal_day','stage_journal_story','get_journal_story','prepare_journal_discard','discard_journal_story','restore_journal_story'}
                 from gbop_voice_web.execution_identity import EXECUTION_TOOLS, bind_operation
                 execution_op = bind_operation(self, ticket, name, args, operation_id) if name in EXECUTION_TOOLS else None
                 if execution_op:

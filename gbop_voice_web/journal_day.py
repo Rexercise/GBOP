@@ -12,8 +12,11 @@ import re
 from uuid import uuid4, uuid5, NAMESPACE_URL
 
 from gbop_voice_web import journal_drafts
+from gbop_voice_web.journal_accounting import closeout as account_closeout
 from gbop_voice_web.journal_context import journal_transaction
 from gbop_voice_web.trade_photos import schema, STR, NUM
+
+from gbop_voice_web.journal_accounts import ACCOUNTING_SCHEMA
 
 DAY_NAMES = {'stage_journal_day', 'get_journal_day', 'save_journal_day'}
 DAY_PROMPT = """
@@ -69,7 +72,7 @@ automatic journal or alert. Do not offer alerts that are not actually available.
 
 DAY_TOOLS = [
     schema('stage_journal_day', 'Capture/correct one daily narration before questions. day_json: trade_date (YYYY-MM-DD), reflection (member wording), trades array. Each trade: stable trade_key, story (same fields as stage_journal_story), narration (exact excerpt of raw_story), optional range_reference (member named range), trade_number (verified existing journal) or separate_trade (explicit new trade). Entries retain stable entry_index. Optional photo_sources per setup: [{photo_id, entry_index (page section, not fill), transcription}]. Uploaded owned images only; supported visible facts in story, uncertain text marked unclear. Null preserves; story.clear_fields retracts mistaken facts. No fabricated fill times. Other drafts do not block this recap.',
-           {'draft_id':STR, 'raw_story':STR, 'day_json':{'type':'string'}}),
+           {'draft_id':STR, 'raw_story':STR, 'day_json':{'type':'string','description':'Each trade.story may include '+ACCOUNTING_SCHEMA}}),
     schema('get_journal_day', 'Read this member’s daily recap, its separate setups, filled/open/closed counts and verified save status. Resume by trade_date without asking about unrelated drafts. raw_offset pages the full original narration.',
            {'draft_id':STR, 'trade_date':STR, 'raw_offset':NUM}),
     schema('save_journal_day', 'Finalize the reviewed daily recap and its setup journals in one atomic save on the member’s explicit request. Keeps open positions/objectives unchanged and deduplicates retries. confirmation_text quotes the actual voice request; null for typed requests. Never finalize a mock.',
@@ -144,6 +147,7 @@ def public(day, raw_offset=0):
                 counts['unknown_entries'] += 1
         trades.append(dict(trade_key=key, story=deepcopy(values),
                            trade_number=trade.get('trade_number'), revision=trade['revision'],
+                           account_closeout=account_closeout(values),
                            saved=trade.get('saved_revision') == trade['revision'],
                            range_reference=trade.get('range_reference'),
                            range_status=(trade.get('journal_range') or {}).get('status'),
@@ -153,7 +157,7 @@ def public(day, raw_offset=0):
     saved = bool(trades) and all(t['saved'] for t in trades) and day.get('saved_revision') == day['revision']
     return dict(ok=True, kind='journal_day', draft_id=day['id'], revision=day['revision'],
                 persisted=day.get('persisted', False), saved=saved,
-                draft_status=day.get('draft_status'),
+                draft_status=day.get('draft_status'),validation_issue=day.get('validation_issue'),
                 status='saved' if saved else 'draft', trade_date=day['values'].get('trade_date'),
                 reflection=day.get('day_reflection'), trades=trades, counts=counts,
                 **_raw_page(day, raw_offset),
@@ -177,9 +181,12 @@ def _merge(values, patch):
     from gbop_voice_web.journal_story import FIELDS, ENTRY_FIELDS, _patch
     _patch(patch)
     value = deepcopy(values)
-    for key in FIELDS:
+    for key in FIELDS-{'accounting'}:
         if patch.get(key) is not None:
             value[key] = patch[key]
+    if patch.get('accounting') is not None:
+        from gbop_voice_web.journal_accounting import merge
+        value['accounting'] = merge(value.get('accounting'),patch['accounting'])
     entries = {e['entry_index']: deepcopy(e) for e in value.get('entries', [])}
     for entry in patch.get('entries', []):
         entries.setdefault(entry['entry_index'], {'entry_index': entry['entry_index']}).update(
@@ -301,6 +308,7 @@ def _stage_day(db, guild, user, args):
                 raise ValueError('Keep the day’s reflection in bounded member wording.')
             day['day_reflection'] = change['reflection']
         keys = set()
+        financial_issue=None
         for item in updates:
             if not isinstance(item, dict) or set(item)-{'trade_key','story','narration','trade_number','separate_trade','range_reference','photo_sources'}:
                 raise ValueError('Each setup needs trade_key, story and optional narration or existing trade_number.')
@@ -318,6 +326,7 @@ def _stage_day(db, guild, user, args):
                 trade['photo_sources'] = merge_sources(conn, guild, user, trade.get('photo_sources'), item['photo_sources'])
             old = deepcopy(trade['values'])
             clears=item.get('story',{}).get('clear_fields',[])
+            if 'accounting' in clears:trade.pop('accounting_issue',None)
             r_only=all(k=='result_r' or re.fullmatch(r'entries\.(?:[1-9]|1[0-2])\.risk_r',k) for k in clears)
             if clears and not r_only and (trade.get('saved_revision') is not None or trade.get('selected_key') or item.get('trade_number')):
                 raise ValueError('For saved facts, give the corrected replacement; only unknown R may be cleared directly.')
@@ -368,12 +377,22 @@ def _stage_day(db, guild, user, args):
                         trade['photo_sources'] = merge_sources(conn, guild, user, metadata['journal_photo_sources'], trade.get('photo_sources', []))
                 trade['trade_number'] = number
                 trade['selected_key'] = identity
+            if item.get('story',{}).get('accounting') is not None:
+                from gbop_voice_web.journal_accounts import prepare_accounting
+                try:
+                    trade['values']['accounting']=prepare_accounting(conn,guild,user,trade['values'].get('accounting'),item['story']['accounting'],raw)
+                    trade.pop('accounting_issue',None)
+                except ValueError as exc:
+                    if old.get('accounting') is not None:trade['values']['accounting']=deepcopy(old['accounting'])
+                    else:trade['values'].pop('accounting',None)
+                    trade['accounting_issue']=str(exc)
             if item.get('separate_trade') is True:
                 from gbop_voice_web.journal_story import _new_trade_request
                 if not _new_trade_request(raw):
                     raise ValueError('Only an explicit separate-trade statement may bypass a matching saved trade.')
                 trade['new_trade'] = True
             clears=item.get('story',{}).get('clear_fields',[])
+            if 'accounting' in clears:trade.pop('accounting_issue',None)
             suppressed=set(trade.get('suppressed_fields',[]))
             suppressed.difference_update(k for k,v in item.get('story',{}).items() if v is not None)
             suppressed.update(clears)
@@ -384,6 +403,8 @@ def _stage_day(db, guild, user, args):
                 trade['revision'] += 1
                 if trade['values'] != old and old != {'entries': []}:
                     trade['corrections'].append(dict(before=old, after=deepcopy(trade['values']), at=journal_drafts.stamp()))
+        financial_issues=[k+': '+t['accounting_issue'] for k,t in day['day_trades'].items() if t.get('accounting_issue')]
+        if financial_issues:day['validation_issue']='Account facts need clarification: '+'; '.join(financial_issues)
         photo_owners = {}
         for key, trade in day['day_trades'].items():
             for source in trade.get('photo_sources', []):

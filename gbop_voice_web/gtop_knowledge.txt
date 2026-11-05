@@ -28,7 +28,7 @@ Pronounced: nine ate eight.
 During 9 AM–12 PM or 9 PM–12 AM, trade 1-hour CRTs beginning with the 8 o'clock range.
 Ideal structure: 9 o'clock purges one side of 8's range and distributes toward opposing liquidity — 9 eating 8.
 Opposite side of 8 is the primary target.
-50% of 8 and 50% of GCT are also acceptable draws.
+50% of 8 is acceptable. Other draws follow the setup's range, context and evidence. Name its range/objective; GCT midpoint is not universal.
 Invalidation needs the selected range's OWN timeframe close outside: H1 requires H1. M5 close/CISD outside an H1 boundary alone does not invalidate H1.
 If 9 closes outside 8, 8 invalidates; preserve earlier delivery, then review 9/10/11 chronologically.
 Stalling alone is not invalidation.
@@ -305,12 +305,11 @@ It extends 9ate8 one hourly candle to the left:
 The 7 o'clock candle becomes the CRT range of interest.
 Use only with higher-timeframe context + narrative plus an earlier-than-usual hourly soup before 9.
 
-DEFAULT EXECUTION
-Do not normally execute Young Lefty before 9.
-Exception: a valid correlated-timeframe Model 1 with a real body can justify pre-9 execution.
+EXECUTION TIMING
+Pre-9 is optional with valid entry evidence + HTF narrative, defined invalidation and objective. Waiting until 9 is recommended, not required.
 
 PREFERRED GTOP ENTRY
-Preferred Young Lefty entry: Blessed Thief at/after 9, with HTF context and narrative.
+Recommended: 9 o'clock Blessed Thief in the 7 o'clock range, with HTF narrative; not risk-free or proven safer.
 
 TARGETS
 - 50% of the 7 o'clock range.
