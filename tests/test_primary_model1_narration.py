@@ -107,7 +107,8 @@ class PrimaryModel1NarrationTests(unittest.TestCase):
                        'explicit later/latest-candle request'):
             self.assertIn(phrase,prompt)
         # Budget the new owner-defined canon separately; preserve the prior ceiling.
-        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51000)
+        # 500-character allowance for reviewed GCT/Young Lefty wording and account routing.
+        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51500)
 
     def test_backend_model_input_contains_original_identity_and_guard(self):
         raw = result()

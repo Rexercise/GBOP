@@ -40,7 +40,8 @@ class SSVoiceRoutingTests(unittest.TestCase):
         self.assertEqual(prompt.count(CANONICAL_KNOWLEDGE), 1)
         self.assertEqual(prompt.count(MARKET_PROMPT), 1)
         # Budget the new owner-defined canon separately; preserve the prior ceiling.
-        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51000)
+        # 500-character allowance for reviewed GCT/Young Lefty wording and account routing.
+        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51500)
         self.assertLess(len(prompt + '\n\n' + MIDPOINT_PROMPT) - len(FANG2_KNOWLEDGE) - 2, 54000)
 
     def test_session_wire_retains_latest_nulls_and_missing_reflection_distinction(self):

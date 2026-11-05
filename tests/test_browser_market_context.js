@@ -3,9 +3,10 @@ const fs=require('fs'),vm=require('vm'),path=require('path'),assert=require('nod
 const source=fs.readFileSync(process.argv[2] || path.join(__dirname,'../gbop_voice_web/static/app.js'),'utf8');
 function environment({failSession=false,deferDelivered=false,manualReceiptTimeout=false}={}) {
  const requests=[],channels=[],connections=[],receiptResolvers=[];let seq=0,receiptTimeout;
+ const browserWindow = Object.assign(new EventTarget(), {isSecureContext:true,location:{}});
  const el=()=>({textContent:'',disabled:false,dataset:{},classList:{add(){},remove(){}},addEventListener(){},querySelector(){return null},appendChild(){},append(){},play(){return Promise.resolve()}});
  const els=new Map();
- const context={console:{...console,error(){}},setTimeout:(callback,ms)=>manualReceiptTimeout&&ms===5000?(receiptTimeout=callback,undefined):setTimeout(callback,ms),clearTimeout,Date,location:{hostname:'localhost'},window:{isSecureContext:true},document:{getElementById(id){if(!els.has(id))els.set(id,el());return els.get(id)},createElement:el},navigator:{mediaDevices:{getUserMedia:async()=>({getAudioTracks:()=>[],getTracks:()=>[]})}},fetch:async(url,opts)=>{
+ const context={console:{...console,error(){}},setTimeout:(callback,ms)=>manualReceiptTimeout&&ms===5000?(receiptTimeout=callback,undefined):setTimeout(callback,ms),clearTimeout,Date,Event,location:{hostname:'localhost'},window:browserWindow,document:{getElementById(id){if(!els.has(id))els.set(id,el());return els.get(id)},createElement:el},navigator:{mediaDevices:{getUserMedia:async()=>({getAudioTracks:()=>[],getTracks:()=>[]})}},fetch:async(url,opts)=>{
   requests.push({url,body:opts?.body?JSON.parse(url==='/api/live/session'?'{}':opts.body):null});
   if(url==='/api/me')return{json:async()=>({authenticated:false})};
   if(url==='/api/live/context/delivered')return deferDelivered?new Promise(resolve=>receiptResolvers.push(resolve)):{ok:true,json:async()=>({ok:true})};
@@ -110,4 +111,13 @@ function environment({failSession=false,deferDelivered=false,manualReceiptTimeou
  const failed=environment({failSession:true});await failed.run('startVoice()');
  assert.equal(failed.els.get('orb').disabled,false,'Failed connection must re-enable retry button');
  console.log('PASS: session failure leaves retry button usable');
+ let accountClears=0;
+ failed.context.window.addEventListener('gbop-account-logout',()=>accountClears++);
+ await failed.run('refreshAuthState()');
+ assert.equal(accountClears,1,'Unauthenticated state clears account data');
+ failed.run('setOwnerFeedAccess(false)');
+ assert.equal(accountClears,1,'An authenticated non-owner is not treated as logged out');
+ await failed.run('logout()');
+ assert.equal(accountClears,2,'Explicit logout clears account data immediately');
+ console.log('PASS: account data is cleared on logout, not owner-role changes');
 })().catch(e=>{console.error(e);process.exit(1)});

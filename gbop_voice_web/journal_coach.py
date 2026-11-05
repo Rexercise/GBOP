@@ -18,6 +18,8 @@ from gbop_voice_web.journal_discard import DISCARD_PROMPT, DISCARD_TOOLS, prepar
 from gbop_voice_web.journal_story import STORY_PROMPT, STORY_TOOLS, stage_story, get_story, save_story
 from gbop_voice_web.journal_day import DAY_PROMPT, DAY_TOOLS, stage_day, get_day, save_day
 
+from gbop_voice_web.journal_accounts import SCHEMA_SQL as ACCOUNT_SCHEMA_SQL, TOOLS as ACCOUNT_TOOLS, PROMPT as ACCOUNT_PROMPT, get_accounts, update_account, get_performance
+
 from gbop_voice_web.trade_self_grades import SELF_GRADE_PROMPT, SELF_GRADE_TOOLS, record_self_grade, self_grade_summary, self_grade_counts
 
 COACH_PROMPT = """
@@ -52,7 +54,7 @@ If date/shift is missing, ask only that scope question; never use logging date.
 Compare the recorded decision and stated plan in plain language. Distinguish
 reported adherence, source evidence, and outcome. A currently saved plan is not
 proof of the original pre-trade version; keep that limitation explicit when relevant.
-Use get_performance_review for comparisons or weekly coaching (days=7). Report
+For account balances, calculated R, cash movements or returns use get_account_performance; get_performance_review preserves reported-R legacy coaching and must not be described as the account ledger. Use get_performance_review for comparisons or weekly coaching (days=7). Report
 sample size, missing outcomes, total/average R and one evidence-based adjustment.
 The summary counts review entries, which may include standalone legacy journals.
 Use record_counts to separate linked trades from legacy entries; self_grades counts
@@ -114,7 +116,7 @@ def init_coach(db):
     init_photos(db)
     with db() as conn:
         conn.execute('SELECT pg_advisory_xact_lock(739204712)')
-        for sql in SCHEMA_SQL + DRAFT_SCHEMA_SQL:
+        for sql in SCHEMA_SQL + DRAFT_SCHEMA_SQL + ACCOUNT_SCHEMA_SQL:
             conn.execute(sql)
 
 
@@ -616,13 +618,15 @@ COACH_TOOLS.extend(DAY_TOOLS)
 COACH_PROMPT += DAY_PROMPT
 COACH_TOOLS.extend(DISCARD_TOOLS)
 COACH_PROMPT += DISCARD_PROMPT
+COACH_TOOLS.extend(ACCOUNT_TOOLS)
+COACH_PROMPT += ACCOUNT_PROMPT
 COACH_NAMES={t['name'] for t in COACH_TOOLS}
 
 
 def coach_tool(db,guild,user,name,args):
     if not allowed(db,guild,user):
         return {'ok':False,'error':'Your GBOP access is inactive or revoked.'}
-    handlers={'prepare_journal_discard':prepare_discard,'discard_journal_story':discard_story,'restore_journal_story':restore_story,
+    handlers={'get_journal_accounts':get_accounts,'update_journal_account':update_account,'get_account_performance':get_performance,'prepare_journal_discard':prepare_discard,'discard_journal_story':discard_story,'restore_journal_story':restore_story,
               'stage_journal_day':stage_day,'get_journal_day':get_day,'save_journal_day':save_day,
               'stage_journal_story':stage_story,'get_journal_story':get_story,'save_journal_story':save_story,
               'record_trade_feeling':record_feeling,'save_journal_entry':save_entry,'find_journal_setups':find_setups,

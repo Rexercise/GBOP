@@ -37,4 +37,7 @@ jobs:
         with:
           node-version: "24"
       - name: Run browser regression simulations
-        run: node tests/test_browser_market_context.js
+        run: |
+          node tests/test_browser_market_context.js
+          node tests/test_owner_feed_notice.js
+          node tests/test_journal_performance_browser.js

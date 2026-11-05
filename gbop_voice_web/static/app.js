@@ -168,11 +168,13 @@ async function refreshAuthState() {
     }
 
     els.voiceCard.classList.add("hidden");
+    window.dispatchEvent(new Event("gbop-account-logout"));
     setOwnerFeedAccess(false);
     els.loginCard.classList.remove("hidden");
     if (data.detail) els.loginError.textContent = data.detail;
     return false;
   } catch (err) {
+    window.dispatchEvent(new Event("gbop-account-logout"));
     setOwnerFeedAccess(false);
     els.voiceCard.classList.add("hidden");
     els.loginCard.classList.remove("hidden");
@@ -186,6 +188,7 @@ function login() {
 }
 
 async function logout() {
+  window.dispatchEvent(new Event("gbop-account-logout"));
   setOwnerFeedAccess(false);
   cleanup("Signed out");
   await authFetch("/auth/logout", { method: "POST" });

@@ -61,6 +61,14 @@ header p { margin: 2px 0 0; color: #a1a1aa; font-size: 13px; }
 }
 
 .login-card { padding: 22px; }
+#journalPerformance { padding: 22px; line-height: 1.5; }
+#journalPerformance summary { cursor: pointer; font-weight: 700; }
+#journalAccount { max-width: 100%; padding: 8px; margin: 0 8px 8px; border: 1px solid #3f3f46; border-radius: 8px; font: inherit; }
+.journal-metrics { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.journal-metrics dt { color: #a1a1aa; font-size: 12px; }
+.journal-metrics dd { margin: 2px 0 0; font-size: 20px; overflow-wrap: anywhere; }
+#journalCurve { width: 100%; max-height: 240px; }
+@media (min-width: 640px) { .journal-metrics { grid-template-columns: repeat(4,minmax(0,1fr)); } }
 .login-card h2 { margin: 0 0 6px; }
 .login-card p { color: #a1a1aa; margin: 0 0 16px; }
 
