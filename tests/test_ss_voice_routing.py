@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 from gbop_voice_web import member_intelligence as intel
 from gbop_voice_web import weekly_structure as ss
-from gbop_voice_web.gtop_protocol import FANG2_KNOWLEDGE, CANONICAL_KNOWLEDGE
+from gbop_voice_web.gtop_protocol import FANG2_KNOWLEDGE, DOUBLE_BONELESS_KNOWLEDGE, CANONICAL_KNOWLEDGE
 from gbop_voice_web.market_conversation import contextual_tools
 from gbop_voice_web.market_data import MARKET_PROMPT
 from gbop_voice_web.midpoint_preferences import MIDPOINT_PROMPT
@@ -39,10 +39,11 @@ class SSVoiceRoutingTests(unittest.TestCase):
         self.assertIn('supplied answers only', prompt)
         self.assertEqual(prompt.count(CANONICAL_KNOWLEDGE), 1)
         self.assertEqual(prompt.count(MARKET_PROMPT), 1)
+        # Double Boneless is separately capped at 2,500 characters in its focused tests.
         # Budget the new owner-defined canon separately; preserve the prior ceiling.
         # 500-character allowance for reviewed GCT/Young Lefty wording and account routing.
-        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51500)
-        self.assertLess(len(prompt + '\n\n' + MIDPOINT_PROMPT) - len(FANG2_KNOWLEDGE) - 2, 54000)
+        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - len(DOUBLE_BONELESS_KNOWLEDGE) - 4, 51500)
+        self.assertLess(len(prompt + '\n\n' + MIDPOINT_PROMPT) - len(FANG2_KNOWLEDGE) - len(DOUBLE_BONELESS_KNOWLEDGE) - 4, 54000)
 
     def test_session_wire_retains_latest_nulls_and_missing_reflection_distinction(self):
         tools = contextual_tools(intel.INTELLIGENCE_TOOLS)

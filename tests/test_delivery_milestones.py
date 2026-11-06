@@ -193,7 +193,10 @@ class DeliveryMilestoneTests(unittest.TestCase):
         changes=json.loads((root/'gtop_rule_revisions.json').read_text())
         self.assertEqual(len({r['rule_id'] for r in changes}),len(changes))
         self.assertTrue(all(r['type']=='clarification' and r['status']=='active' for r in changes))
-        self.assertEqual({r['rule_id'] for r in changes},{'crt.v6.resoup_completion_window','crt.objective_delivery_milestones'})
+        # Other owner-defined concepts can add their own versioned records.
+        # These delivery corrections must remain present without freezing the registry.
+        required={'crt.v6.resoup_completion_window','crt.objective_delivery_milestones'}
+        self.assertTrue(required.issubset({r['rule_id'] for r in changes}))
 
 
 if __name__=='__main__':unittest.main()

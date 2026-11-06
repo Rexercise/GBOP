@@ -3,8 +3,9 @@ from pathlib import Path
 import re
 
 TIER_LIMITS = {1: 0.60, 2: 0.30, 3: 0.10}
-KNOWLEDGE_FILES = ("gtop_knowledge.txt", "gtop_boneless.txt", "gtop_lifecycle.txt", "gtop_super_soup.txt", "gtop_tab.txt", "gtop_targets.txt", "gtop_soupier_soup.txt", "gtop_fang2.txt")
+KNOWLEDGE_FILES = ("gtop_knowledge.txt", "gtop_boneless.txt", "gtop_double_boneless.txt", "gtop_lifecycle.txt", "gtop_super_soup.txt", "gtop_tab.txt", "gtop_targets.txt", "gtop_soupier_soup.txt", "gtop_fang2.txt")
 FANG2_KNOWLEDGE = Path(__file__).with_name("gtop_fang2.txt").read_text(encoding="utf-8").strip()
+DOUBLE_BONELESS_KNOWLEDGE = Path(__file__).with_name("gtop_double_boneless.txt").read_text(encoding="utf-8").strip()
 CANONICAL_KNOWLEDGE = "\n\n".join(
     Path(__file__).with_name(name).read_text(encoding="utf-8").strip()
     for name in KNOWLEDGE_FILES
@@ -12,6 +13,17 @@ CANONICAL_KNOWLEDGE = "\n\n".join(
 SOUPIER_SOUP_NAME = "Soupieror Soup"
 _SOUPIER_SOUP_PATTERN = re.compile(r"\b(?:soupier(?:or)?|s\s+o\s+u\s+p\s+i\s+e\s+r(?:\s+o\s+r)?)\s+soup\b", re.IGNORECASE)
 _FANG_TWO_PATTERN = re.compile(r"\bfang[\s_-]*(?:2|two)\b", re.IGNORECASE)
+DOUBLE_BONELESS_NAME = "Double Boneless"
+_DOUBLE_BONELESS_PATTERN = re.compile(r"\bdouble[\s-]+bone(?:less|[\s-]+less)\b", re.IGNORECASE)
+
+
+def recognize_double_boneless(text):
+    """Recognize wording only, not qualified market evidence or a trade signal.
+
+    Negated/questions/partial reports can mention the term too. Keep narration
+    verbatim; callers must not promote a mention to a verified setup or entry.
+    """
+    return DOUBLE_BONELESS_NAME if _DOUBLE_BONELESS_PATTERN.search(text or "") else None
 
 
 def recognize_soupier_soup(text):

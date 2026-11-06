@@ -112,6 +112,7 @@ Use standard deviations for potential HOD/LOD.
 SMT
 Relative divergence between correlated instruments may strengthen context.
 Example: silver purges 8 AM buy side while gold does not.
+Double Boneless is a paired structural descriptor across opposing liquidity sides, applicable to any range play with a relevant correlated comparison. See the shared Double Boneless canon; retain the underlying play and each asset's physical purge/nonpurge separately.
 
 SS — WEEKLY STRUCTURE STUDY
 SS is a guided weekly review of PRICE STRUCTURE. It is not a journal report, performance dashboard, trade-statistics summary, or member grading process.

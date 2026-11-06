@@ -38,6 +38,10 @@ Read back supported asset/date/play/title/direction briefly and invite correctio
 Use evidence_notes for the member's stated reasons/evidence and decision_notes for
 what they chose and why. Preserve uncertainty; reported evidence is not verified
 market evidence. Never invent a decision from a later price move or an outcome.
+For reported Double Boneless, keep the underlying play in play; preserve the
+descriptor and both legs' assets, sides, ranges, timing and qualification in
+context_notes/evidence_notes as supplied. A missing leg stays unverified, never
+invented. The descriptor alone supplies no direction, entry, tier, V6 or outcome.
 Before finalizing, read the returned review_before_finalize compactly and invite
 corrections. If it has already been read and is unchanged, do not repeat it or ask
 for a second confirmation. Durable unfinished capture happens first; distinguish
