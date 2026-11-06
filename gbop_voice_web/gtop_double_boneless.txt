@@ -1,0 +1,14 @@
+DOUBLE BONELESS
+[GTOP TERMINOLOGY / OWNER CLARIFICATION]
+
+Double Boneless describes a correlated setup with a boneless leg at both opposing sides of liquidity. At one side, one asset purges its corresponding liquidity while its correlated counterpart does not. At the opposite side, the counterpart purges its corresponding liquidity while the first asset does not. The purging and boneless roles switch between the two sides.
+
+Double Boneless can describe any asset and any range play with a relevant correlated comparison. It is not limited to 9ate8: Double Boneless 9ate8, Double Boneless Young Lefty and Double Boneless GCT are examples of the same descriptor applied to different plays.
+
+The underlying play, selected ranges and existing Boneless qualification remain distinct. The descriptor records paired liquidity behavior. Record each physical purge and nonpurge against its own asset and corresponding range.
+
+Do not infer a new execution model, entry trigger, risk tier, CRT variant, reversal, time limit or automatic full-objective completion from this descriptor alone. Preserve actual local objective touches and paired delivery context separately. No fixed buy-side-first or sell-side-first order is established by this clarification.
+
+QUALIFICATION AND JOURNALING
+Apply existing Boneless qualification independently to each side and its evaluated setup interval. Roles switch; do not assign one boneless identity to the whole session. Incomplete intervals or missing paired candles stay provisional/unverified. Same-asset double purge alone is not Double Boneless; generic "double purge" is not an alias. This descriptor alone is not V6.
+For a member-requested journal, keep the underlying play in play and the literal descriptor in context_notes/evidence_notes. Preserve each leg's purging asset, held counterpart, side, corresponding range, sequence/timing and qualification only as supplied. Retain raw narration and corrections; missing details never block saving. Separate reported observations from verified market evidence and local objective touches from paired context. No invented second leg, fill, profit or trade direction. Concept questions alone never start a journal. No automatic detector, alert or live historical verification is established by this terminology update.

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, Mock
 from fastapi import HTTPException
 from gbop_voice_web.member_access import member_access_error
 from gbop_voice_web.voice_policy import build_voice_instructions
-from gbop_voice_web.gtop_protocol import FANG2_KNOWLEDGE, CANONICAL_KNOWLEDGE
+from gbop_voice_web.gtop_protocol import FANG2_KNOWLEDGE, DOUBLE_BONELESS_KNOWLEDGE, CANONICAL_KNOWLEDGE
 from gbop_voice_web.market_data import MARKET_PROMPT
 from test_voice_latency import method
 
@@ -145,9 +145,10 @@ class VoiceReleaseTests(unittest.TestCase):
         self.assertLess(overhead, 10000)
         # The owner-approved range-language canon adds bounded definitions/examples.
         # Operations overhead stays separately bounded; response payload caps are unchanged.
+        # Double Boneless is separately capped at 2,500 characters in its focused tests.
         # Budget the new owner-defined canon separately; preserve the prior ceiling.
         # 500-character allowance for reviewed GCT/Young Lefty wording and account routing.
-        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51500)
+        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - len(DOUBLE_BONELESS_KNOWLEDGE) - 4, 51500)
         self.assertEqual(prompt.count(CANONICAL_KNOWLEDGE), 1)
         self.assertEqual(prompt.count(MARKET_PROMPT), 1)
 

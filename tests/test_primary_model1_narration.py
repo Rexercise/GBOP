@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 from gbop_voice_web.candle_evidence import crt_review, parse_time
 from gbop_voice_web.directional_evidence import directional_candidate_evidence
-from gbop_voice_web.gtop_protocol import FANG2_KNOWLEDGE, CANONICAL_KNOWLEDGE
+from gbop_voice_web.gtop_protocol import FANG2_KNOWLEDGE, DOUBLE_BONELESS_KNOWLEDGE, CANONICAL_KNOWLEDGE
 from gbop_voice_web.market_conversation import MarketConversation
 from gbop_voice_web.market_data import attach_lifecycle, MARKET_PROMPT
 from gbop_voice_web.voice_payload import voice_tool_payload
@@ -106,9 +106,10 @@ class PrimaryModel1NarrationTests(unittest.TestCase):
                        'report each candle\'s CSD separately',
                        'explicit later/latest-candle request'):
             self.assertIn(phrase,prompt)
+        # Double Boneless is separately capped at 2,500 characters in its focused tests.
         # Budget the new owner-defined canon separately; preserve the prior ceiling.
         # 500-character allowance for reviewed GCT/Young Lefty wording and account routing.
-        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - 2, 51500)
+        self.assertLess(len(prompt) - len(FANG2_KNOWLEDGE) - len(DOUBLE_BONELESS_KNOWLEDGE) - 4, 51500)
 
     def test_backend_model_input_contains_original_identity_and_guard(self):
         raw = result()
