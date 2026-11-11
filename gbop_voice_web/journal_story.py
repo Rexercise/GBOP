@@ -488,6 +488,14 @@ def _raw_page(draft,offset=0):
             'next_raw_offset':end if end<len(raw) else None,'raw_total_chars':len(raw)}
 
 
+def _effective_direction_status(draft):
+    status=draft.get('direction_status')
+    if status in (None,'missing') and draft['values'].get('direction'):
+        proof=(draft.get('provenance') or {}).get('direction') or {}
+        return 'member_reported' if proof.get('source') in ('member_direction','member_direction_correction') else 'known'
+    return status or 'missing'
+
+
 def _public(draft, context,raw_offset=0):
     from gbop_voice_web.journal_range import summary as range_summary
     key,question=_question(draft)
@@ -499,7 +507,7 @@ def _public(draft, context,raw_offset=0):
             'range_next_tool':('resolve_market_range' if getattr(context,'_journal_range_request',None) else None),
             'draft_summary':render_story(draft['values']),'review_before_finalize':compact_review(draft['values']),'account_closeout':account_closeout(draft['values']),'next_question':question,**_raw_page(draft,raw_offset),
             'validation_issue':draft.get('validation_issue'),'ready_to_finalize':not bool(draft.get('validation_issue') or draft.get('new_trade_confirmation_required')),
-            'direction_status':draft.get('direction_status','known' if draft['values'].get('direction') else 'missing'),
+            'direction_status':_effective_direction_status(draft),
             'raw_instruction':'Read every raw narration page before asking for facts that may already be reported. Continue get_journal_story with the same draft_id and next_raw_offset while raw_has_more.',
             'instruction':('This revision was saved as a journal narrative; no execution records were created by staging.' if saved else ('Unfinished journal saved privately and excluded from performance. Keep this draft after pauses; finalize only on explicit request.' if draft.get('persisted') else 'Session-only preview; not saved durably because recording was declined.'))}
 

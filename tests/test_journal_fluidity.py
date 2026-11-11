@@ -61,6 +61,19 @@ class JournalFluidityTests(unittest.TestCase):
         later=self.stage({'context_notes':'A patient exit.'},draft_id=draft['draft_id'])
         self.assertEqual(later['direction_status'],'member_reported')
 
+    def test_legacy_missing_status_is_projected_consistently_without_write(self):
+        draft=self.stage({'asset':'XAUUSD'},text='Journal my trade. I was bullish.')
+        with self.db() as conn:
+            row=conn.execute('SELECT payload FROM journal_story_drafts WHERE id=?',(draft['draft_id'],)).fetchone()
+            payload=json.loads(row['payload']);payload['direction_status']='missing'
+            conn.execute('UPDATE journal_story_drafts SET payload=? WHERE id=?',(json.dumps(payload),draft['draft_id']))
+        before=list(self.conn.iterdump())
+        fresh=MarketConversation((10,20,'legacy-read'),auth_provider=(self.db,10,20))
+        self.addCleanup(fresh.close)
+        read=self.call('get_journal_story',{'draft_id':draft['draft_id']},context=fresh)
+        self.assertEqual(read['direction_status'],'member_reported')
+        self.assertEqual(list(self.conn.iterdump()),before)
+
     def test_null_fields_do_not_promote_inferred_or_unknown_facts(self):
         draft=self.stage({'play':'9ate8'},text='Journal this trade.')
         before=draft['provenance']['objective']
