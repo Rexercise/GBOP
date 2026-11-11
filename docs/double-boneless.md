@@ -1,12 +1,17 @@
 # Double Boneless: knowledge and journal support
 
-Rule ID: `gtop-double-boneless`, revision 1. Owner clarification: November 6, 2026.
+Rule ID: `gtop-double-boneless`, revision 4. Owner clarification: November 10, 2026.
 
-Double Boneless is a paired structural descriptor, not a new play or execution
-model. One asset purges a side while its correlated counterpart holds. At the
-opposite side the counterpart purges while the first holds. Purging and boneless
-roles switch. Either side can come first. It can describe 9ate8, Young Lefty, GCT,
-or another range play with a relevant correlated comparison.
+Double Boneless (V1) keeps the same asset boneless on both parent-range sides
+while the counterpart forms a qualifying Double Purge, including the existing
+required parent-timeframe close. Boneless Double Purge (V2) splits opposite-side
+purges across the correlated assets; neither individually forms a Double Purge.
+The names are distinct. V1's individual Double Purge condition does not apply to
+V2. Both retain existing Boneless qualification and corresponding parent ranges.
+Boneless alone needs non-confirmation at one side. The older switched-role-only
+Double Boneless definition is superseded, with its record retained in history.
+Neither descriptor adds an entry, tier, guaranteed reversal or profit. They can
+describe 9ate8, Young Lefty, GCT or other relevant parent plays.
 
 The shared canon is `gbop_voice_web/gtop_double_boneless.txt`, included once by
 `gtop_protocol.CANONICAL_KNOWLEDGE`. Discord text, Discord primary/helper voice,
@@ -30,8 +35,8 @@ Use the existing private `stage_journal_story` workflow:
 
 The existing text fields store the paired narrative without a schema migration.
 Finalized narratives and fresh-session recall retain the descriptor and both
-legs. No historical records are rewritten. `recognize_double_boneless` recognizes
-wording only, including negated mentions; it does not classify market evidence.
+legs. No historical records are rewritten. `recognize_double_boneless` and `recognize_boneless_double_purge` recognize
+their distinct wording only, including negated mentions; it does not classify market evidence.
 
 ## Evidence limits
 

@@ -6715,9 +6715,11 @@ GBOP_REALTIME_MAX_OUTPUT_TOKENS = max(
     min(GBOP_REALTIME_MAX_OUTPUT_TOKENS, 4096),
 )
 
-GBOP_VAD_EAGERNESS = os.getenv("GBOP_VAD_EAGERNESS", "medium").strip().lower()
+# Leave room for narration pauses and self-corrections. Keep server-side
+# interruption enabled; local delays/cancel retries can race active tool work.
+GBOP_VAD_EAGERNESS = os.getenv("GBOP_VAD_EAGERNESS", "low").strip().lower()
 if GBOP_VAD_EAGERNESS not in {"low", "medium", "high", "auto"}:
-    GBOP_VAD_EAGERNESS = "medium"
+    GBOP_VAD_EAGERNESS = "low"
 
 GBOP_RT_SESSIONS = {}
 GBOP_RT_OUTPUT_MANAGERS = {}

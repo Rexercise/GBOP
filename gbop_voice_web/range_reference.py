@@ -16,8 +16,28 @@ TOOL = 'resolve_market_range'
 NAMES = {
     '9ate8': r'\b(?:9\s*ate\s*8|988|nine\s+ate\s+eight)\b',
     'Young Lefty': r'\byoung\s+lefty\b',
-    'GCT': r'\b(?:gct|golden candle time)\b',
+    'RCT': r'\b(?:rct|rice crown transition|asia expansion)\b',
+    'London Lunch': r'\blondon lunch\b',
+    'GCT': r'\b(?:gct|golden candle time|new york am)\b',
+    'New York PM': r'\bnew york pm\b',
+    'CCAO': r'\b(?:ccao|cacao(?: candle)?|cbdr closure,? asia open|cbdr \+ early asia|cab)\b',
+    'TCT': r'\b(?:tct|true chow time|asia open)\b',
 }
+# Local-clock bounds, not broker-native H4 identity; date means opening date.
+H4_OPEN_HOURS = {'RCT': 1, 'London Lunch': 5, 'GCT': 9,
+                 'New York PM': 13, 'CCAO': 17, 'TCT': 21}
+
+
+def matched_names(text):
+    """Prefer a full name over an alias wholly contained within that name."""
+    hits = [(name, match.span()) for name, pattern in NAMES.items()
+            for match in re.finditer(pattern, text, re.I)]
+    return list(dict.fromkeys(name for name, (start, end) in hits
+        if not any(other != name and left <= start and end <= right
+                   and (left < start or end < right)
+                   for other, (left, right) in hits)))
+
+
 CONTRACT = ('Use the human_description, not internal IDs, when speaking. Named GTOP windows '
     'are New York windows from the connected MT5 broker feed, not native Chart H4 candles '
     'or a selected TradingView dot. Range identity is not proof of a setup, execution or outcome. '
@@ -47,6 +67,7 @@ def requested(text, pending=None):
         r'morning|evening|session|am|pm|h4|resolve|which range)\b', text, re.I)
     followup = pending and len(text.split()) <= 18 and re.search(
         r'\b(?:morning|evening|night|day|am|pm|yes|mt5|gct|9ate8|young|today|yesterday|20\d\d-\d\d-\d\d)\b', text, re.I)
+    followup = followup or bool(pending and len(text.split()) <= 18 and named)
     if pending and not followup:
         from gbop_voice_web.market_data import ALIASES, ASSETS
         followup = any(re.search(r'(?<!\w)' + re.escape(word) + r'(?!\w)', text, re.I)
@@ -91,7 +112,7 @@ def resolve(text, base, now):
         elif re.search(r'\bmt5\b', part) or fields.get('feed_unavailable') and re.fullmatch(r'yes[.!]?', part.strip()):
             fields.pop('feed_unavailable', None)
         intent = _text_intent(part, fields, now)
-        dates = re.findall(r'\b20\d\d-\d\d-\d\d\b|\btoday\b|\byesterday\b', part)
+        dates = re.findall(r'\b20\d\d-\d\d-\d\d\b|\btoday\b|\byesterday\b|\btonight\b|\blast night\b', part)
         updates = {k: v for k, v in intent['fields'].items() if k in ('asset', 'date_ny')}
         if len(assets) == 1:
             updates['asset'] = next(iter(assets))
@@ -119,7 +140,7 @@ def resolve(text, base, now):
         elif day or night:
             fields['shift'] = 'day' if day else 'night'
             issues.pop('shift', None)
-        names = [name for name, pattern in NAMES.items() if re.search(pattern, part)]
+        names = matched_names(part)
         if len(names) > 1:
             fields.pop('range_name', None)
             issues['name'] = 'Which named range should I inspect first?'
@@ -132,7 +153,7 @@ def resolve(text, base, now):
         if re.search(r'\b(?:native|chart)\s+h4\b', part):
             fields['native_h4'] = True
         frame = re.search(r'\bh(\d+)\b', part)
-        if frame and len(names) == 1 and int(frame[1]) != (4 if names[0] == 'GCT' else 1):
+        if frame and len(names) == 1 and int(frame[1]) != (4 if names[0] in H4_OPEN_HOURS else 1):
             fields.pop('range_name', None)
             issues['name'] = 'Do you mean the named GTOP window or a separate chart candle?'
     if fields.get('feed_unavailable'):
@@ -147,12 +168,15 @@ def resolve(text, base, now):
         return unclear('Which New York date do you mean?')
     name = fields.get('range_name')
     if not name:
-        return unclear('Which named range do you mean: 9ate8, Young Lefty or GCT?')
-    if name == 'GCT':
-        if fields.get('shift') == 'night':
-            return unclear('GCT is 9 AM–1 PM New York. Which morning or evening window did you mean?', 'range_session_conflict')
-        fields['shift'] = None  # GCT is not the 9AM–noon Day Shift.
-        hour, hours, cutoff_hour = 9, 4, 13
+        return unclear('Which named GTOP range or H4 window do you mean?')
+    if name in H4_OPEN_HOURS:
+        hour = H4_OPEN_HOURS[name]
+        if ((hour in (1, 5, 9) and fields.get('shift') == 'night') or
+                (hour in (17, 21) and fields.get('shift') == 'day')):
+            return unclear(f'{name} has a fixed New York window. Which window did you mean?',
+                           'range_session_conflict')
+        fields['shift'] = None  # Named H4 windows are not three-hour shifts.
+        hours, cutoff_hour = 4, hour + 4
     else:
         if not fields.get('shift'):
             return unclear('Do you mean the morning or evening range?')
@@ -207,6 +231,12 @@ def run(context, arguments, runner, ticket):
     if not resolution['closed']:
         return finish({'ok': False, 'status': 'named_range_not_closed', 'range_reference': resolution,
             'error': 'That named window has not closed yet. Its final range is not verified.'})
+    if (resolution['anchor_timeframe'] == 'H4' and
+            parse_time(resolution['anchor_end_ny']) - parse_time(resolution['anchor_start_ny']) != 4 * 3600):
+        return finish({'ok': False, 'status': 'named_range_clock_transition',
+            'range_reference': resolution,
+            'error': 'This New York window crosses a clock change. Its local bounds are identified, '
+                     'but the fixed-duration H4 reader cannot verify that window.'})
     args = {k: resolution[k] for k in ('anchor_start_ny', 'anchor_timeframe', 'through_ny')}
     args['asset'] = resolution['selectors']['asset']
     try:

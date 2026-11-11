@@ -192,11 +192,13 @@ class DeliveryMilestoneTests(unittest.TestCase):
         self.assertIn('Freeze midpoint variant manner at its first touch',canon)
         changes=json.loads((root/'gtop_rule_revisions.json').read_text())
         self.assertEqual(len({r['rule_id'] for r in changes}),len(changes))
-        self.assertTrue(all(r['type']=='clarification' and r['status']=='active' for r in changes))
         # Other owner-defined concepts can add their own versioned records.
         # These delivery corrections must remain present without freezing the registry.
         required={'crt.v6.resoup_completion_window','crt.objective_delivery_milestones'}
         self.assertTrue(required.issubset({r['rule_id'] for r in changes}))
+        # Validate these two records, not unrelated later corrections/amendments.
+        self.assertTrue(all(r['type']=='clarification' and r['status']=='active'
+                            for r in changes if r['rule_id'] in required))
 
 
 if __name__=='__main__':unittest.main()

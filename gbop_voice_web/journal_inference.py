@@ -76,7 +76,7 @@ def _local_now(now, timezone_name):
 
 def _position_direction(text):
     patterns = (
-        r"\b(?:I|we)\s+(?:(?:was|am|went|got)\s+|(?:entered|took|opened)\s+(?:a\s+)?)(long|short)\b",
+        r"\b(?:I|we)\s+(?:(?:was|am|went|got)\s+|(?:entered|took|opened)\s+(?:a\s+)?)(long|short)\b(?!\s+(?:overdue|enough|term|time|of)\b)",
         r"\bmy\s+(?:trade|position|entry)\s+(?:was|is)\s+(long|short|bullish|bearish)\b",
         r"\bmy\s+(long|short)\s+(?:trade|position|entry)\b",
         r"\b(?:I|we)\s+(shorted)\b",
@@ -286,7 +286,7 @@ def infer_story_context(text, values=None, now=None, timezone_name=None, context
     explicit_objectives = []
     objective_patterns = (
         r'\b(?:my\s+)?(?:target|objective)\s+(?:was|is|:|will\s+be)\s+(?P<objective>[^.;!?\n,]+)',
-        r'\bI\s+(?:targeted|was\s+targeting|am\s+targeting)\s+(?P<objective>[^.;!?\n,]+)',
+        r'\bI\s+(?:targeted|(?:was|am)\s+(?:just\s+)?targeting)\s+(?:back\s+)?(?:to\b\s*[, ]*)?(?:(?:um|uh|er)\b[, ]*)*(?P<objective>[^.;!?\n,]+)',
         r'\bI\s+entered(?:\W+\w+){0,4}?\s+targeting\s+(?P<objective>[^.;!?\n,]+)',
     )
     for pattern in objective_patterns:

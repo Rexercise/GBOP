@@ -15,7 +15,7 @@ from gbop_voice_web.trade_photos import schema, STR, NUM
 
 STORY_NAMES = {'stage_journal_story', 'get_journal_story', 'save_journal_story'}
 FIELDS = {'accounting','asset','direction','play','trade_date','session','context_notes','evidence_notes','decision_notes','thesis_invalidation','invalidation_boundary','reported_outcome','objective','objective_status','title','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text','time_zone','result_r'}
-ENTRY_FIELDS = {'entry_index','entry_model','candle_label','risk_r','risk_text','objective','status','pnl_text','notes','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text'}
+ENTRY_FIELDS = {'events','entry_kind','entry_index','entry_model','candle_label','risk_r','risk_text','objective','status','pnl_text','notes','reported_entry_at','reported_exit_at','reported_entry_time_text','reported_exit_time_text'}
 STORY_PROMPT = """
 PROGRESSIVE PRIVATE JOURNALING
 As soon as a member starts journaling, FIRST call stage_journal_story to save the
@@ -34,12 +34,19 @@ neither implies a fill, setup validity or outcome. Ask only one focused range
 clarification when needed. Missing/unsupported market data must never block saving
 the narrative. Replace a saved range only on explicit correction of that same
 Trade #; preserve other records and the returned range correction history.
+Listen through the entire narration and self-corrections before speaking. Capture
+first, then use one short recap only when the member finishes or requests it.
+Do not interrupt an unfinished correction, repeat intake menus, or ask for facts
+already supplied. A correction needs a brief acknowledgment of what changed,
+not another full checklist. Missing optional fields do not demand a question.
 Read back supported asset/date/play/title/direction briefly and invite correction.
 Use evidence_notes for the member's stated reasons/evidence and decision_notes for
 what they chose and why. Preserve uncertainty; reported evidence is not verified
 market evidence. Never invent a decision from a later price move or an outcome.
-For reported Double Boneless, keep the underlying play in play; preserve the
-descriptor and both legs' assets, sides, ranges, timing and qualification in
+For reported Double Boneless (one asset holds both sides while its counterpart
+qualifies as Double Purge) or Boneless Double Purge (opposing purges split across
+the pair, neither individually Double Purge), keep the underlying play in play.
+Preserve the exact descriptor and both legs' assets, sides, ranges, timing and qualification in
 context_notes/evidence_notes as supplied. A missing leg stays unverified, never
 invented. The descriptor alone supplies no direction, entry, tier, V6 or outcome.
 Before finalizing, read the returned review_before_finalize compactly and invite
@@ -61,6 +68,23 @@ Read back a supported direction briefly and continue; do not demand another yes.
 Explicit member corrections override inferred direction and must carry through
 later patches, entries, summary, and finalization on that same journal. Leave a
 different trade separate. Keep ambiguous direction unknown; it never blocks saving.
+STRUCTURED EXECUTION NARRATIVE: Do not leave reported executions only in notes.
+Use one stable entry_index per explicitly reported position/fill; entry_kind can
+be initial, reentry or add_on. A partial and its remaining runner belong to that
+same entry, not two additional fills. Store each stated management event in the
+entry's events array with a stable event_index and kind partial_exit, runner_exit,
+exit or stop_adjustment. Event fields objective, status, pnl_text, quantity_text,
+notes and reported_time_text preserve only what the member actually supplied.
+A reentry/add-back is a separate entry only when explicitly reported. Repeated
+mentions/corrections update the same entry/event IDs; never append duplicates.
+On an unfinished draft, clear_fields entries.1.events.2.pnl_text retracts one
+event field, and entries.1.events.2 retracts only that mistaken event.
+Leave price, size, risk, currency, exact time and overall result unknown unless
+reported. A stopped runner with slight profit is not an overall trade win. A
+cash amount without units stays unqualified text, never assumed currency or R.
+Keep the first target, optional further draw and its non-delivery distinct in
+objective/context_notes/events. Interpretation and rejected classifications stay
+clearly marked as reported context, not verified GTOP classifications.
 Patch new/corrected facts only, keeping stable entry_index values. Corrections keep
 raw narration and an audit trail. Never infer risk, P/L, results, fills, closure,
 or historical dates. Preserve approximate/cross-midnight time wording verbatim;
@@ -105,7 +129,9 @@ def _save_optout(text):
     return bool(text and re.search(r"\b(?:don't|do not|never|not yet|hold off(?: on)?)\s+(?:save|saving|record|recording|log|logging|persist)|\b(?:cancel|stop)\s+(?:the\s+)?(?:save|saving|recording)|\b(?:just draft|draft only|preview only)\b",text.replace('’',"'"),re.I))
 
 
-def _new_trade_request(text):
+def _new_trade_request(text, *, answering=False):
+    if answering and re.fullmatch(r"\s*(?:(?:yes|separate|new)[, .!]*)+\s*",text or "",re.I) and re.search(r"\b(?:separate|new)\b",text or "",re.I):
+        return True
     for match in re.finditer(r'\b(?:new|separate|different|another)\s+(?:reported\s+)?trade\b',text,re.I):
         prefix=re.split(r'[.;!?]',text[:match.start()])[-1]
         if not re.search(r"\b(?:not|no|never|isn't|is not|don't|do not|without)\b(?:[ ,]+[\w’'-]+){0,6}[ ,]*$",prefix,re.I):
@@ -351,8 +377,12 @@ def _patch(value):
         if type(index) is not int or not 1<=index<=12 or index in indexes:
             raise ValueError('Each entry needs one stable entry_index from 1 to 12.')
         indexes.add(index)
-        for key in ENTRY_FIELDS-{'entry_index','risk_r'}:
+        for key in ENTRY_FIELDS-{'entry_index','risk_r','events'}:
             if key in entry: _text(entry[key],key)
+        from gbop_voice_web.journal_events import validate_events
+        validate_events(entry.get('events', []))
+        if entry.get('entry_kind') not in (None,'initial','reentry','add_on'):
+            raise ValueError('Entry kind must be initial, reentry or add_on when reported.')
         validate_reported(entry)
         risk=entry.get('risk_r')
         if risk is not None and (isinstance(risk,bool) or not isinstance(risk,(int,float)) or not math.isfinite(risk) or risk<0):
@@ -360,7 +390,7 @@ def _patch(value):
         if entry.get('status') not in (None,'open','closed','partially_closed','pending_order','cancelled_order','unknown'):
             raise ValueError('Entry status must distinguish open/closed positions from pending_order/cancelled_order or unknown.')
     clears=value.get('clear_fields',[])
-    if not isinstance(clears,list) or any(not isinstance(k,str) or not re.fullmatch(r'[a-z_]+|entries\.(?:[1-9]|1[0-2])\.[a-z_]+',k) for k in clears):
+    if not isinstance(clears,list) or any(not isinstance(k,str) or not re.fullmatch(r'[a-z_]+|entries\.(?:[1-9]|1[0-2])\.[a-z_]+|entries\.(?:[1-9]|1[0-2])\.events\.(?:[1-9]|1[0-2])(?:\.[a-z_]+)?',k) for k in clears):
         raise ValueError('clear_fields must explicitly name corrected draft fields.')
     return value
 
@@ -385,7 +415,10 @@ def render_story(values):
             if entry.get(key):text+='; '+label+': '+entry[key]
         risk=entry.get('risk_r')
         text+='; entry risk: '+(f'{risk:g}R' if risk is not None else 'unknown (R unknown)')
+        if entry.get('entry_kind'):text+='; entry kind: '+entry['entry_kind']
         parts.append(text+'.')
+        from gbop_voice_web.journal_events import render_events
+        parts.extend(render_events(entry.get('events',[])))
     if values.get('thesis_invalidation'):
         parts.append('Reported thesis invalidation: '+values['thesis_invalidation'])
         parts.append('Boundary: '+(values.get('invalidation_boundary') or 'not clarified; do not infer a price or candle boundary'))
@@ -405,10 +438,19 @@ def compact_review(values):
     if not decision:
         decision = '; '.join(e['notes'] for e in entries if e.get('notes')) or None
     return {'asset': values.get('asset') or 'unknown', 'play': values.get('play') or 'unknown',
+            'direction':values.get('direction') or 'unknown',
+            'objective':excerpt(values.get('objective')) or 'unknown',
+            'objective_status':values.get('objective_status') or 'unknown',
             'reported_evidence': excerpt(values.get('evidence_notes') or values.get('context_notes')) or 'not reported',
             'reported_decision': excerpt(decision) or 'not reported',
             'reported_outcome': values.get('reported_outcome') or 'unknown',
             'result_r': values.get('result_r'), 'reported_entry_count': len(entries),
+            'reported_executions': [{'entry_index':e['entry_index'], **{k:excerpt(e[k]) for k in
+                ('entry_kind','status','pnl_text','objective') if k in e},
+                'events':[{'event_index':v['event_index'], **{k:excerpt(v[k]) for k in
+                    ('kind','status','objective','pnl_text') if k in v}} for v in e.get('events',[])[:3]],
+                'events_omitted':max(0,len(e.get('events',[]))-3)} for e in entries[:3]],
+            'reported_executions_omitted':max(0,len(entries)-3),
             'instruction': 'Read this brief summary before finalizing; invite corrections. Unknowns stay unknown. This is a readback, not a setup grade or a save receipt.'}
 
 
@@ -512,7 +554,7 @@ def stage_story(db,guild,user,args):
         if args.get('new_trade') is True and not draft['new_trade']:
             if draft.get('saved_journal_id') or draft.get('trade_number'):
                 raise ValueError('A selected/saved story cannot be converted to a new trade. Start a separate draft explicitly.')
-            if intent_source is not None and not _new_trade_request(intent_source):
+            if intent_source is not None and not _new_trade_request(intent_source, answering=bool(draft.get('new_trade_confirmation_required') or (draft.get('question') or {}).get('key')=='identity:trade')):
                 # Retain the narration without granting an unverified bypass.
                 # Reconciliation is a finalization concern, not a reason to
                 # lose the first voice passage or demand execution risk.
@@ -578,16 +620,22 @@ def stage_story(db,guild,user,args):
         entries={e['entry_index']:deepcopy(e) for e in values.get('entries',[])}
         for entry in patch.get('entries',[]):
             target=entries.setdefault(entry['entry_index'],{'entry_index':entry['entry_index']})
-            target.update({k:v for k,v in entry.items() if v is not None})
+            from gbop_voice_web.journal_events import merge_entry
+            merge_entry(target,entry)
         for key in patch.get('clear_fields',[]):
             if key in FIELDS:values.pop(key,None)
             else:
+                from gbop_voice_web.journal_events import clear_event
+                if clear_event(entries,key):continue
                 match=re.fullmatch(r'entries\.(\d+)\.([a-z_]+)',key)
                 if not match or match[2] not in ENTRY_FIELDS-{'entry_index'}:raise ValueError('Unsupported field to clear.')
                 entries.get(int(match[1]),{}).pop(match[2],None)
         values['entries']=[entries[i] for i in sorted(entries)]
         for key in patch:
-            if key!='clear_fields':draft['provenance'][key]={'kind':'explicit','source':'model_extracted_narration','recorded_at':journal_drafts.stamp()}
+            if (key!='clear_fields' and patch[key] is not None
+                    and not (key=='entries' and not patch[key])
+                    and not (key=='accounting' and financial_issue)):
+                draft['provenance'][key]={'kind':'explicit','source':'model_extracted_narration','recorded_at':journal_drafts.stamp()}
         for key in patch.get('clear_fields',[]):draft['provenance'].pop(key,None)
         if raw and not _save_optout(raw):
             from gbop_voice_web.journal_direction import resolve_direction
@@ -691,12 +739,33 @@ def get_story(db,guild,user,args):
         return _public(draft,context,args.get('raw_offset') or 0)
 
 
+def _question_was_delivered(question, text):
+    """Recognize a completed brief paraphrase without counting a mere recap."""
+    if question['text'].casefold() in text.casefold():
+        return True
+    if '?' not in text:
+        return False
+    key=question['key']
+    for sentence in re.findall(r'[^.!?]*\?',text.casefold()):
+        if re.search(r"\b(?:not asking|don't need to ask|do not need to ask|no need to ask)\b",sentence):
+            continue
+        if key=='identity:direction' and re.search(r'\b(?:bullish|long)\b',sentence) and re.search(r'\b(?:bearish|short)\b',sentence):
+            return True
+        if key=='identity:trade' and re.search(r'\b(?:separate|new)\b',sentence) and re.search(r'\b(?:existing|updat\w*)\b',sentence):
+            return True
+        if key=='chronology:entry' and re.search(r'\b(?:when|what time)\b.*\b(?:enter|entered|entry|get in|got in)\b',sentence):
+            return True
+        if key=='chronology:date' and re.search(r'\b(?:what|which)\s+(?:day|date)\b',sentence):
+            return True
+    return False
+
+
 def delivered_story_question(context,text,generation):
     with context._lock:
         draft=getattr(context,'_journal_story',None)
         question=(draft or {}).get('question')
         if not (context.current(generation) and draft and draft['owner']==(*context.owner[:2],context.session_id) and question
-                and question['generation']==generation and question['text'] in text and question['key'] not in draft['asked']):return
+                and question['generation']==generation and _question_was_delivered(question,text) and question['key'] not in draft['asked']):return
         draft['asked'].append(question['key'])
         draft_id=draft['id'];key=question['key'];persisted=draft.get('persisted')
     if persisted and getattr(context,'auth_provider',None):
@@ -850,7 +919,7 @@ def save_story(db,guild,user,args):
 from gbop_voice_web.journal_accounts import ACCOUNTING_SCHEMA
 
 STORY_TOOLS=[
-    schema('stage_journal_story','FIRST capture/correct single-entry or multi-entry narration as a durable editable journal before follow-up questions. R is optional: unknown stays null, never zero. story_json keys: '+', '.join(sorted(FIELDS))+'; entries is an array with '+', '.join(sorted(ENTRY_FIELDS))+'. result_r is numeric overall reported R; entry risk_text and pnl_text preserve cash amounts with units. accounting is a structured object per ACCOUNT AND RISK JOURNALING instructions; it never supplies model-calculated result_r. Patch only new facts; null preserves known values. clear_fields retracts unfinished fields; result_r and entries.1.risk_r may also be cleared on saved/selected narratives without deleting records. new_trade=true only for an explicitly separate trade; new_draft starts a separate story. Select existing displayed trade_number after reading current state.',
+    schema('stage_journal_story','FIRST capture/correct single-entry or multi-entry narration as a durable editable journal before follow-up questions. R is optional: unknown stays null, never zero. story_json keys: '+', '.join(sorted(FIELDS))+'; entries is an array with '+', '.join(sorted(ENTRY_FIELDS))+'. events is an array per entry with event_index, kind (partial_exit, runner_exit, exit, stop_adjustment), objective, status, pnl_text, quantity_text, notes, reported_time_text. Partial and runner events are not extra fills; a reported reentry gets its own entry_index. result_r is numeric overall reported R; entry risk_text and pnl_text preserve cash amounts with units. accounting is a structured object per ACCOUNT AND RISK JOURNALING instructions; it never supplies model-calculated result_r. Patch only new facts; null preserves known values. clear_fields retracts unfinished fields; result_r and entries.1.risk_r may also be cleared on saved/selected narratives without deleting records. new_trade=true only for an explicitly separate trade; new_draft starts a separate story. Select existing displayed trade_number after reading current state.',
            {'draft_id':STR,'raw_story':STR,'story_json':{'type':'string','description':ACCOUNTING_SCHEMA},'trade_number':NUM,'new_draft':{'type':['boolean','null']},'new_trade':{'type':['boolean','null']}}),
     schema('get_journal_story','Use view=discarded to list archived draft titles/revisions for explicit restoration. Otherwise resume the same member-owned unfinished journal after pauses/reconnects; read known facts and choose from titles when several remain. No write.',{'draft_id':STR,'raw_offset':NUM,'offset':NUM,'view':{'type':['string','null'],'enum':['unfinished','discarded',None]}}),
     schema('save_journal_story','Explicitly FINALIZE a saved unfinished narrative only when the member asks to save/finalize/finish; for voice quote the actual current request in confirmation_text. Null for typed requests. Preserves reported multi-entry details without inventing execution/risk/P&L rows. Reconciles existing Trade # and same draft retries; does not delete records.',{'draft_id':{'type':'string'},'confirmation_text':STR}),

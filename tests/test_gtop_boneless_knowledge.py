@@ -55,7 +55,7 @@ class BonelessKnowledgeTests(unittest.TestCase):
 
     def test_existing_entry_tiers_are_unchanged(self):
         for name, tier in (("Super Soup", 1), ("Model 1", 2), ("Turtle Body Soup", 2),
-                           ("Turtle Wick Soup", 2), ("KOD Turtle Soup", 2),
+                           ("Turtle Wick Soup", 2), ("KOD Turtle Body Soup", 2),
                            ("Breaker OTE", 3), ("Blessed Thief", 3)):
             with self.subTest(name=name):
                 self.assertEqual(infer_tier(name), tier)
