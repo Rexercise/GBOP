@@ -189,12 +189,14 @@ def _merge(values, patch):
         value['accounting'] = merge(value.get('accounting'),patch['accounting'])
     entries = {e['entry_index']: deepcopy(e) for e in value.get('entries', [])}
     for entry in patch.get('entries', []):
-        entries.setdefault(entry['entry_index'], {'entry_index': entry['entry_index']}).update(
-            {k:v for k,v in entry.items() if v is not None})
+        from gbop_voice_web.journal_events import merge_entry
+        merge_entry(entries.setdefault(entry['entry_index'], {'entry_index': entry['entry_index']}), entry)
     for key in patch.get('clear_fields', []):
         if key in FIELDS:
             value.pop(key, None)
         else:
+            from gbop_voice_web.journal_events import clear_event
+            if clear_event(entries,key):continue
             match = re.fullmatch(r'entries\.(\d+)\.([a-z_]+)', key)
             if not match or match[2] not in ENTRY_FIELDS - {'entry_index'}:
                 raise ValueError('Unsupported field correction.')

@@ -14,6 +14,8 @@ SOUPIER_SOUP_NAME = "Soupieror Soup"
 _SOUPIER_SOUP_PATTERN = re.compile(r"\b(?:soupier(?:or)?|s\s+o\s+u\s+p\s+i\s+e\s+r(?:\s+o\s+r)?)\s+soup\b", re.IGNORECASE)
 _FANG_TWO_PATTERN = re.compile(r"\bfang[\s_-]*(?:2|two)\b", re.IGNORECASE)
 DOUBLE_BONELESS_NAME = "Double Boneless"
+BONELESS_DOUBLE_PURGE_NAME = "Boneless Double Purge"
+_BONELESS_DOUBLE_PURGE_PATTERN = re.compile(r"\bbone(?:less|[\s-]+less)[\s-]+double[\s-]+purge\b", re.IGNORECASE)
 _DOUBLE_BONELESS_PATTERN = re.compile(r"\bdouble[\s-]+bone(?:less|[\s-]+less)\b", re.IGNORECASE)
 
 
@@ -24,6 +26,11 @@ def recognize_double_boneless(text):
     verbatim; callers must not promote a mention to a verified setup or entry.
     """
     return DOUBLE_BONELESS_NAME if _DOUBLE_BONELESS_PATTERN.search(text or "") else None
+
+
+def recognize_boneless_double_purge(text):
+    """Recognize the distinct V2 name, never verify setup evidence."""
+    return BONELESS_DOUBLE_PURGE_NAME if _BONELESS_DOUBLE_PURGE_PATTERN.search(text or "") else None
 
 
 def recognize_soupier_soup(text):
@@ -44,13 +51,15 @@ def infer_tier(entry_model, supplied=None):
     # Its concept includes "Super Soup", but no tier or entry rules were given.
     # Preserve an explicitly supplied tier rather than inferring from that
     # embedded wording (or other model names in an explanation of the term).
-    if recognize_soupier_soup(entry_model) or _FANG_TWO_PATTERN.search(entry_model or ""):
+    if recognize_soupier_soup(entry_model):
         return supplied if supplied in TIER_LIMITS else None
+    # Explicit November 9 owner correction, not an inference from Super Soup.
+    # Classification changes; stored history and allocation limits do not.
+    if _FANG_TWO_PATTERN.search(entry_model or ""):
+        return 1
     name = re.sub(r"[_-]+", " ", (entry_model or "").strip().lower())
-    # Specific late-stage KOD wins over embedded body/super-soup wording.
-    if re.search(r"\bkod\b", name):
-        return 2
-    if "super soup" in name:
+    # KOD is a sequence position; classify the explicitly reported entry nature.
+    if re.search(r"\bs(?:u|ou)per\s+soup\b", name):
         if "wick" in name:
             return supplied if supplied in TIER_LIMITS else None
         return 1

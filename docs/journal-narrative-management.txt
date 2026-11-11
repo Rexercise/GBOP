@@ -1,0 +1,38 @@
+Journal narration, management events and correction continuity
+
+A story remains a private unfinished narrative until the member explicitly
+requests finalization. Unknown prices, quantities, times, risk, currency and
+results do not block capture. Reported facts are not independently verified fills.
+
+Use one stable entry_index per reported position. entry_kind may be initial,
+reentry or add_on. An initial position's partial exit and remaining runner are
+management events on the same entry, not additional fills. Each event has a stable
+event_index within that entry and kind partial_exit, runner_exit, exit or
+stop_adjustment. Repeated mentions patch that identity rather than append another.
+status distinguishes reported, planned, cancelled and unknown. Text fields retain
+supplied objective, P/L, quantity, timing and notes without money conversion or
+assumed units. Full values and correction history persist in the existing draft
+JSON. No schema migration or performance/execution-row creation is introduced.
+
+The brief review includes at most three entries and three events per entry, with
+explicit omission counts. The complete story remains available on the same draft.
+An explicit target replaces a contextual default. Direction's status follows the
+known direction rather than retaining an obsolete missing flag. Correcting a
+reported range interpretation does not erase verified price evidence for the
+unchanged range. Superseded descriptions remain in correction history only.
+
+Voice uses patient semantic turn detection by default; a valid configured
+GBOP_VAD_EAGERNESS override is retained. Listen-first guidance waits through
+self-correction and avoids repeated intake menus. Barge-in still cancels obsolete
+speech while an already-running write is allowed to resolve with its real receipt.
+These controls reduce premature replies; synthetic tests do not establish live
+microphone quality or the cause of an earlier client disconnect.
+
+Verification uses invented narratives, SQLite persistence/reconnect tests,
+existing ownership/concurrency checks and voice interruption simulations. No
+member journal is a test fixture. A live owner test remains a separate gate.
+
+Rollback: preserve the compatible narrative reader/writer if new event-bearing
+stories have been saved. Older releases reject unknown entry fields during
+re-finalization, although the underlying JSON remains intact. Do not strip stored
+events or rewrite historical journals to accommodate an older release.

@@ -70,7 +70,7 @@ class SoupierSoupTerminologyTests(unittest.TestCase):
         cases = {
             "Super Soup of Model 1": 1,
             "Super Soup of a Turtle Body Soup": 1,
-            "KOD Super Soup": 2,
+            "KOD Super Soup": 1,
             "Turtle Body Soup": 2,
             "Model 1 / CISD": 2,
             "Turtle Wick Soup": 2,

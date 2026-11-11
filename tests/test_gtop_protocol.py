@@ -10,7 +10,7 @@ class ProtocolTests(unittest.TestCase):
     def test_classification_and_ambiguous_entries(self):
         cases = {'Super Soup of Model 1': 1, 'Turtle Body Soup': 2, 'Model 1 / CSD': 2,
                  'CISD': 2, 'Turtle Wick Soup': 2, 'KOD Turtle Body Soup': 2,
-                 'KOD Super Soup': 2, 'Breaker Block': 3, '88.7 OTE': 3, 'Blessed Thief': 3}
+                 'KOD Super Soup': 1, 'Breaker Block': 3, '88.7 OTE': 3, 'Blessed Thief': 3}
         for model, expected in cases.items():
             with self.subTest(model=model):
                 self.assertEqual(infer_tier(model), expected)

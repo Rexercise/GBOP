@@ -1,4 +1,4 @@
-"""Owner-defined developing model: preserve reports without inventing risk rules."""
+"""Owner-defined entry method: explicit Tier 1 correction, unchanged risk allocations."""
 import json
 from pathlib import Path
 import unittest
@@ -16,17 +16,17 @@ class FangKnowledgeTests(unittest.TestCase):
         # existing general journaling policy or truncating earlier GTOP canon.
         self.assertLessEqual(len(text), 1200)
         for phrase in ('after Super Soup, before CISD', 'CREATE an imbalance',
-                       'WITHIN that candle', 'risk tier has been specified',
+                       'WITHIN that candle', 'Tier 1 because it is pre-CISD',
                        'Concept questions alone never start a journal'):
             self.assertIn(phrase, text)
 
-    def test_no_inherited_risk_from_description(self):
+    def test_explicit_owner_tier_replaces_unspecified_classification(self):
         for model in ('Fang 2 Imbalance after Super Soup', 'Fang two inverse Model 1',
                       'FANG-2 imbalance', 'fang2 imbalance'):
             with self.subTest(model=model):
-                self.assertIsNone(infer_tier(model))
-                self.assertEqual(infer_tier(model, 3), 3)
-                self.assertIsNone(infer_tier(model, 99))
+                self.assertEqual(infer_tier(model), 1)
+                self.assertEqual(infer_tier(model, 3), 1)
+                self.assertEqual(infer_tier(model, 99), 1)
 
     def test_existing_models_keep_classification(self):
         self.assertEqual(infer_tier('Super Soup'), 1)

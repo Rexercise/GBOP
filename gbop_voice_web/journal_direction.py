@@ -17,10 +17,13 @@ def narrated_direction(text, *, answering=False):
     found = _position_direction(source)
     if found and re.search(r'\b(?:hedg\w*|counter[ -]?trend)\b', source, re.I):
         return found  # The member's explicit position outranks the setup bias.
+    if re.search(r"\b(?:stayed|remained|was|am|were|are)\s+flat\b|\b(?:did not|didn't|never)\s+(?:enter|trade|take|open)\b",source,re.I) and not found:
+        return []
     token = r'(bullish|bearish|long|short)'
     subject = r'(?:(?:my|our|this|that|the)\s+(?:trade|position|entry|setup|play)|it)'
     patterns = (
         r'\b' + subject + r'\s+(?:was|is)\s+(?:actually\s+)?(?:a\s+)?' + token + r'\b',
+        r'\b(?:I|we)\s+(?:was|am|were|are)\s+(?:actually\s+)?' + token + r'\b(?=[,.;!?]|$)',
         r'\b(?:I|we)\s+(?:traded|took|played)\s+(?:a\s+|the\s+)?' + token + r'\b',
         r'\bmy\s+' + token + r'\s+(?:trade|position|entry|setup|play)\b',
         r'\b(?:correct|change|set|update)\b[^.;!?\n]{0,60}\bdirection\s+to\s+' + token + r'\b',
@@ -28,6 +31,9 @@ def narrated_direction(text, *, answering=False):
     for pattern in patterns:
         for match in re.finditer(pattern, source, re.I):
             clause = _clause(source, match.start(), match.end())
+            # A subsequent correction about the setup is a different claim,
+            # not a negation of the member's stated position direction.
+            clause = re.split(r',\s*and\s+(?:it|that|the setup)\b', clause, maxsplit=1, flags=re.I)[0]
             if (_NON_ACTUAL.search(clause) or re.search(
                     r'\b(?:friend|he|she|they|their|his|her|said|thought|maybe|uncertain|unclear|or)\b', clause, re.I)
                     or '?' in clause):
@@ -145,6 +151,8 @@ def resolve_direction(draft, before, values, raw, context, previous_provenance):
     if before.get('direction') and previous_provenance.get('source') in ('member_direction', 'member_direction_correction'):
         values['direction'] = before['direction']
         draft['provenance']['direction'] = deepcopy(previous_provenance)
+        if not draft.get('direction_status','').startswith('conflicting'):
+            draft['direction_status'] = 'member_reported'
         return
     setup = linked_setup(context, raw, values, draft)
     if setup:
@@ -157,7 +165,10 @@ def resolve_direction(draft, before, values, raw, context, previous_provenance):
             values.pop('direction', None)
             draft['provenance'].pop('direction', None)
             draft['direction_status'] = setup['status'] + '_setup_evidence'
-    draft.setdefault('direction_status', 'known' if values.get('direction') else 'missing')
+    if values.get('direction') and not draft.get('direction_status','').startswith('conflicting'):
+        draft['direction_status'] = 'inferred_from_linked_setup' if (draft['provenance'].get('direction') or {}).get('source') == 'verified_setup' else 'known'
+    elif not values.get('direction'):
+        draft.setdefault('direction_status', 'missing')
 
 
 def protect_saved_direction(metadata, previous, capability):

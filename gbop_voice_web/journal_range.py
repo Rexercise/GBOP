@@ -13,7 +13,7 @@ from gbop_voice_web.journal_context import JournalBinding, stamp
 def summary(state):
     if not state:
         return None
-    return {**{k: deepcopy(state[k]) for k in ('status', 'description', 'reference', 'question', 'evidence_quality') if k in state},
+    return {**{k: deepcopy(state[k]) for k in ('status', 'description', 'reported_interpretation', 'reference', 'question', 'evidence_quality') if k in state},
             'correction_count': len(state.get('history', [])),
             'limits': 'Range evidence is not an execution, setup verdict or outcome. Unverified descriptions remain member reports.'}
 
@@ -57,8 +57,27 @@ def stage(context, draft, raw, values):
     named = any(re.search(pattern, text) for pattern in NAMES.values())
     same = bool(re.search(r'\b(?:this|that|same|reviewed) range\b', text))
     correction = bool(re.search(r'\b(?:correct|change|replace|fix|attach|actually|i mean)\b|\bno[, ]', text))
+    interpretation_correction = bool(re.search(r"\b(?:was not|wasn't|wasn’t|clarifying|clarification|technically)\b", text))
     reply = bool(old and old.get('question') and len(text.split()) <= 18 and
                  re.search(r'\b(?:morning|evening|day|night|am|pm|gold|nas|gct|9ate8|today|yesterday|mt5|yes|20\d\d-\d\d-\d\d)\b', text))
+    interpretation_only = bool(old and (correction or interpretation_correction)
+        and not named and (not re.search(r'\brange\b',text) or same)
+        and re.search(r'\b(?:it|this|that)\b',text)
+        and re.search(r'\b(?:souper|super|soupieror|soupier|soup|CRT|classification|interpretation)\b',text,re.I))
+    if interpretation_only:
+        # A correction of the currently narrated setup need not restate its
+        # range name. It changes reported interpretation, not market identity.
+        if old.get('reported_interpretation') == raw:
+            return
+        state=deepcopy(old)
+        state['history']=deepcopy(old.get('history',[]))+[{'at':stamp(),
+            'before':{k:deepcopy(old[k]) for k in ('status','description','selectors','reference','reported_interpretation') if k in old},
+            'explicit_correction':True,'verification_update':False}]
+        state.update(description=raw,reported_interpretation=raw,recorded_at=stamp(),explicit_correction=True)
+        draft['journal_range']=state
+        draft.pop('range_question',None)
+        draft['revision']+=1
+        return
     delivery = getattr(context, '_journal_range_delivery', None)
     delivered = bool(delivery and delivery['generation'] == context.generation
                      and delivery['draft_id'] == draft['id'])
@@ -107,8 +126,17 @@ def stage(context, draft, raw, values):
         state['explicit_correction'] = delivery.get('explicit_correction', False)
         context._journal_range_request = None
     same_selectors = bool(old and old.get('selectors') == state['selectors'])
+    # A negated classification can revise the same range's description, but
+    # rejection of another named range never authorizes retargeting this one.
+    correction = correction or bool(same_selectors and interpretation_correction)
     if old and old.get('status') == 'verified' and same_selectors and not delivered and not linked:
-        return  # Another mention does not refresh or weaken its saved evidence.
+        if not correction:
+            return  # Another mention does not refresh or weaken its saved evidence.
+        # Correct the reported interpretation without discarding independently
+        # verified price evidence for the unchanged range identity.
+        for key in ('status','reference','market_review','evidence_quality'):
+            if key in old:state[key]=deepcopy(old[key])
+        state.pop('question',None)
     changed_range = bool(old and not same_selectors)
     if changed_range and not correction and not reply:
         draft['range_question'] = 'Is this a correction to this journal’s range, or a separate trade?'

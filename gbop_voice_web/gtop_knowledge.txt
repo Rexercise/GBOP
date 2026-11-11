@@ -4,6 +4,8 @@ IDENTITY
 GTOP = Greatest Traders On Planet.
 GBOP = Greatest Bot on the Planet.
 Use GTOP terminology exactly as defined here.
+CISD (Change in the State of Delivery) is the standard written term; CSD remains accepted shorthand. No confirmation criteria change.
+Model 1 and Fang 2 Imbalance are entry methods. CRT variants describe range development; retain the separate parent play/range and objective.
 
 SESSION STRUCTURE
 Day Shift / The Job: 9 AM–12 PM New York time.
@@ -15,12 +17,14 @@ For 9ate8, the structural extremes are the buy-side and sell-side of the 8 o'clo
 The same framework applies at night using 8 PM, 9 PM, and 10 PM.
 
 H4 LABELS
-1 AM–5 AM: Asia Expansion.
+1 AM–5 AM: RCT — Rice Crown Transition.
 5 AM–9 AM: London Lunch.
 9 AM–1 PM: New York AM / GCT.
 1 PM–5 PM: New York PM.
-5 PM–9 PM: CBDR + Early Asia.
-9 PM–1 AM: Asia Open.
+5 PM–9 PM: CCAO — CBDR Closure, Asia Open (pronounced Cacao).
+9 PM–1 AM: TCT — True Chow Time.
+America/New_York H4 windows, from the first opening after midnight. Naming only; separate CBDR remains 2 PM–8 PM.
+Old labels: Asia Expansion→RCT; CBDR + Early Asia/CAB→CCAO; Asia Open→TCT. Boundaries unchanged.
 
 9ate8
 Always write it exactly: 9ate8.
@@ -33,7 +37,7 @@ Invalidation needs the selected range's OWN timeframe close outside: H1 requires
 If 9 closes outside 8, 8 invalidates; preserve earlier delivery, then review 9/10/11 chronologically.
 Stalling alone is not invalidation.
 
-MODEL 1 / CSD ASSIGNED TIMEFRAMES
+MODEL 1 / CISD ASSIGNED TIMEFRAMES
 Monthly -> Daily.
 Weekly -> H4.
 Daily -> H1.
@@ -70,29 +74,6 @@ Typical Turtle Wick Soup objective = 50% of the range.
 Turtle Body Soup is preferred for higher probability.
 
 
-CRT SEQUENTIAL ENTRY STACK
-A single CRT range has four academic sequential entry styles, in this order:
-1. Turtle Soup.
-2. Model 1 / CSD.
-3. Breaker / OTE.
-4. KOD.
-
-Breaker / OTE is treated as ONE third entry slot in the sequence even though
-Breaker and OTE are two separate concepts.
-
-Blessed Thief is the GTOP-exclusive FIFTH CRT entry style:
-5. Blessed Thief.
-
-This fifth entry is a GTOP extension to the CRT framework and is NOT part of
-the four-entry academic CRT rubric taught by Romeo.
-
-When GBOP explains CRT entries, it should distinguish:
-- Academic CRT sequence: Turtle Soup -> Model 1 -> Breaker / OTE -> KOD.
-- GTOP extension: Blessed Thief as the fifth entry.
-
-Use the KOD Turtle Soup definition in the canonical addendum below.
-
-
 MONDAY'S RANGE
 Weekly CRT anchored to Monday.
 Expect Tuesday or Wednesday purge at a key time to form the high or low of week.
@@ -112,13 +93,13 @@ Use standard deviations for potential HOD/LOD.
 SMT
 Relative divergence between correlated instruments may strengthen context.
 Example: silver purges 8 AM buy side while gold does not.
-Double Boneless is a paired structural descriptor across opposing liquidity sides, applicable to any range play with a relevant correlated comparison. See the shared Double Boneless canon; retain the underlying play and each asset's physical purge/nonpurge separately.
+Double Boneless and Boneless Double Purge are distinct paired descriptors; see their shared canon. Retain the underlying play and each asset's physical purge/nonpurge separately.
 
 SS — WEEKLY STRUCTURE STUDY
 SS is a guided weekly review of PRICE STRUCTURE. It is not a journal report, performance dashboard, trade-statistics summary, or member grading process.
-Purpose: reconstruct how the completed weekly candle formed, understand the internal structure that produced its extremes, and use that structural information to form a conditional hypothesis for what price may do next.
+Reconstruct the completed weekly candle and the internal structure producing its extremes; use this to form a conditional hypothesis for subsequent price.
 
-When a member says "let's do SS", "do SS", or otherwise asks GBOP to begin SS, GBOP should recognize this workflow and guide the member through it conversationally. Ask only for information that is still missing. If the member provides a chart or chart image, use the chart itself as the source for the structural review. Do not substitute journal/trade-history statistics for chart structure.
+Requests such as "let's do SS" or "do SS" start this guided conversation. Ask only for missing information. Use a supplied chart/image as the structural source, never substitute journal/trade statistics.
 
 CURRENT SS PROCESS
 1. WEEKLY CANDLE FORMATION
@@ -148,7 +129,7 @@ CURRENT SS PROCESS
 - If required chart detail is missing, ask the member for the missing chart/timeframe/detail rather than fabricating it.
 
 5. WEEKLY EXECUTION REVIEW
-Only after the weekly candle, High of the Week, Low of the Week, launching-pad levels, and structural synthesis have been reviewed, move into the member's execution review. Keep this stage distinct from the price-structure stage.
+Execution review follows the weekly candle, both extremes, launching-pad levels and structural synthesis. Keep it separate from price-structure review.
 Ask the member:
 - Did you over-leverage?
 - Did you exceed the number of permitted trades?
@@ -158,16 +139,16 @@ Ask the member:
 - Did you predict last week's candle correctly?
 - If the prior-week prediction was not correct, why not?
 
-Use the answers to help the member identify execution patterns and lessons from the completed week. Do not infer or fabricate an answer from trade outcome alone. If GBOP has reliable saved journal/execution data relevant to a question, it may use that data as context, but it should still distinguish recorded facts from the member's own reflection.
+Use answers to identify the completed week's execution patterns and lessons. Never infer answers from outcome alone. Relevant reliable saved journal/execution facts may contextualize questions; distinguish facts from member reflection.
 
-SS will be expanded as GTOP defines additional rules. Until then, follow only the process above plus already-defined GTOP candle science and structural concepts.
+Until GTOP defines additions, SS uses only this process and established candle science/structure.
 
 GTOP RISK PROTOCOL — COMMUNITY EDITION, 27 SEPTEMBER 2026
 One directional thesis receives one total 1R budget across all executions.
 Community default tier allocations: Tier 1 = 0.60R; Tier 2 = 0.30R; Tier 3 = 0.10R. These are defaults, not mandatory member settings. A member's saved risk profile overrides the allocation sizes while GTOP entry-model tier classifications stay fixed.
-Tier 1: Super Soup of a Turtle Body Soup / Model 1 candle BEFORE CSD confirmation. Predominantly preferred.
-Tier 2: Turtle Body Soup / Model 1 (same entry classification), Turtle Wick Soup, KOD Turtle Soup.
-KOD is capped at Tier 2 because it occurs late, even if it is a body soup.
+Tier 1: Super Soup of a Turtle Body Soup / Model 1 candle BEFORE CSD (CISD) confirmation, and Fang 2 Imbalance because it is pre-CISD. Predominantly preferred.
+Tier 2: Turtle Body Soup / Model 1 (same entry classification), Turtle Wick Soup.
+KOD is a sequence position, not a fixed tier; classify its reported entry nature. Souper Soup of KOD is Tier 1. An unspecified KOD Turtle Soup does not establish a tier.
 Tier 3: Breaker / OTE and Blessed Thief. Valid active executions, never study-only.
 Tier numbers describe the GTOP hierarchy, not confirmation chronology. Pre-confirmation does not imply Tier 3.
 Tier 2 remains a valid fallback if Tier 1 does not appear. All valid tiers remain available.
@@ -176,8 +157,7 @@ A stopped execution never resets either the thesis budget or its tier allocation
 Separate entry failure from thesis failure. End an invalidated thesis.
 Re-entry needs an intact thesis, return to a predefined point of interest, a new recognized execution, remaining tier allocation, and remaining thesis budget. A cheaper price alone does not qualify.
 Adds require a valid thesis, an existing position in profit protected at breakeven or better, a new recognized execution, remaining tier and thesis risk, and improved trade structure.
-At approximately 80% of the predetermined objective, activate Profit Protection Mode: advance the stop into protected profit, commonly +0.20R to +0.30R, respecting logical structure. Do not invent a stop price or claim it was moved.
-The protection trigger is 80%, not 88.7%. No automatic partial at 50% is required; no mechanical breakeven rule replaces protected-profit management. A runner needs a supporting thesis and risk plan.
+At approximately 80% of the predetermined objective, activate Profit Protection Mode using the member's documented management plan, which may include breakeven. Plan protection beforehand; no invented stop price/action or universal +0.20R–0.30R lock. No automatic 50% partial is required. A runner needs a supporting thesis and risk plan.
 88.7 remains a retracement refinement; do not confuse it with objective protection.
 Binary-event sizing constraints are member-specific unless explicitly adopted as a GTOP community rule. Do not treat an individual member's Never Again rule as community canon.
 Record tier, allocated and total risk, entry/thesis invalidation, objective, maximum objective completion before failure, protection activation, MAE/MFE when known, final R, adherence and study note. Do not fabricate missing metrics.
@@ -223,7 +203,7 @@ FOUR FUNDAMENTAL CRT ENTRIES
 Breaker Block / OTE occupies ONE third slot even though Breaker Block and OTE are separate concepts.
 
 [GTOP EXCLUSIVE]
-5. Blessed Thief = GTOP-exclusive fifth CRT entry.
+GTOP additions: Soupieror Soup, Super Soup, Fang 2 Imbalance and Blessed Thief. The four academic slots above remain distinct; Breaker and OTE share a slot without being synonyms. Entry sequence is not risk-tier ranking and does not require taking every entry. Blessed Thief was GTOP's fifth additional style, not a fifth academic slot. See each entry definition and the separate tier map.
 
 TURTLE SOUP
 [ICT FOUNDATION]

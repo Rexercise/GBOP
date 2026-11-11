@@ -143,6 +143,34 @@ class JournalRangeTests(unittest.TestCase):
         self.assertIn('Chart H4', state['description'])
         self.assertEqual(state['question'].count('?'), 1)
 
+    def test_rejected_alternative_does_not_retarget_verified_range(self):
+        draft=self.opened_range()
+        old=self.stored(draft)['journal_range']
+        changed=self.stage({}, "The gold 9ate8 evening range wasn't relevant to this trade.", draft_id=draft['draft_id'])
+        self.assertEqual(self.stored(draft)['journal_range'],old)
+        self.assertIn('correction',changed['range_question'])
+
+    def test_unnamed_classification_correction_preserves_verified_evidence(self):
+        draft=self.opened_range()
+        old=self.stored(draft)['journal_range']
+        changed=self.stage({}, 'It was not a Souper Soup; it was a local CRT.', draft_id=draft['draft_id'])
+        state=self.stored(draft)['journal_range']
+        for key in ('selectors','reference','market_review','status'):
+            self.assertEqual(state[key],old[key])
+        self.assertIn('local CRT',changed['journal_range']['description'])
+
+    def test_same_range_classification_correction_after_reopen_preserves_evidence(self):
+        draft=self.opened_range()
+        old=self.stored(draft)['journal_range']
+        self.reopen()
+        self.action('get_journal_story',{'draft_id':draft['draft_id']},'Resume the same journal.')
+        changed=self.stage({}, 'That range was not a Souper Soup; it was a local CRT.', draft_id=draft['draft_id'])
+        state=self.stored(draft)['journal_range']
+        self.assertIsNone(changed['range_question'])
+        for key in ('selectors','reference','market_review','status'):
+            self.assertEqual(state[key],old[key])
+        self.assertIn('local CRT',state['description'])
+
     def test_another_range_mention_cannot_silently_replace_saved_association(self):
         draft = self.opened_range()
         self.save(draft)

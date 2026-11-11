@@ -9,6 +9,7 @@ from unittest.mock import patch
 from gbop_voice_web import journal_coach as coach, journal_recall as recall
 from gbop_voice_web.gtop_protocol import (
     CANONICAL_KNOWLEDGE, KNOWLEDGE_FILES, infer_tier, recognize_double_boneless,
+    recognize_boneless_double_purge,
 )
 from gbop_voice_web.journal_inference import infer_story_context
 from gbop_voice_web.journal_story import STORY_PROMPT
@@ -25,10 +26,13 @@ class DoubleBonelessKnowledgeTests(unittest.TestCase):
         self.assertEqual(KNOWLEDGE_FILES.count('gtop_double_boneless.txt'), 1)
         self.assertEqual(CANONICAL_KNOWLEDGE.count(CANON), 1)
         self.assertLess(len(CANON), 2500)
-        for phrase in ('purging and boneless roles switch', 'any asset and any range play',
-                       'Double Boneless 9ate8', 'Double Boneless Young Lefty',
-                       'Double Boneless GCT', 'No fixed buy-side-first or sell-side-first',
-                       'automatic full-objective completion', 'not V6',
+        for phrase in ('DOUBLE BONELESS (V1)', 'BONELESS DOUBLE PURGE (V2)',
+                       'same asset purges neither', 'Neither individually forms a Double Purge',
+                       "V1's individual Double Purge requirement does not apply to V2",
+                       'required inside close on the selected parent timeframe',
+                       'any asset and any range play', '9ate8, Young Lefty, GCT',
+                       'No fixed buy-side-first or sell-side-first',
+                       'automatic full-objective completion', 'automatic V6',
                        'Same-asset double purge alone is not Double Boneless',
                        'generic "double purge" is not an alias',
                        'Incomplete intervals or missing paired candles',
@@ -41,9 +45,10 @@ class DoubleBonelessKnowledgeTests(unittest.TestCase):
         records = [record for record in records if record['rule_id'] == 'gtop-double-boneless']
         self.assertEqual(len(records), 1)
         record = records[0]
-        self.assertEqual(record['revision'], 1)
+        self.assertEqual(record['revision'], 4)
+        self.assertEqual(record['previous_revisions'][0]['revision'], 1)
         self.assertIn(record['accepted'].strip(), CANON)
-        self.assertEqual(record['authority']['recorded_date'], '2026-11-06')
+        self.assertEqual(record['authority']['recorded_date'], '2026-11-10')
         self.assertNotIn('exact_quote', record['authority'])
         self.assertIn('Verbatim conversation is not published', record['authority']['provenance_limit'])
         self.assertIn('No new detector', record['implementation_scope'])
@@ -56,6 +61,15 @@ class DoubleBonelessKnowledgeTests(unittest.TestCase):
         for text in (None, '', 'boneless', 'double purge', 'doubled boneless',
                      'double bonelessly', 'one asset swept both sides'):
             self.assertIsNone(recognize_double_boneless(text))
+
+    def test_distinct_second_name_recognition_preserves_boundaries(self):
+        for text in ('Boneless Double Purge', 'bone-less double-purge 9ate8',
+                     'Not a Boneless Double Purge', 'Is this Boneless Double Purge?'):
+            self.assertEqual(recognize_boneless_double_purge(text), 'Boneless Double Purge')
+            self.assertIsNone(recognize_double_boneless(text))
+            self.assertIsNone(infer_tier(text))
+        for text in (None, '', 'Double Boneless', 'double purge', 'Boneless Double Purged'):
+            self.assertIsNone(recognize_boneless_double_purge(text))
 
     def test_descriptor_never_supplies_tier_or_direction(self):
         for play in ('9ate8', 'Young Lefty', 'GCT'):
@@ -145,14 +159,17 @@ class DoubleBonelessJournalTests(unittest.TestCase):
         self.assertIsNone(result['result_r'])
         return result
 
-    def roundtrip(self, play, *, voice=False, reverse=False):
+    def roundtrip(self, play, *, voice=False, reverse=False, descriptor='Double Boneless'):
         self.context.close()  # No unrelated fixture market review may become evidence.
-        legs = ('Gold purged buy-side while silver held, then silver purged sell-side '
+        legs = ('Silver purged buy-side while gold held, then silver purged sell-side '
                 'while gold held.' if reverse else
-                'Silver purged sell-side while gold held, then gold purged buy-side '
-                'while silver held.')
-        raw = f'Journal my Double Boneless {play} observations. {legs}'
-        notes = f'Reported Double Boneless {play}; paired qualification not verified.'
+                'Silver purged sell-side while gold held, then silver purged buy-side '
+                'while gold held.')
+        if descriptor == 'Boneless Double Purge':
+            legs = ('Silver purged sell-side while gold held, then gold purged buy-side '
+                    'while silver held. Neither individually double purged.')
+        raw = f'Journal my {descriptor} {play} observations. {legs}'
+        notes = f'Reported {descriptor} {play}; paired qualification not verified.'
         story = {'play': play, 'context_notes': notes, 'evidence_notes': legs}
         context = self.fresh('double-boneless-capture')
         staged = self.stage(context, raw, story, voice=voice)
@@ -204,6 +221,12 @@ class DoubleBonelessJournalTests(unittest.TestCase):
 
     def test_voice_gct_roundtrip_reverse_order(self):
         self.roundtrip('GCT', voice=True, reverse=True)
+
+    def test_typed_boneless_double_purge_roundtrip(self):
+        self.roundtrip('9ate8', descriptor='Boneless Double Purge')
+
+    def test_voice_boneless_double_purge_roundtrip(self):
+        self.roundtrip('Young Lefty', voice=True, descriptor='Boneless Double Purge')
 
     def test_missing_second_leg_stays_unknown_and_can_be_corrected(self):
         self.context.close()

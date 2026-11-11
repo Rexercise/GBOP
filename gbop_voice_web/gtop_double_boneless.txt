@@ -1,14 +1,15 @@
-DOUBLE BONELESS
-[GTOP TERMINOLOGY / OWNER CLARIFICATION]
+DOUBLE BONELESS / BONELESS DOUBLE PURGE
+[GTOP OWNER CLARIFICATION, REVISION 4]
 
-Double Boneless describes a correlated setup with a boneless leg at both opposing sides of liquidity. At one side, one asset purges its corresponding liquidity while its correlated counterpart does not. At the opposite side, the counterpart purges its corresponding liquidity while the first asset does not. The purging and boneless roles switch between the two sides.
+Two distinct paired descriptors apply to any asset and any range play with a relevant correlated comparison: 9ate8, Young Lefty, GCT or others. Keep the underlying play. Boneless alone needs non-confirmation at one side.
 
-Double Boneless can describe any asset and any range play with a relevant correlated comparison. It is not limited to 9ate8: Double Boneless 9ate8, Double Boneless Young Lefty and Double Boneless GCT are examples of the same descriptor applied to different plays.
+DOUBLE BONELESS (V1)
+The same asset purges neither parent-range boundary; it stays boneless on both sides. Its counterpart supplies the qualifying Double Purge. Preserve the original completed objective, then the opposing purge and required inside close on the selected parent timeframe. An opposing objective touch or lower-timeframe return alone is insufficient. Track later reversal delivery separately. Roles do not switch.
 
-The underlying play, selected ranges and existing Boneless qualification remain distinct. The descriptor records paired liquidity behavior. Record each physical purge and nonpurge against its own asset and corresponding range.
+BONELESS DOUBLE PURGE (V2)
+Different correlated assets purge the opposing boundaries of corresponding parent ranges. Each purges only one side and stays boneless at the side purged by its partner. Neither individually forms a Double Purge; the second purge is on the counterpart. Roles switch between sides. V1's individual Double Purge requirement does not apply to V2. These names are distinct, not interchangeable aliases.
 
-Do not infer a new execution model, entry trigger, risk tier, CRT variant, reversal, time limit or automatic full-objective completion from this descriptor alone. Preserve actual local objective touches and paired delivery context separately. No fixed buy-side-first or sell-side-first order is established by this clarification.
+Both retain existing Boneless qualification, parent-timeframe setup intervals and required closing confirmation. Minutes of separation alone are not non-confirmation. Incomplete intervals or missing paired candles remain unverified. Track each asset's physical purges and delivery; counterpart movement is not a local objective touch. No fixed buy-side-first or sell-side-first order, new entry, tier, automatic V6, automatic full-objective completion, guaranteed reversal or profit follows. Same-asset double purge alone is not Double Boneless; generic "double purge" is not an alias.
 
-QUALIFICATION AND JOURNALING
-Apply existing Boneless qualification independently to each side and its evaluated setup interval. Roles switch; do not assign one boneless identity to the whole session. Incomplete intervals or missing paired candles stay provisional/unverified. Same-asset double purge alone is not Double Boneless; generic "double purge" is not an alias. This descriptor alone is not V6.
-For a member-requested journal, keep the underlying play in play and the literal descriptor in context_notes/evidence_notes. Preserve each leg's purging asset, held counterpart, side, corresponding range, sequence/timing and qualification only as supplied. Retain raw narration and corrections; missing details never block saving. Separate reported observations from verified market evidence and local objective touches from paired context. No invented second leg, fill, profit or trade direction. Concept questions alone never start a journal. No automatic detector, alert or live historical verification is established by this terminology update.
+JOURNALING
+Keep underlying play in play and exact descriptor in context_notes/evidence_notes. Capture supplied/verified variant, assets, ranges, sides, sequence, timeframe and close; actual delivery and executions are separate. Missing details/variant never block saving. Preserve raw narration, reported labels, uncertainty and corrections; do not silently relabel historical journals or treat a label as verified classification. Concept questions alone never start a journal. No automatic detector, alert or live historical verification is added.
