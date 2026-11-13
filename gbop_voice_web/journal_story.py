@@ -40,6 +40,9 @@ Do not interrupt an unfinished correction, repeat intake menus, or ask for facts
 already supplied. A correction needs a brief acknowledgment of what changed,
 not another full checklist. Missing optional fields do not demand a question.
 Read back supported asset/date/play/title/direction briefly and invite correction.
+Structure custom title/direction/confirmed entry. In raw_story and reported notes,
+keep parent dates, purge order, return-inside and countertrend reasons; do not
+compress them to a setup label. Uncertain entry model stays uncertain.
 Use evidence_notes for the member's stated reasons/evidence and decision_notes for
 what they chose and why. Preserve uncertainty; reported evidence is not verified
 market evidence. Never invent a decision from a later price move or an outcome.
@@ -145,7 +148,10 @@ def _finalize_request(text):
     if text is None:
         return False  # Audio finalization must quote the member's explicit request.
     if _save_optout(text):return False
-    return bool(re.search(r"(?:^|[.;!?]\s*)(?:(?:please|okay|ok|yes)[, ]+|(?:can|could|would) you (?:please )?|(?:let's|lets|let us) )?(?:save|finalize|finalise|finish|complete)\b",text,re.I))
+    # Natural spoken acknowledgments may precede the explicit action. A bare
+    # assent, conditional, quotation or a past-tense report is not permission.
+    text=text.replace('’', "'")
+    return bool(re.search(r"(?:^|[.;!?]\s*)(?:(?:please|okay|ok|yes|yeah|yep|sure)[, ]+)*(?:(?:can|could|would) you (?:please )?|(?:let's|lets|let us) |go ahead and )?(?:save|finalize|finalise|finish|complete)\b(?!\s+(?:if|when|unless)\b)",text,re.I))
 
 
 def _journaling_request(text):
@@ -561,7 +567,11 @@ def stage_story(db,guild,user,args):
         draft['recording_paused']=bool(draft.get('recording_paused') or getattr(context,'_journal_recording_paused',False))
         if intent_source and re.search(r'\b(?:hypothetical|example|imagine|suppose|pretend)\b',intent_source,re.I):draft['example_only']=True
         new_trade_issue = False
-        if args.get('new_trade') is True and not draft['new_trade']:
+        answering_identity=bool(draft.get('new_trade_confirmation_required') or
+                                (draft.get('question') or {}).get('key')=='identity:trade')
+        confirmed_identity=bool(answering_identity and intent_source and
+                                _new_trade_request(intent_source, answering=True))
+        if (args.get('new_trade') is True or confirmed_identity) and not draft['new_trade']:
             if draft.get('saved_journal_id') or draft.get('trade_number'):
                 raise ValueError('A selected/saved story cannot be converted to a new trade. Start a separate draft explicitly.')
             if intent_source is not None and not _new_trade_request(intent_source, answering=bool(draft.get('new_trade_confirmation_required') or (draft.get('question') or {}).get('key')=='identity:trade')):
@@ -595,6 +605,7 @@ def stage_story(db,guild,user,args):
             raise ValueError('clear_fields only retracts unsaved draft facts. Use an explicit replacement or journal correction for already selected/saved records.')
         before=deepcopy(draft['values'])
         direction_provenance=deepcopy(draft['provenance'].get('direction',{}))
+        prior_fact_provenance=deepcopy(draft['provenance'])
         suppressed=set(draft.get('suppressed_fields',[]))
         if patch.get('play') is not None and patch['play']!=before.get('play'):
             suppressed.discard('objective')
@@ -653,6 +664,8 @@ def stage_story(db,guild,user,args):
             normalized=infer_story_context(raw,values=values,now=datetime.fromtimestamp(context._turn_now,tz=timezone.utc) if context._turn_now else None,timezone_name=values.get('time_zone'),context={'now_is_server_clock':True,'provenance':draft['provenance'],'suppressed_fields':draft['suppressed_fields']})
             values=normalized['values']
             draft['provenance']=normalized['provenance']
+        from gbop_voice_web.journal_reported_facts import retain_reported_facts
+        retain_reported_facts(raw,values,draft,before,prior_fact_provenance)
         from gbop_voice_web.journal_context import validate_reported
         try:
             validate_reported(values)
@@ -855,8 +868,20 @@ def save_story(db,guild,user,args):
         _patch(draft['values'])
         if draft.get('example_only'):
             raise ValueError('This draft was framed as an example or hypothetical. Do not save it as an executed trade; use the existing study/reflection journal flow.')
-        if not draft.get('persisted'):
-            draft=journal_drafts.write(conn,guild,user,draft,expected_revision=draft.get('storage_revision'))
+        # Preserve the accepted save request across identity reconciliation.
+        # It applies only to this owned draft; resolving identity must not demand
+        # a second save command. Later explicit opt-out still revokes it.
+        state_changed=False
+        if (not draft.get('new_trade') and not draft.get('trade_number') and
+                not draft.get('saved_journal_id') and
+                (draft.get('new_trade_confirmation_required') or
+                 story_trade_candidates(conn,guild,user,draft['values']))):
+            state_changed=not draft.get('save_authorized') or not draft.get('new_trade_confirmation_required')
+            draft['save_authorized']=True
+            draft['new_trade_confirmation_required']=True
+        if not draft.get('persisted') or state_changed:
+            draft=journal_drafts.write(conn,guild,user,draft,expected_revision=draft.get('storage_revision'),
+                                       finalized=draft.get('draft_status')=='finalized')
             _bind_loaded(context,draft)
     values=draft['values']
     accounting=values.get('accounting') or {}
@@ -891,7 +916,11 @@ def save_story(db,guild,user,args):
             else:thesis_target=JournalThesisTarget(guild,user,selected['thesis_id'])
         elif not draft['new_trade']:
             matches=story_trade_candidates(conn,guild,user,values)
-            if matches:return reconciliation_required(matches)
+            if matches:
+                result=reconciliation_required(matches)
+                result.update(draft_id=draft['id'],save_authorized=bool(draft.get('save_authorized')),
+                    instruction='The explicit save request is retained for this draft. Resolve only whether this is a separate new trade or an existing Trade #, then retry saving this same draft without asking for another save confirmation.')
+                return result
             if draft.get('new_trade_confirmation_required'):
                 return {'ok':False,'saved':False,'status':'new_trade_intent_required',
                         'draft_id':draft['id'],

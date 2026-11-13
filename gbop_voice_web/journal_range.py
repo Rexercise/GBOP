@@ -99,7 +99,15 @@ def stage(context, draft, raw, values):
     elif linked:
         resolution = {'ok': True, 'selectors': reference['selectors']}
     elif named or reply or delivered:
-        resolution = resolve(raw, base, context._turn_now)
+        lookup = raw
+        # A member may explicitly choose the inspected range and then describe
+        # other setups as context. Keep the entire narration, but do not treat
+        # those context labels as competing range selections.
+        chosen = re.search(r'(?:^|[.;!?]\s*)(?:Range preference provided:\s*)?(?:please\s+)?start with\s+(.+?)(?:[.;]\s*Treat\s+.+?\s+as context(?:,\s*as described by [\w -]{1,80})?[.!]?\s*)$', raw, re.I)
+        if chosen and len([name for name, pattern in NAMES.items()
+                           if re.search(pattern, chosen[1], re.I)]) == 1:
+            lookup = chosen[1]
+        resolution = resolve(lookup, base, context._turn_now)
     else:
         resolution = {'ok': False, 'selectors': {}, 'status': 'range_unsupported',
             'question': 'Which range window do you mean? Your description can be saved without verified market data.'}
@@ -138,7 +146,12 @@ def stage(context, draft, raw, values):
             if key in old:state[key]=deepcopy(old[key])
         state.pop('question',None)
     changed_range = bool(old and not same_selectors)
-    if changed_range and not correction and not reply:
+    # Completing an unresolved identity is not a request to retarget an already
+    # selected range. Never permit this shortcut for conflicting known selectors.
+    refining = bool(old and old.get('question') and old.get('status') != 'verified'
+        and resolution['ok'] and all(value is None or state['selectors'].get(key) == value
+                                   for key, value in old.get('selectors', {}).items()))
+    if changed_range and not correction and not reply and not refining:
         draft['range_question'] = 'Is this a correction to this journal’s range, or a separate trade?'
         return  # Narration is retained, but another range is not silently substituted.
     if draft.get('saved_journal_id') or draft.get('selected_key'):
@@ -155,6 +168,7 @@ def stage(context, draft, raw, values):
     state['history'] = history
     state['explicit_correction'] = correction or state.get('explicit_correction', False) or (old or {}).get('explicit_correction', False)
     if _key(old) == _key(state):
+        draft.pop('range_question', None)
         if resolution['ok'] and not linked and not delivered:
             resume(context, draft)
         return
