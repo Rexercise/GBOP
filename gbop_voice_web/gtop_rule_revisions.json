@@ -51,18 +51,17 @@
   },
   {
     "rule_id": "gtop-double-boneless",
-    "revision": 4,
-    "type": "correction_and_additional_variant",
+    "revision": 5,
+    "type": "clarification",
     "status": "active",
     "scope": "Paired liquidity structure across all applicable assets and range plays",
     "field": "Double Boneless terminology and journal capture",
-    "previous_canonical": "Inspected baseline defines Boneless as an adjective and correlated nonpurging-leg context. Neither inspected file contains Double Boneless. No existing contrary Double Boneless rule was found in those files.",
-    "accepted": "DOUBLE BONELESS / BONELESS DOUBLE PURGE\n[GTOP OWNER CLARIFICATION, REVISION 4]\n\nTwo distinct paired descriptors apply to any asset and any range play with a relevant correlated comparison: 9ate8, Young Lefty, GCT or others. Keep the underlying play. Boneless alone needs non-confirmation at one side.\n\nDOUBLE BONELESS (V1)\nThe same asset purges neither parent-range boundary; it stays boneless on both sides. Its counterpart supplies the qualifying Double Purge. Preserve the original completed objective, then the opposing purge and required inside close on the selected parent timeframe. An opposing objective touch or lower-timeframe return alone is insufficient. Track later reversal delivery separately. Roles do not switch.\n\nBONELESS DOUBLE PURGE (V2)\nDifferent correlated assets purge the opposing boundaries of corresponding parent ranges. Each purges only one side and stays boneless at the side purged by its partner. Neither individually forms a Double Purge; the second purge is on the counterpart. Roles switch between sides. V1's individual Double Purge requirement does not apply to V2. These names are distinct, not interchangeable aliases.\n\nBoth retain existing Boneless qualification, parent-timeframe setup intervals and required closing confirmation. Minutes of separation alone are not non-confirmation. Incomplete intervals or missing paired candles remain unverified. Track each asset's physical purges and delivery; counterpart movement is not a local objective touch. No fixed buy-side-first or sell-side-first order, new entry, tier, automatic V6, automatic full-objective completion, guaranteed reversal or profit follows. Same-asset double purge alone is not Double Boneless; generic \"double purge\" is not an alias.\n\nJOURNALING\nKeep underlying play in play and exact descriptor in context_notes/evidence_notes. Capture supplied/verified variant, assets, ranges, sides, sequence, timeframe and close; actual delivery and executions are separate. Missing details/variant never block saving. Preserve raw narration, reported labels, uncertainty and corrections; do not silently relabel historical journals or treat a label as verified classification. Concept questions alone never start a journal. No automatic detector, alert or live historical verification is added.",
+    "previous_canonical": "DOUBLE BONELESS / BONELESS DOUBLE PURGE\n[GTOP OWNER CLARIFICATION, REVISION 4]\n\nTwo distinct paired descriptors apply to any asset and any range play with a relevant correlated comparison: 9ate8, Young Lefty, GCT or others. Keep the underlying play. Boneless alone needs non-confirmation at one side.\n\nDOUBLE BONELESS (V1)\nThe same asset purges neither parent-range boundary; it stays boneless on both sides. Its counterpart supplies the qualifying Double Purge. Preserve the original completed objective, then the opposing purge and required inside close on the selected parent timeframe. An opposing objective touch or lower-timeframe return alone is insufficient. Track later reversal delivery separately. Roles do not switch.\n\nBONELESS DOUBLE PURGE (V2)\nDifferent correlated assets purge the opposing boundaries of corresponding parent ranges. Each purges only one side and stays boneless at the side purged by its partner. Neither individually forms a Double Purge; the second purge is on the counterpart. Roles switch between sides. V1's individual Double Purge requirement does not apply to V2. These names are distinct, not interchangeable aliases.\n\nBoth retain existing Boneless qualification, parent-timeframe setup intervals and required closing confirmation. Minutes of separation alone are not non-confirmation. Incomplete intervals or missing paired candles remain unverified. Track each asset's physical purges and delivery; counterpart movement is not a local objective touch. No fixed buy-side-first or sell-side-first order, new entry, tier, automatic V6, automatic full-objective completion, guaranteed reversal or profit follows. Same-asset double purge alone is not Double Boneless; generic \"double purge\" is not an alias.\n\nJOURNALING\nKeep underlying play in play and exact descriptor in context_notes/evidence_notes. Capture supplied/verified variant, assets, ranges, sides, sequence, timeframe and close; actual delivery and executions are separate. Missing details/variant never block saving. Preserve raw narration, reported labels, uncertainty and corrections; do not silently relabel historical journals or treat a label as verified classification. Concept questions alone never start a journal. No automatic detector, alert or live historical verification is added.",
+    "accepted": "DOUBLE BONELESS / BONELESS DOUBLE PURGE\n[GTOP OWNER CLARIFICATION, REVISION 5]\n\nTwo distinct paired descriptors apply to any asset and any range play with a relevant correlated comparison: 9ate8, Young Lefty, GCT or others. Keep the underlying play. Boneless alone needs non-confirmation at one side.\n\nDOUBLE BONELESS (V1)\nThe same asset purges neither parent-range boundary; it stays boneless on both sides. Its counterpart supplies the qualifying Double Purge. Preserve the original completed objective, then the opposing purge and required inside close on the selected parent timeframe. An opposing objective touch or lower-timeframe return alone is insufficient. Track later reversal delivery separately. Roles do not switch.\n\nBONELESS DOUBLE PURGE (V2)\nDifferent correlated assets purge the opposing boundaries of corresponding parent ranges. Each purges only one side and stays boneless at the side purged by its partner. Neither individually forms a Double Purge; the second purge is on the counterpart. Roles switch between sides. V1's individual Double Purge requirement does not apply to V2. These names are distinct, not interchangeable aliases.\n\nBoth retain existing Boneless qualification, parent-timeframe setup intervals and required closing confirmation. Minutes of separation alone are not non-confirmation. Incomplete intervals or missing paired candles remain unverified. Track each asset's physical purges and delivery; counterpart movement is not a local objective touch. No fixed buy-side-first or sell-side-first order, new entry, tier, automatic V6, automatic full-objective completion, guaranteed reversal or profit follows. Same-asset double purge alone is not Double Boneless; generic \"double purge\" is not an alias.\n\nONE CHART VS BOTH\nV1: both purges appear on one chart; its counterpart has neither. V2: the two opposite-side purges appear across both charts, not together on either chart.\n\nJOURNALING\nKeep underlying play in play and exact descriptor in context_notes/evidence_notes. Capture supplied/verified variant, assets, ranges, sides, sequence, timeframe and close; actual delivery and executions are separate. Missing details/variant never block saving. Preserve raw narration, reported labels, uncertainty and corrections; do not silently relabel historical journals or treat a label as verified classification. Concept questions alone never start a journal. No automatic detector, alert or live historical verification is added.\n",
     "authority": {
-      "origin": "Explicit owner clarification and distinct-name adoption, November 10, 2026",
-      "recorded_date": "2026-11-10",
-      "message_id": null,
-      "timestamp": null,
+      "origin": "Explicit owner clarification in November 13, 2026 voice discussion",
+      "recorded_date": "2026-11-13",
+      "message_id": "Sentinel_9919304886ec81918d112d19d53c360f",
       "provenance_limit": "Verbatim conversation is not published in this repository."
     },
     "historical_effective_date": "Not specified; no retroactive historical classifications are created.",
@@ -85,8 +84,8 @@
     ],
     "canonical_destination": "gtop_double_boneless.txt; gtop_knowledge.txt: SMT",
     "supersedes": {
-      "revision": 1,
-      "reason": "Switched-role structure is Boneless Double Purge (V2), not the exclusive Double Boneless definition; retain same-asset V1."
+      "record_id": "gtop-double-boneless@4",
+      "reason": "Clarifies visible one-chart versus two-chart distinction; existing qualification mechanics unchanged."
     },
     "implementation_scope": "Shared canon and member-reported journal support only. No new detector, execution rule, schema migration or historical journal rewrite.",
     "previous_revisions": [
@@ -131,6 +130,48 @@
         },
         "implementation_scope": "Shared canon and member-reported journal support only. No new detector, execution rule, schema migration or historical journal rewrite.",
         "superseded_by_revision": 4
+      },
+      {
+        "rule_id": "gtop-double-boneless",
+        "revision": 4,
+        "type": "correction_and_additional_variant",
+        "status": "superseded",
+        "scope": "Paired liquidity structure across all applicable assets and range plays",
+        "field": "Double Boneless terminology and journal capture",
+        "previous_canonical": "Inspected baseline defines Boneless as an adjective and correlated nonpurging-leg context. Neither inspected file contains Double Boneless. No existing contrary Double Boneless rule was found in those files.",
+        "accepted": "DOUBLE BONELESS / BONELESS DOUBLE PURGE\n[GTOP OWNER CLARIFICATION, REVISION 4]\n\nTwo distinct paired descriptors apply to any asset and any range play with a relevant correlated comparison: 9ate8, Young Lefty, GCT or others. Keep the underlying play. Boneless alone needs non-confirmation at one side.\n\nDOUBLE BONELESS (V1)\nThe same asset purges neither parent-range boundary; it stays boneless on both sides. Its counterpart supplies the qualifying Double Purge. Preserve the original completed objective, then the opposing purge and required inside close on the selected parent timeframe. An opposing objective touch or lower-timeframe return alone is insufficient. Track later reversal delivery separately. Roles do not switch.\n\nBONELESS DOUBLE PURGE (V2)\nDifferent correlated assets purge the opposing boundaries of corresponding parent ranges. Each purges only one side and stays boneless at the side purged by its partner. Neither individually forms a Double Purge; the second purge is on the counterpart. Roles switch between sides. V1's individual Double Purge requirement does not apply to V2. These names are distinct, not interchangeable aliases.\n\nBoth retain existing Boneless qualification, parent-timeframe setup intervals and required closing confirmation. Minutes of separation alone are not non-confirmation. Incomplete intervals or missing paired candles remain unverified. Track each asset's physical purges and delivery; counterpart movement is not a local objective touch. No fixed buy-side-first or sell-side-first order, new entry, tier, automatic V6, automatic full-objective completion, guaranteed reversal or profit follows. Same-asset double purge alone is not Double Boneless; generic \"double purge\" is not an alias.\n\nJOURNALING\nKeep underlying play in play and exact descriptor in context_notes/evidence_notes. Capture supplied/verified variant, assets, ranges, sides, sequence, timeframe and close; actual delivery and executions are separate. Missing details/variant never block saving. Preserve raw narration, reported labels, uncertainty and corrections; do not silently relabel historical journals or treat a label as verified classification. Concept questions alone never start a journal. No automatic detector, alert or live historical verification is added.",
+        "authority": {
+          "origin": "Explicit owner clarification and distinct-name adoption, November 10, 2026",
+          "recorded_date": "2026-11-10",
+          "message_id": null,
+          "timestamp": null,
+          "provenance_limit": "Verbatim conversation is not published in this repository."
+        },
+        "historical_effective_date": "Not specified; no retroactive historical classifications are created.",
+        "unchanged": [
+          "Existing Boneless qualification within each relevant setup interval",
+          "Model 1 identification and confirmation",
+          "CRT V1–V6 definitions",
+          "Entry models and tiers",
+          "Actual local target-touch facts",
+          "Range-specific invalidation"
+        ],
+        "not_established": [
+          "New entry trigger",
+          "Automatic reversal",
+          "Automatic V6 or same-asset double purge",
+          "Automatic completion of either or both full objectives",
+          "New deadline or required side order",
+          "General rule equating correlated delivery with physical local delivery",
+          "Probability or profitability claim"
+        ],
+        "canonical_destination": "gtop_double_boneless.txt; gtop_knowledge.txt: SMT",
+        "supersedes": {
+          "revision": 1,
+          "reason": "Switched-role structure is Boneless Double Purge (V2), not the exclusive Double Boneless definition; retain same-asset V1."
+        },
+        "implementation_scope": "Shared canon and member-reported journal support only. No new detector, execution rule, schema migration or historical journal rewrite.",
+        "superseded_by_revision": 5
       }
     ]
   },

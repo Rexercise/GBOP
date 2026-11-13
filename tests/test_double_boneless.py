@@ -45,13 +45,23 @@ class DoubleBonelessKnowledgeTests(unittest.TestCase):
         records = [record for record in records if record['rule_id'] == 'gtop-double-boneless']
         self.assertEqual(len(records), 1)
         record = records[0]
-        self.assertEqual(record['revision'], 4)
+        self.assertEqual(record['revision'], 5)
+        self.assertEqual(record['previous_revisions'][-1]['revision'], 4)
         self.assertEqual(record['previous_revisions'][0]['revision'], 1)
         self.assertIn(record['accepted'].strip(), CANON)
-        self.assertEqual(record['authority']['recorded_date'], '2026-11-10')
+        self.assertEqual(record['authority']['recorded_date'], '2026-11-13')
         self.assertNotIn('exact_quote', record['authority'])
         self.assertIn('Verbatim conversation is not published', record['authority']['provenance_limit'])
         self.assertIn('No new detector', record['implementation_scope'])
+
+    def test_one_chart_vs_both_clarity_preserves_qualification(self):
+        for phrase in ('V1: both purges appear on one chart; its counterpart has neither.',
+                       'V2: the two opposite-side purges appear across both charts, not together on either chart.',
+                       'original completed objective', 'required inside close',
+                       'Incomplete intervals or missing paired candles remain unverified'):
+            self.assertIn(phrase, CANON)
+        self.assertIn('V1 shows both purges on one chart and neither on its counterpart', STORY_PROMPT)
+        self.assertIn('V2 needs both', STORY_PROMPT)
 
     def test_wording_recognition_is_not_setup_verification(self):
         for text in ('Double Boneless 9ate8', 'DOUBLE-BONELESS GCT',
@@ -168,6 +178,8 @@ class DoubleBonelessJournalTests(unittest.TestCase):
         if descriptor == 'Boneless Double Purge':
             legs = ('Silver purged sell-side while gold held, then gold purged buy-side '
                     'while silver held. Neither individually double purged.')
+        legs += (' Both charts are needed to see the opposite purges.' if descriptor == 'Boneless Double Purge'
+                 else ' Both purges appear on silver; neither appears on gold.')
         raw = f'Journal my {descriptor} {play} observations. {legs}'
         notes = f'Reported {descriptor} {play}; paired qualification not verified.'
         story = {'play': play, 'context_notes': notes, 'evidence_notes': legs}
