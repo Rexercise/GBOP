@@ -1,6 +1,6 @@
 # Double Boneless: knowledge and journal support
 
-Rule ID: `gtop-double-boneless`, revision 4. Owner clarification: November 10, 2026.
+Rule ID: `gtop-double-boneless`, revision 5. Owner clarification: November 13, 2026.
 
 Double Boneless (V1) keeps the same asset boneless on both parent-range sides
 while the counterpart forms a qualifying Double Purge, including the existing
@@ -17,6 +17,14 @@ The shared canon is `gbop_voice_web/gtop_double_boneless.txt`, included once by
 `gtop_protocol.CANONICAL_KNOWLEDGE`. Discord text, Discord primary/helper voice,
 and browser backend/live voice already consume that shared source. The versioned
 definition and owner provenance are in `gtop_rule_revisions.json`.
+
+## One chart versus both charts
+
+Double Boneless V1: both qualifying purges are visible on one market’s chart;
+its correlated counterpart has neither. Boneless Double Purge V2: the opposite-side
+purges appear across the two charts, not together on either individual chart.
+This clarifies the existing definition; all parent, objective and closing
+requirements above remain unchanged. Synthetic examples are not historical evidence.
 
 ## Journal contract
 

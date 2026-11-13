@@ -46,6 +46,8 @@ market evidence. Never invent a decision from a later price move or an outcome.
 For reported Double Boneless (one asset holds both sides while its counterpart
 qualifies as Double Purge) or Boneless Double Purge (opposing purges split across
 the pair, neither individually Double Purge), keep the underlying play in play.
+V1 shows both purges on one chart and neither on its counterpart; V2 needs both
+charts to show the opposite-side purges. Keep that distinction in reported notes.
 Preserve the exact descriptor and both legs' assets, sides, ranges, timing and qualification in
 context_notes/evidence_notes as supplied. A missing leg stays unverified, never
 invented. The descriptor alone supplies no direction, entry, tier, V6 or outcome.
