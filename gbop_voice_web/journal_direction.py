@@ -15,6 +15,11 @@ def narrated_direction(text, *, answering=False):
     # A rejected alternative must not negate the positive correction before it.
     source = re.sub(r',?\s+not\s+(?:bullish|bearish|long|short)\b', '', source, flags=re.I)
     found = _position_direction(source)
+    # Explicit labeled confirmation from the captured narration. Both synonyms
+    # must agree; setup context elsewhere does not choose position direction.
+    confirmation = re.search(r'(?:^|[.;!?\n]\s*)Direction confirmed:\s*(bullish|bearish|long|short)(?:\s+(long|short|bullish|bearish))?\s*(?:[.!]|$)', source, re.I)
+    if confirmation and (not confirmation[2] or direction(confirmation[1]) == direction(confirmation[2])):
+        found.append((direction(confirmation[1]), confirmation[0].strip()))
     if found and re.search(r'\b(?:hedg\w*|counter[ -]?trend)\b', source, re.I):
         return found  # The member's explicit position outranks the setup bias.
     if re.search(r"\b(?:stayed|remained|was|am|were|are)\s+flat\b|\b(?:did not|didn't|never)\s+(?:enter|trade|take|open)\b",source,re.I) and not found:
@@ -25,6 +30,7 @@ def narrated_direction(text, *, answering=False):
         r'\b' + subject + r'\s+(?:was|is)\s+(?:actually\s+)?(?:a\s+)?' + token + r'\b',
         r'\b(?:I|we)\s+(?:was|am|were|are)\s+(?:actually\s+)?' + token + r'\b(?=[,.;!?]|$)',
         r'\b(?:I|we)\s+(?:traded|took|played)\s+(?:a\s+|the\s+)?' + token + r'\b',
+        r'\b(?:I|we)\s+(?:still\s+)?went\s+' + token + r'\b',
         r'\bmy\s+' + token + r'\s+(?:trade|position|entry|setup|play)\b',
         r'\b(?:correct|change|set|update)\b[^.;!?\n]{0,60}\bdirection\s+to\s+' + token + r'\b',
     )

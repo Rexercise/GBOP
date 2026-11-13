@@ -36,3 +36,25 @@ Rollback: preserve the compatible narrative reader/writer if new event-bearing
 stories have been saved. Older releases reject unknown entry fields during
 re-finalization, although the underlying JSON remains intact. Do not strip stored
 events or rewrite historical journals to accommodate an older release.
+
+Voice confirmation and extraction continuity
+Explicit save authorization remains on the same owned draft when existing-record
+identity reconciliation is required, including after reconnect. Resolving that
+identity does not require repeating the save request. Explicit opt-out still
+revokes permission; bare assent is not a save command. A pending separate-trade
+question can be resolved from the member's explicit answer even when the model
+omits the redundant flag. Finalization remains atomic with the canonical record.
+
+Explicit custom titles and labeled direction confirmations survive extraction
+omissions. A confirmed entry with an uncertain model is retained as reported entry
+narration with unknown model, price, size, risk and result, never as a new execution
+row. Repeated confirmation does not add entries. Reported lessons are retained
+when structured context is omitted. A selected primary range can coexist with
+other setups explicitly described as context; completing a previously unresolved
+range identity is not treated as replacement of a verified range.
+
+These changes do not migrate or correct existing journals. The original detailed
+speech cannot be reconstructed from a relay summary that omitted it. Full capture
+of parent dates, side order and countertrend reasoning is explicitly required in
+voice guidance; actual acoustic completeness still requires a new supervised
+voice test and saved-record comparison.
