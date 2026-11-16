@@ -533,10 +533,30 @@ def stage_story(db,guild,user,args):
         # A bad extraction must not lose the narration it came from. Save the
         # raw passage with no structured guesses, then report the parse issue.
         capability,context=_context(args,guild,user)
-        if not (getattr(context,'_client_text',None) or args.get('raw_story')):raise
-        result=stage_story(db,guild,user,{**args,'story_json':'{}'})
-        result.update(ok=False,status='narration_saved_needs_correction' if result.get('persisted') else 'preview_needs_correction',
-                      error=str(exc),instruction='The narration was retained as reported. Correct the structured extraction; do not invent missing facts.')
+        if getattr(context,'_client_text',None) or args.get('raw_story'):
+            result=stage_story(db,guild,user,{**args,'story_json':'{}'})
+            status='narration_saved_needs_correction' if result.get('persisted') else 'preview_needs_correction'
+        else:
+            # A voice follow-up may carry only a malformed structured patch.
+            # Return the owned retained draft without applying *any* of that
+            # request's selection/identity flags or claiming new text was saved.
+            result=get_story(db,guild,user,{'_journal_binding':capability,
+                                          'draft_id':args.get('draft_id')})
+            if not result.get('ok') or 'story' not in result or result.get('kind') == 'journal_day':
+                # Preserve selection, missing-record and daily-recap routing.
+                result.update(ok=False,patch_error=str(exc),rejected_patch_applied=False)
+                return result
+            status='structured_patch_rejected'
+        result.update(ok=False,status=status,ready_to_finalize=False,
+                      error=str(exc),rejected_patch_applied=False,
+                      next_tool='stage_journal_story',
+                      story_fields=sorted(FIELDS | {'entries','clear_fields'}),
+                      entry_fields=sorted(ENTRY_FIELDS),
+                      instruction='The structured patch was rejected; it is not saved. Existing narration and facts are retained. '
+                                  'Correct story_json using the documented fields on this same draft_id, with raw_story for any new spoken facts. '
+                                  'Use entries for reported entry notes, not broker execution rows. Missing prices, size, risk or executions '
+                                  'do not prevent narrative finalization. Do not repeat the rejected patch or switch to open_trade. '
+                                  'Resolve only any returned identity question, then use save_journal_story on the member’s explicit save request.')
         return result
     capability,context=_context(args,guild,user)
     from gbop_voice_web.journal_coach import init_coach
@@ -959,7 +979,7 @@ from gbop_voice_web.journal_accounts import ACCOUNTING_SCHEMA
 
 STORY_TOOLS=[
     schema('stage_journal_story','FIRST capture/correct single-entry or multi-entry narration as a durable editable journal before follow-up questions. R is optional: unknown stays null, never zero. story_json keys: '+', '.join(sorted(FIELDS))+'; entries is an array with '+', '.join(sorted(ENTRY_FIELDS))+'. events is an array per entry with event_index, kind (partial_exit, runner_exit, exit, stop_adjustment), objective, status, pnl_text, quantity_text, notes, reported_time_text. Partial and runner events are not extra fills; a reported reentry gets its own entry_index. result_r is numeric overall reported R; entry risk_text and pnl_text preserve cash amounts with units. accounting is a structured object per ACCOUNT AND RISK JOURNALING instructions; it never supplies model-calculated result_r. Patch only new facts; null preserves known values. clear_fields retracts unfinished fields; result_r and entries.1.risk_r may also be cleared on saved/selected narratives without deleting records. new_trade=true only for an explicitly separate trade; new_draft starts a separate story. Select existing displayed trade_number after reading current state.',
-           {'draft_id':STR,'raw_story':STR,'story_json':{'type':'string','description':ACCOUNTING_SCHEMA},'trade_number':NUM,'new_draft':{'type':['boolean','null']},'new_trade':{'type':['boolean','null']}}),
+           {'draft_id':STR,'raw_story':STR,'story_json':{'type':'string','description':'JSON object containing journal fields, not a tool-argument wrapper. Top-level keys: '+', '.join(sorted(FIELDS | {'entries','clear_fields'}))+'. Use {} for an identity-only update. entries contains reported entry notes, not required broker executions. '+ACCOUNTING_SCHEMA},'trade_number':NUM,'new_draft':{'type':['boolean','null']},'new_trade':{'type':['boolean','null']}}),
     schema('get_journal_story','Use view=discarded to list archived draft titles/revisions for explicit restoration. Otherwise resume the same member-owned unfinished journal after pauses/reconnects; read known facts and choose from titles when several remain. No write.',{'draft_id':STR,'raw_offset':NUM,'offset':NUM,'view':{'type':['string','null'],'enum':['unfinished','discarded',None]}}),
     schema('save_journal_story','Explicitly FINALIZE a saved unfinished narrative only when the member asks to save/finalize/finish; for voice quote the actual current request in confirmation_text. Null for typed requests. Preserves reported multi-entry details without inventing execution/risk/P&L rows. Reconciles existing Trade # and same draft retries; does not delete records.',{'draft_id':{'type':'string'},'confirmation_text':STR}),
 ]
