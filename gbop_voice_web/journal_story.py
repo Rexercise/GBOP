@@ -137,7 +137,7 @@ def _save_optout(text):
 def _new_trade_request(text, *, answering=False):
     if answering and re.fullmatch(r"\s*(?:(?:yes|separate|new)[, .!]*)+\s*",text or "",re.I) and re.search(r"\b(?:separate|new)\b",text or "",re.I):
         return True
-    for match in re.finditer(r'\b(?:new|separate|different|another)\s+(?:reported\s+)?trade\b',text,re.I):
+    for match in re.finditer(r'\b(?:new|separate|different|another)\s+(?:(?:reported|real|actual)\s+)?trade\b',text,re.I):
         prefix=re.split(r'[.;!?]',text[:match.start()])[-1]
         if not re.search(r"\b(?:not|no|never|isn't|is not|don't|do not|without)\b(?:[ ,]+[\w’'-]+){0,6}[ ,]*$",prefix,re.I):
             return True
@@ -704,7 +704,13 @@ def stage_story(db,guild,user,args):
             changes={k:{'before':before.get(k),'after':values.get(k)} for k in set(before)|set(values) if before.get(k)!=values.get(k)}
             if any(change['before'] is not None for change in changes.values()):draft['corrections'].append({'recorded_at':journal_drafts.stamp(),'fields':changes})
         if args.get('new_draft') is True and not first_draft and intent_source is not None and not draft.get('example_only') and not (_new_trade_request(intent_source) or re.search(r'\bnew (?:journal|draft|story)\b',intent_source,re.I)):
-            raise ValueError('Start another journal only when the member asks for a new or separate story.')
+            # Keep the existing records untouched, but make a dropped spoken
+            # identity request recoverable by the model without a generic loop.
+            return {'ok':False, 'status':'new_draft_intent_required', 'persisted':False,
+                    'saved':False, 'write_attempted':False,
+                    'error':'Start another journal only when the member asks for a new or separate story.',
+                    'next_tool':'stage_journal_story',
+                    'instruction':"No new draft was created and prior journals are unchanged. If the member actually asked for a new/separate journal in the current spoken request, include those exact request words in raw_story along with the narration and retry with new_draft=true, draft_id=null. Do not omit the request again, invent consent, or alter the earlier journal. Otherwise ask one identity question. Finalize only after review and an explicit save request."}
         if len(draft['raw_story'])!=raw_before and values==before:draft['revision']+=1
         draft['values']=values
         if draft.get('selected_key') and 'range_target_baseline' not in draft:
@@ -979,7 +985,7 @@ from gbop_voice_web.journal_accounts import ACCOUNTING_SCHEMA
 
 STORY_TOOLS=[
     schema('stage_journal_story','FIRST capture/correct single-entry or multi-entry narration as a durable editable journal before follow-up questions. R is optional: unknown stays null, never zero. story_json keys: '+', '.join(sorted(FIELDS))+'; entries is an array with '+', '.join(sorted(ENTRY_FIELDS))+'. events is an array per entry with event_index, kind (partial_exit, runner_exit, exit, stop_adjustment), objective, status, pnl_text, quantity_text, notes, reported_time_text. Partial and runner events are not extra fills; a reported reentry gets its own entry_index. result_r is numeric overall reported R; entry risk_text and pnl_text preserve cash amounts with units. accounting is a structured object per ACCOUNT AND RISK JOURNALING instructions; it never supplies model-calculated result_r. Patch only new facts; null preserves known values. clear_fields retracts unfinished fields; result_r and entries.1.risk_r may also be cleared on saved/selected narratives without deleting records. new_trade=true only for an explicitly separate trade; new_draft starts a separate story. Select existing displayed trade_number after reading current state.',
-           {'draft_id':STR,'raw_story':STR,'story_json':{'type':'string','description':'JSON object containing journal fields, not a tool-argument wrapper. Top-level keys: '+', '.join(sorted(FIELDS | {'entries','clear_fields'}))+'. Use {} for an identity-only update. entries contains reported entry notes, not required broker executions. '+ACCOUNTING_SCHEMA},'trade_number':NUM,'new_draft':{'type':['boolean','null']},'new_trade':{'type':['boolean','null']}}),
+           {'draft_id':STR,'raw_story':{**STR,'description':"Faithful current spoken narration INCLUDING the member's actual request to start a new/separate journal. Do not reduce it to trade facts and drop the request. Never invent consent. On new_draft_intent_required, repair only omitted words actually spoken; otherwise ask once."},'story_json':{'type':'string','description':'JSON object containing journal fields, not a tool-argument wrapper. Top-level keys: '+', '.join(sorted(FIELDS | {'entries','clear_fields'}))+'. Use {} for an identity-only update. entries contains reported entry notes, not required broker executions. '+ACCOUNTING_SCHEMA},'trade_number':NUM,'new_draft':{'type':['boolean','null']},'new_trade':{'type':['boolean','null']}}),
     schema('get_journal_story','Use view=discarded to list archived draft titles/revisions for explicit restoration. Otherwise resume the same member-owned unfinished journal after pauses/reconnects; read known facts and choose from titles when several remain. No write.',{'draft_id':STR,'raw_offset':NUM,'offset':NUM,'view':{'type':['string','null'],'enum':['unfinished','discarded',None]}}),
     schema('save_journal_story','Explicitly FINALIZE a saved unfinished narrative only when the member asks to save/finalize/finish; for voice quote the actual current request in confirmation_text. Null for typed requests. Preserves reported multi-entry details without inventing execution/risk/P&L rows. Reconciles existing Trade # and same draft retries; does not delete records.',{'draft_id':{'type':'string'},'confirmation_text':STR}),
 ]
