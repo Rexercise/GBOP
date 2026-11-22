@@ -137,7 +137,7 @@ def _save_optout(text):
 def _new_trade_request(text, *, answering=False):
     if answering and re.fullmatch(r"\s*(?:(?:yes|separate|new)[, .!]*)+\s*",text or "",re.I) and re.search(r"\b(?:separate|new)\b",text or "",re.I):
         return True
-    for match in re.finditer(r'\b(?:new|separate|different|another)\s+(?:reported\s+)?trade\b',text,re.I):
+    for match in re.finditer(r'\b(?:new|separate|different|another)\s+(?:(?:reported|real|actual)\s+)?trade\b',text,re.I):
         prefix=re.split(r'[.;!?]',text[:match.start()])[-1]
         if not re.search(r"\b(?:not|no|never|isn't|is not|don't|do not|without)\b(?:[ ,]+[\w’'-]+){0,6}[ ,]*$",prefix,re.I):
             return True
@@ -704,7 +704,13 @@ def stage_story(db,guild,user,args):
             changes={k:{'before':before.get(k),'after':values.get(k)} for k in set(before)|set(values) if before.get(k)!=values.get(k)}
             if any(change['before'] is not None for change in changes.values()):draft['corrections'].append({'recorded_at':journal_drafts.stamp(),'fields':changes})
         if args.get('new_draft') is True and not first_draft and intent_source is not None and not draft.get('example_only') and not (_new_trade_request(intent_source) or re.search(r'\bnew (?:journal|draft|story)\b',intent_source,re.I)):
-            raise ValueError('Start another journal only when the member asks for a new or separate story.')
+            # Keep the existing records untouched, but make a dropped spoken
+            # identity request recoverable by the model without a generic loop.
+            return {'ok':False, 'status':'new_draft_intent_required', 'persisted':False,
+                    'saved':False, 'write_attempted':False,
+                    'error':'Start another journal only when the member asks for a new or separate story.',
+                    'next_tool':'stage_journal_story',
+                    'instruction':"No new draft was created and prior journals are unchanged. If the member actually asked for a new/separate journal in the current spoken request, include those exact request words in raw_story along with the narration and retry with new_draft=true, draft_id=null. Do not omit the request again, invent consent, or alter the earlier journal. Otherwise ask one identity question. Finalize only after review and an explicit save request."}
         if len(draft['raw_story'])!=raw_before and values==before:draft['revision']+=1
         draft['values']=values
         if draft.get('selected_key') and 'range_target_baseline' not in draft:
